@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Project specific
+backupme.db
+*.state.json
+converter_checkpoint.json
+__backupme_db__/
+manifests/
+objects/
+tree/
+*.log
+
+# Keys and secrets
+.key
+*.enc
+.env
+
+# HTML docs (already have manual.html, docs.html)
+# Keep them - they're intentionally created
+
+# Config example only, not user config
+# config.yaml - user's own config, don't ignore

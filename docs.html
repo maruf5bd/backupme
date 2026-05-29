@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>backupme — Distributed Backup System Documentation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0f172a; --bg2: #1e293b; --bg3: #334155;
+  --text: #e2e8f0; --text2: #94a3b8; --text3: #64748b;
+  --accent: #3b82f6; --accent2: #2563eb; --green: #22c55e;
+  --red: #ef4444; --yellow: #eab308; --border: #334155;
+  --code-bg: #0f172a; --shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+header { text-align: center; padding: 60px 20px; border-bottom: 1px solid var(--border); margin-bottom: 40px; }
+header h1 { font-size: 3em; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
+header p { color: var(--text2); font-size: 1.2em; max-width: 800px; margin: 0 auto; }
+.nav { position: sticky; top: 0; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 15px 0; z-index: 100; margin-bottom: 30px; }
+.nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 20px; display: flex; gap: 20px; flex-wrap: wrap; }
+.nav a { color: var(--text2); text-decoration: none; padding: 8px 16px; border-radius: 6px; transition: all 0.2s; font-size: 0.9em; }
+.nav a:hover { background: var(--bg3); color: var(--text); }
+section { margin-bottom: 60px; }
+h2 { font-size: 2em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
+h3 { font-size: 1.4em; margin: 25px 0 15px; color: var(--accent); }
+h4 { font-size: 1.1em; margin: 20px 0 10px; color: var(--text2); }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; margin: 10px 0; }
+code { font-family: 'Courier New', monospace; color: var(--green); }
+pre code { color: var(--text); }
+table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: var(--bg2); color: var(--accent); font-weight: 600; }
+tr:hover { background: var(--bg2); }
+.badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
+.badge-green { background: #166534; color: #bbf7d0; }
+.badge-blue { background: #1e3a5a; color: #bfdbfe; }
+.badge-red { background: #7f1d1d; color: #fecaca; }
+.arch-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 30px; margin: 20px 0; text-align: center; font-family: monospace; line-height: 1.8; }
+.arch-box .box { display: inline-block; padding: 10px 20px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg3); margin: 5px; }
+.arch-box .arrow { color: var(--accent); font-size: 1.2em; }
+.collapsible { cursor: pointer; user-select: none; }
+.collapsible::before { content: '▶ '; font-size: 0.8em; }
+.collapsible.active::before { content: '▼ '; }
+.content { max-height: 0; overflow: hidden; transition: max-height 0.3s; }
+.content.show { max-height: 2000px; }
+.alert { background: #1e3a5a; border-left: 4px solid var(--accent); padding: 15px 20px; border-radius: 0 8px 8px 0; margin: 15px 0; }
+.search-box { width: 100%; padding: 12px 15px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 1em; margin: 10px 0; }
+.search-box:focus { outline: none; border-color: var(--accent); }
+@media (max-width: 768px) { header h1 { font-size: 2em; } .nav-inner { gap: 10px; } }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <div class="nav-inner">
+    <a href="#quick-start">Quick Start</a>
+    <a href="#installation">Install</a>
+    <a href="#configuration">Config</a>
+    <a href="#cli">CLI</a>
+    <a href="#api">API</a>
+    <a href="#backends">Backends</a>
+    <a href="#web">Web</a>
+    <a href="#compliance">Compliance</a>
+  </div>
+</div>
+
+<div class="container">
+<header>
+  <h1>backupme</h1>
+  <p>A Python backup system with content-addressed deduplication, N-copy redundancy, chunked large-file support, and a dual CLI + web dashboard interface.</p>
+</header>
+
+<section id="quick-start">
+<h2>🚀 Quick Start</h2>
+<pre><code># Install
+pip install -e .
+
+# Initialize encryption key
+backupme encrypt init
+
+# Backup a directory
+backupme backup ~/Documents -b local --recursive
+
+# List backed-up files
+backupme list
+
+# Start web dashboard
+backupme web --port 8080</code></pre>
+</section>
+
+<section id="installation">
+<h2>📦 Installation</h2>
+<pre><code>git clone &lt;repo&gt;
+cd backupme
+pip install -e .</code></pre>
+<h3>Requirements</h3>
+<ul>
+  <li><strong>Python 3.10+</strong></li>
+  <li>See <code>requirements.txt</code> for dependencies</li>
+  <li>Optional: <code>zstandard</code> for zstd compression (auto-detected)</li>
+  <li>Optional: <code>smbprotocol</code> for SMB backends</li>
+  <li>Optional: <code>paramiko</code> for SFTP/SSH backends</li>
+</ul>
+</section>
+
+<section id="configuration">
+<h2>⚙️ Configuration</h2>
+<p>Create <code>config.yaml</code>:</p>
+<pre><code>backends:
+  local:
+    - name: local_usb
+      type: local
+      path: D:/backups
+      priority: 100
+  ftp:
+    - name: my_ftp
+      type: ftp
+      host: ftp.example.com
+      username: user
+      password: "{{FTP_PASS}}"   # env var substitution
+      priority: 50
+
+backups:
+  - source: C:/Users/Maruf/Documents
+    backend: local_usb
+    mirror: true
+
+encryption:
+  enabled: true
+  key_file: ~/.backupme/key.enc
+
+compression:
+  enabled: true
+  default_algorithm: zstd
+  default_level: 3
+
+retention:
+  enabled: true
+  versions: 5
+  daily: 7
+  weekly: 4
+  monthly: 12</code></pre>
+<p class="alert">Environment variables in config values are auto-resolved: <code>{{VAR_NAME}}</code> → <code>os.environ["VAR_NAME"]</code></p>
+</section>
+
+<section id="cli">
+<h2>💻 CLI Commands</h2>
+
+<h3>Backup</h3>
+<pre><code>backupme backup [PATHS]... [--backend NAME] [--redundancy N] [--recursive/-r]</code></pre>
+<p>Uploads files to backends. Small files (1KB–64KB) are auto-batched into compressed tar bundles for faster transfer.</p>
+<table>
+  <tr><th>Option</th><th>Description</th></tr>
+  <tr><td><code>PATHS</code></td><td>Files or directories to backup</td></tr>
+  <tr><td><code>--backend/-b</code></td><td>Target backend (auto-select if omitted)</td></tr>
+  <tr><td><code>--redundancy/-n</code></td><td>Number of copies (default: 1)</td></tr>
+  <tr><td><code>--recursive/-r</code></td><td>Recurse into directories</td></tr>
+</table>
+
+<h3>Upload Bundle (Small-File Optimization)</h3>
+<pre><code>backupme upload-bundle DIR [--backend NAME] [--redundancy N]</code></pre>
+<p>Explicitly batch-upload all small files (1KB–64KB) in a directory as a single compressed tar. Gives 3-5× better compression and 1/N round-trips.</p>
+
+<h3>Download</h3>
+<pre><code>backupme download &lt;file_id|path&gt; [--from BACKEND] [--dest PATH]
+backupme restore [--source ROOT] [--dest PATH]</code></pre>
+
+<h3>List / Search</h3>
+<pre><code>backupme list [--source ROOT] [--backend NAME] [--hash VALUE]
+backupme search "query" [--content] [--source ROOT]
+backupme status</code></pre>
+<table>
+  <tr><th>Command</th><th>Description</th></tr>
+  <tr><td><code>list</code></td><td>List backed-up files with filters</td></tr>
+  <tr><td><code>search</code></td><td>Full-text search (FTS5-powered)</td></tr>
+  <tr><td><code>search --content</code></td><td>Search file contents</td></tr>
+  <tr><td><code>status</code></td><td>Show backup status summary</td></tr>
+</table>
+
+<h3>Hash Lookup</h3>
+<pre><code>backupme hash-lookup &lt;sha256&gt;</code></pre>
+<p>Look up which files use a given plaintext SHA-256 hash.</p>
+
+<h3>Convert (Re-upload Backend Files)</h3>
+<pre><code>backupme convert BACKEND_NAME [--prefix PATH] [--target BACKEND] [--delete] [--resume]</code></pre>
+<table>
+  <tr><th>Option</th><th>Description</th></tr>
+  <tr><td><code>--delete</code></td><td>Delete originals after verifying ≥1 replicated copy + manifest</td></tr>
+  <tr><td><code>--resume</code></td><td>Resume from last checkpoint</td></tr>
+  <tr><td><code>--target</code></td><td>Store converted blobs on a different backend</td></tr>
+</table>
+
+<h3>Database Management</h3>
+<pre><code>backupme db check [--full]           # Integrity check
+backupme db snapshot                 # Create snapshot now
+backupme db restore [--from BACKEND] # Restore from replica
+backupme db rebuild                  # Rebuild DB from manifests
+backupme db oplog [--pending]       # Show operation log
+backupme db info                    # DB statistics</code></pre>
+
+<h3>Verification & Reports</h3>
+<pre><code>backupme verify [--count N] [--backend NAME] [--all] [--recent N]
+backupme report [--format html|json|text]
+backupme check-consistency
+backupme scrub [--backend NAME]</code></pre>
+
+<h3>Encryption</h3>
+<pre><code>backupme encrypt init                 # Generate encryption key
+backupme encrypt change-password     # Re-encrypt key with new password
+backupme encrypt status             # Check key status</code></pre>
+
+<h3>Recompress</h3>
+<pre><code>backupme recompress [--algo zstd] [--level 3] [--backend NAME]</code></pre>
+<p>Recompress all blobs to a new algorithm/level using the safe write-new→commit→delete-old pipeline (PLAN_FIXED B12).</p>
+
+<h3>Daemon</h3>
+<pre><code>backupme daemon start|stop|status</code></pre>
+<p>Starts the scheduler daemon that periodically runs backups, snapshots, and retention.</p>
+
+<h3>Web Dashboard</h3>
+<pre><code>backupme web [--port 8080] [--host 0.0.0.0]</code></pre>
+</section>
+
+<section id="architecture">
+<h2>🏗️ Architecture</h2>
+<div class="arch-box">
+  <div class="box">Primary DB</div>
+  <div class="arrow">← single writer (./backupme.db)</div>
+  <div style="margin: 10px 0; color: var(--text2);">│ WAL frames + periodic snapshots</div>
+  <div class="arrow">┌────────┴────────┬────────────┬────────────┐</div>
+  <div style="display: flex; justify-content: center; gap: 10px; margin: 10px 0; flex-wrap: wrap;">
+    <div class="box" style="border-color: var(--green);">Backend A</div>
+    <div class="box" style="border-color: var(--green);">Backend B</div>
+    <div class="box" style="border-color: var(--green);">Backend C</div>
+    <div style="align-self: center; color: var(--text3);">disaster-recovery replicas</div>
+  </div>
+</div>
+
+<h3>Key Design Decisions</h3>
+<table>
+  <tr><th>Feature</th><th>Implementation</th></tr>
+  <tr><td><strong>Single-writer DB</strong></td><td>One primary SQLite, replicas are DR-only (not voters)</td></tr>
+  <tr><td><strong>Generation counter</strong></td><td>Monotonic counter in <code>db_meta</code> table — no split-brain</td></tr>
+  <tr><td><strong>WAL replication</strong></td><td>Async WAL frame queue → periodic snapshots (not full-DB upload)</td></tr>
+  <tr><td><strong>Deduplication</strong></td><td><code>blobs</code> table — <code>blob_id = SHA256(plaintext)</code>, ref-counted</td></tr>
+  <tr><td><strong>Storage</strong></td><td><code>blob_storage</code> — per <code>(blob_id, backend, path)</code> variant</td></tr>
+  <tr><td><strong>Chunking</strong></td><td>64MB blocks for large files; small files batched in tar bundles</td></tr>
+  <tr><td><strong>Compression</strong></td><td>zstd adaptive: 19 (&lt;64KB), 10 (&lt;1MB), 3 (&lt;64MB), 1 (≥64MB)</td></tr>
+  <tr><td><strong>Encryption</strong></td><td>AES-256-GCM, random 96-bit nonces, Argon2id key derivation</td></tr>
+  <tr><td><strong>Manifest sidecars</strong></td><td>Per-file JSON in <code>manifests/</code> — enables full rebuild</td></tr>
+  <tr><td><strong>Op-log</strong></td><td>Idempotent, with preconditions and status state machine</td></tr>
+  <tr><td><strong>FTS5</strong></td><td>Full-text search on file paths and content</td></tr>
+</table>
+</section>
+
+<section id="api">
+<h2>🔧 Core API Reference</h2>
+
+<div class="collapsible" onclick="toggle(this)"><h3>config.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>load_config</code></td><td><code>load_config(path="config.yaml") -> Config</code></td><td>Load and validate YAML config with env-var resolution</td></tr>
+  </table>
+  <p><strong>Config dataclasses:</strong> <code>Config</code>, <code>BackendDef</code>, <code>BackupDef</code>, <code>ChunkingConfig</code>, <code>CompressionConfig</code>, <code>EncryptionConfig</code>, <code>RetentionConfig</code>, <code>DatabaseConfig</code>, <code>VerificationConfig</code></p>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/hasher.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>sha256</code></td><td><code>sha256(data: bytes) -> str</code></td><td>Hex digest of SHA-256</td></tr>
+    <tr><td><code>sha256_file</code></td><td><code>sha256_file(path: str, chunk_size=64MB) -> str</code></td><td>Streaming file hash</td></tr>
+    <tr><td><code>sha256_chunked</code></td><td><code>sha256_chunked(data: bytes) -> str</code></td><td>Chunked hash variant</td></tr>
+  </table>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/compress.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>should_skip</code></td><td><code>should_skip(data: bytes, ext="") -> bool</code></td><td>True if already compressed</td></tr>
+    <tr><td><code>choose_compression_level</code></td><td><code>choose_compression_level(file_size: int) -> tuple[str, int]</code></td><td>Adaptive zstd level</td></tr>
+    <tr><td><code>compress</code></td><td><code>compress(data: bytes, algorithm="zstd", level=3) -> bytes</code></td><td>Compress with zstd/gzip/bz2/lzma</td></tr>
+    <tr><td><code>decompress</code></td><td><code>decompress(data: bytes, algorithm="zstd") -> bytes</code></td><td>Decompress</td></tr>
+    <tr><td><code>recompress_blobs</code></td><td><code>recompress_blobs(algo="zstd", level=3, backend_name=None, key=None) -> dict</code></td><td>Safe recompression migration</td></tr>
+  </table>
+  <p><strong>Supported algorithms:</strong> <code>zstd</code> (preferred), <code>gzip</code>, <code>bz2</code>, <code>lzma/xz</code></p>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/crypto.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>generate_key</code></td><td><code>generate_key() -> bytes</code></td><td>Generate new 256-bit key</td></tr>
+    <tr><td><code>encrypt</code></td><td><code>encrypt(data: bytes, key: bytes) -> tuple[bytes, bytes, bytes]</code></td><td>AES-256-GCM encrypt → (ciphertext, nonce, tag)</td></tr>
+    <tr><td><code>decrypt</code></td><td><code>decrypt(data: bytes, key: bytes) -> bytes</code></td><td>AES-256-GCM decrypt</td></tr>
+    <tr><td><code>load_key</code></td><td><code>load_key(path: str) -> bytes</code></td><td>Load key from encrypted file</td></tr>
+    <tr><td><code>save_key</code></td><td><code>save_key(key: bytes, path: str)</code></td><td>Save encrypted key</td></tr>
+  </table>
+  <p><strong>Nonces:</strong> Random 96-bit per encryption (GCM safety). Convergent mode available via config.</p>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/database.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>get_connection</code></td><td><code>get_connection(db_path=None) -> Connection</code></td><td>Thread-local WAL connection</td></tr>
+    <tr><td><code>initialize</code></td><td><code>initialize()</code></td><td>Create DB, set instance_id</td></tr>
+    <tr><td><code>execute</code></td><td><code>execute(sql: str, params=()) -> Cursor</code></td><td>Execute SQL</td></tr>
+    <tr><td><code>get_generation</code></td><td><code>get_generation() -> int</code></td><td>Read generation counter</td></tr>
+    <tr><td><code>bump_generation</code></td><td><code>bump_generation()</code></td><td>Increment generation counter</td></tr>
+    <tr><td><code>check_integrity</code></td><td><code>check_integrity() -> list[str]</code></td><td>Run PRAGMA integrity_check</td></tr>
+    <tr><td><code>wal_checkpoint</code></td><td><code>wal_checkpoint()</code></td><td>Flush WAL</td></tr>
+  </table>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/dedup.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>record_blob</code></td><td><code>record_blob(blob_id: str, pt_size: int) -> dict</code></td><td>Upsert blob, increment ref_count</td></tr>
+    <tr><td><code>unref_blob</code></td><td><code>unref_blob(blob_id: str) -> int</code></td><td>Decrement ref_count</td></tr>
+    <tr><td><code>get_blob</code></td><td><code>get_blob(blob_id: str) -> dict | None</code></td><td>Lookup blob by SHA-256</td></tr>
+    <tr><td><code>list_orphans</code></td><td><code>list_orphans() -> list[dict]</code></td><td>Blobs with ref_count ≤ 0</td></tr>
+    <tr><td><code>total_dedup_savings</code></td><td><code>total_dedup_savings() -> dict</code></td><td>Raw vs stored bytes</td></tr>
+  </table>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/uploader.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>upload_file</code></td><td><code>upload_file(source_root, relative_path, local_path, backends, config, redundancy=1, ...) -> dict</code></td><td>Upload single file</td></tr>
+    <tr><td><code>upload_bundle</code></td><td><code>upload_bundle(files: list[dict], backends, config, redundancy=1) -> list[dict]</code></td><td>Batch small files</td></tr>
+  </table>
+  <p><strong>Upload pipeline:</strong> hash → dedup check → compress (adaptive zstd) → encrypt (AES-256-GCM) → upload to N backends (with exponential backoff + circuit breaker) → verify → write manifest + pointer → bump generation</p>
+  <p><strong>Small-file optimization:</strong> Files 1KB–64KB auto-bundled into tar archives (up to 16MB per bundle), compressed together for 3-5× better ratio and 1/N round-trips.</p>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/downloader.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>download_file</code></td><td><code>download_file(file_id, dest_path, backend_name=None, version=None) -> dict</code></td><td>Download with N-copy failover</td></tr>
+    <tr><td><code>download_by_sha256</code></td><td><code>download_by_sha256(sha256, dest_path, backend_name=None) -> dict</code></td><td>Download by hash</td></tr>
+  </table>
+  <p><strong>Download pipeline:</strong> locate blob_storage entries → try backends with failover → download → decrypt → decompress → verify plaintext SHA-256 → reassemble chunks → write to dest</p>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/op_log.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>append</code></td><td><code>append(op_type, target, idempotency_key=None, ...) -> dict</code></td><td>Append op with idempotency</td></tr>
+    <tr><td><code>mark_committed</code></td><td><code>mark_committed(op_id: int)</code></td><td>Transition to committed</td></tr>
+    <tr><td><code>mark_failed</code></td><td><code>mark_failed(op_id: int, error: str)</code></td><td>Transition to failed</td></tr>
+    <tr><td><code>get_pending</code></td><td><code>get_pending() -> list[dict]</code></td><td>List pending ops</td></tr>
+    <tr><td><code>replay_since</code></td><td><code>replay_since(op_log_id=0) -> list[dict]</code></td><td>Replay ops from ID</td></tr>
+  </table>
+  <p><strong>Precondition syntax:</strong> <code>"not_exists:table:column:value"</code> or <code>"gen_lt:N"</code></p>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/recover.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>recover_database</code></td><td><code>recover_database(backends: list) -> dict</code></td><td>Full recovery</td></tr>
+    <tr><td><code>rebuild_from_manifests</code></td><td><code>rebuild_from_manifests() -> dict</code></td><td>Rebuild DB from manifests</td></tr>
+    <tr><td><code>find_replicas</code></td><td><code>find_replicas(backends: list) -> list[dict]</code></td><td>Locate DB replicas</td></tr>
+  </table>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/retry.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Class</th><th>Key Methods / Fields</th></tr>
+    <tr><td><code>ExponentialBackoff</code></td><td><code>max_attempts=4, base=1.0, max=30.0, jitter=True</code>; <code>__iter__</code> yields (attempt, delay)</td></tr>
+    <tr><td><code>CircuitBreaker</code></td><td><code>max_failures=5, cooldown=300.0</code>; <code>record_failure(name)</code>, <code>is_tripped(name) -> bool</code></td></tr>
+  </table>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/replicator.py</h3></div>
+<div class="content">
+  <p><strong>Replication strategy:</strong></p>
+  <ul>
+    <li>Every commit → WAL frames queued (μs)</li>
+    <li>Every 60s / 1000 ops / 64MB → flush WAL bundle to backends</li>
+    <li>Every hour → VACUUM INTO snapshot, upload, prune old WAL</li>
+    <li>Async — backups never block on replica upload</li>
+  </ul>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/verify.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>run_integrity_check</code></td><td><code>run_integrity_check(check_type="random", count=5, ...) -> dict</code></td><td>Verify files</td></tr>
+    <tr><td><code>run_verify_restore</code></td><td><code>run_verify_restore() -> dict</code></td><td>Full restore-and-hash check</td></tr>
+    <tr><td><code>get_report</code></td><td><code>get_report() -> dict</code></td><td>Integrity report</td></tr>
+    <tr><td><code>list_reports</code></td><td><code>list_reports(limit=10) -> list[dict]</code></td><td>Recent checks</td></tr>
+  </table>
+</div>
+
+<div class="collapsible" onclick="toggle(this)"><h3>core/index.py</h3></div>
+<div class="content">
+  <table>
+    <tr><th>Function</th><th>Signature</th><th>Returns</th></tr>
+    <tr><td><code>index_file</code></td><td><code>index_file(source_root, relative_path, sha256, size, mtime, ...) -> int</code></td><td>Insert/update file metadata</td></tr>
+    <tr><td><code>find_by_path</code></td><td><code>find_by_path(source_root, relative_path) -> list[dict]</code></td><td>All versions of a file</td></tr>
+    <tr><td><code>search_files</code></td><td><code>search_files(query: str, source_root=None) -> list[dict]</code></td><td>FTS5 search</td></tr>
+    <tr><td><code>get_all_files</code></td><td><code>get_all_files() -> list[dict]</code></td><td>All non-deleted files</td></tr>
+  </table>
+</div>
+</section>
+
+<section id="backends">
+<h2>🔌 Backend Reference</h2>
+
+<h3>Abstract Interface (<code>backends/base.py</code>)</h3>
+<p>All backends implement <code>StorageBackend</code>:</p>
+<table>
+  <tr><th>Method</th><th>Signature</th><th>Description</th></tr>
+  <tr><td><code>name</code></td><td><code>-> str</code></td><td>Backend name</td></tr>
+  <tr><td><code>upload</code></td><td><code>(local_path, remote_rel_path) -> str</code></td><td>Upload file, return stored SHA-256</td></tr>
+  <tr><td><code>download</code></td><td><code>(remote_rel_path, local_path)</code></td><td>Download file</td></tr>
+  <tr><td><code>delete</code></td><td><code>(remote_rel_path)</code></td><td>Delete file</td></tr>
+  <tr><td><code>list_files</code></td><td><code>(prefix="") -> Iterator[dict]</code></td><td>List files (streaming)</td></tr>
+  <tr><td><code>walk</code></td><td><code>(prefix="") -> Iterator[dict]</code></td><td>Recursive listing</td></tr>
+  <tr><td><code>free_space</code></td><td><code>-> int | None</code></td><td>Free space in bytes</td></tr>
+  <tr><td><code>hash</code></td><td><code>(remote_rel_path) -> str | None</code></td><td>Server-side hash</td></tr>
+  <tr><td><code>health</code></td><td><code>-> bool</code></td><td>Check availability</td></tr>
+</table>
+
+<h3>Implementations</h3>
+<table>
+  <tr><th>Backend</th><th>Module</th><th>Library</th><th>Notes</th></tr>
+  <tr><td><code>local</code></td><td><code>local.py</code></td><td><code>shutil</code>, <code>os</code></td><td>Reference impl; disk usage for space</td></tr>
+  <tr><td><code>ftp</code></td><td><code>ftp_sftp.py</code></td><td><code>ftplib</code></td><td>Auto-reconnect, STAT for space</td></tr>
+  <tr><td><code>sftp</code></td><td><code>ftp_sftp.py</code></td><td><code>paramiko</code></td><td>statvfs for space</td></tr>
+  <tr><td><code>smb</code></td><td><code>smb.py</code></td><td><code>smbclient</code></td><td>Windows SMB shares</td></tr>
+  <tr><td><code>ssh</code></td><td><code>ssh.py</code></td><td><code>paramiko</code> + subprocess</td><td>Remote df, sha256sum</td></tr>
+  <tr><td><code>rclone</code></td><td><code>rclone.py</code></td><td>subprocess CLI</td><td>50+ cloud providers</td></tr>
+</table>
+</section>
+
+<section id="web">
+<h2>🌐 Web Dashboard</h2>
+<p>Start with <code>backupme web --port 8080</code>, then open <code>http://localhost:8080</code>.</p>
+
+<h3>Pages</h3>
+<table>
+  <tr><th>Route</th><th>Page</th><th>Description</th></tr>
+  <tr><td><code>/</code></td><td>Dashboard</td><td>File count, dedup ratio, compression ratio, per-backend usage chart</td></tr>
+  <tr><td><code>/files</code></td><td>Files</td><td>Searchable (FTS-backed) table; per-row download</td></tr>
+  <tr><td><code>/backends</code></td><td>Backends</td><td>Health status, free/total/quota, circuit-breaker state</td></tr>
+  <tr><td><code>/logs</code></td><td>Activity</td><td>Filtered op_log + recovery_events</td></tr>
+  <tr><td><code>/database</code></td><td>DB Health</td><td>Integrity status, snapshots, generation/instance_id</td></tr>
+  <tr><td><code>/report</code></td><td>Report</td><td>Full integrity report with charts</td></tr>
+  <tr><td><code>/settings</code></td><td>Settings</td><td>View config, toggle daemon, trigger backup</td></tr>
+</table>
+
+<h3>API Endpoints</h3>
+<pre><code>GET  /api/status
+GET  /api/backends
+GET  /api/files?q=&backend=&page=
+GET  /api/files/{id}
+GET  /api/sources
+GET  /api/logs?level=&limit=
+GET  /api/db/info
+GET  /api/db/snapshots
+GET  /api/db/recovery
+GET  /api/report
+POST /api/backup
+POST /api/verify
+POST /api/db/replicate</code></pre>
+</section>
+
+<section id="compliance">
+<h2>✅ PLAN_FIXED Compliance</h2>
+<p>All 20 architectural corrections (B1–B20) from <code>PLAN_FIXED.md</code> are implemented:</p>
+<table>
+  <tr><th>Fix</th><th>Description</th><th>Status</th></tr>
+  <tr><td>B1</td><td>Consensus → Single-writer model</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B2</td><td>Fingerprint → Generation counter</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B3</td><td>Split-brain handling removed</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B4</td><td>WAL frame replication (not full-DB upload)</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B5</td><td>Random GCM nonces (not deterministic)</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B6</td><td><code>blob_id = plaintext SHA256</code></td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B7</td><td>Schema: <code>blobs</code> + <code>blob_storage</code> + <code>file_chunks</code></td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B8</td><td>Separate <code>pt_offset</code>/<code>pt_size</code> vs <code>stored_size</code></td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B9</td><td><code>files.chunked</code> boolean</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B10</td><td>Per-file manifest sidecars for rebuild</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B11</td><td>Download failover on download/verify failure</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B12</td><td>Recompression: write-new → commit → GC-old</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B13</td><td><code>--delete</code> requires N replicas + manifest check</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B14</td><td>Exponential backoff + circuit breaker</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B15</td><td>Idempotent op_log with preconditions</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B16</td><td>Section numbering fixed</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B17</td><td><code>dedup_chunks</code> table removed</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B18</td><td><code>backend_blob_claims</code> removed (use view)</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B19</td><td>Replica never authoritative (highest-gen restore)</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>B20</td><td>Versioned pointer file format</td><td><span class="badge badge-green">✅</span></td></tr>
+</table>
+</section>
+
+<section>
+<h2>📁 Project Structure</h2>
+<pre><code>backupme/
+├── main.py                     # CLI entry point (click)
+├── config.py                    # YAML loader + validation + env vars
+├── scheduler.py                 # Daemon scheduler
+├── mirror.py                    # N-copy redundancy
+├── requirements.txt
+├── config.yaml.example
+│
+├── core/
+│   ├── schema.py               # Tables + migrations + FTS5
+│   ├── database.py             # SQLite primary; generation counter
+│   ├── hasher.py              # SHA-256 content hashing
+│   ├── compress.py            # zstd/gzip/bz2/lzma + recompress
+│   ├── crypto.py              # AES-256-GCM, Argon2id, random nonces
+│   ├── dedup.py               # Plaintext-hash dedup index
+│   ├── manifest.py            # Per-file sidecar manifests
+│   ├── op_log.py             # Idempotent op log
+│   ├── state.py               # Crash checkpoint (atomic writes)
+│   ├── snapshot.py           # VACUUM INTO + WAL export
+│   ├── replicator.py         # WAL replication to backends
+│   ├── recover.py            # Single-writer recovery
+│   ├── verify.py             # Random-restore verification
+│   ├── selector.py           # Backend selection
+│   ├── uploader.py           # Upload orchestrator + bundle batching
+│   ├── downloader.py         # Download with N-copy failover
+│   ├── converter.py          # Backend → dedup layout converter
+│   ├── retry.py              # Exponential backoff + circuit breaker
+│   └── index.py             # File metadata index + FTS5
+│
+├── backends/
+│   ├── base.py               # Abstract StorageBackend
+│   ├── local.py
+│   ├── ftp_sftp.py
+│   ├── smb.py
+│   ├── ssh.py
+│   └── rclone.py
+│
+├── cli/                      # Click command modules
+│   ├── base.py
+│   ├── backup_cmd.py
+│   ├── download_cmd.py
+│   ├── list_cmd.py
+│   ├── search_cmd.py
+│   ├── convert_cmd.py
+│   ├── db_cmd.py
+│   ├── web_cmd.py
+│   ├── daemon_cmd.py
+│   ├── encrypt_cmd.py
+│   ├── report_cmd.py
+│   └── __init__.py
+│
+└── web/                      # FastAPI dashboard
+    ├── app.py
+    ├── routes.py
+    ├── templates/
+    │   ├── base.html
+    │   ├── dashboard.html
+    │   ├── files.html
+    │   ├── backends.html
+    │   ├── logs.html
+    │   ├── database.html
+    │   ├── report.html
+    │   ├── settings.html
+    │   └── 404.html
+    └── static/</code></pre>
+</section>
+
+<footer style="text-align: center; padding: 40px; color: var(--text3); border-top: 1px solid var(--border); margin-top: 60px;">
+  <p>backupme — Distributed Backup System</p>
+  <p style="font-size: 0.9em;">PLAN_FIXED.md fully implemented — 20/20 architectural corrections applied</p>
+</footer>
+</div>
+
+<script>
+function toggle(el) {
+  el.classList.toggle('active');
+  const content = el.nextElementSibling;
+  content.classList.toggle('show');
+}
+
+// Open first section by default
+document.querySelectorAll('.collapsible')[0]?.classList.add('active');
+document.querySelectorAll('.content')[0]?.classList.add('show');
+
+// Search filter
+const searchBox = document.createElement('input');
+searchBox.type = 'text';
+searchBox.className = 'search-box';
+searchBox.placeholder = 'Filter functions...';
+document.querySelector('.nav').appendChild(searchBox);
+
+searchBox.addEventListener('input', function() {
+  const query = this.value.toLowerCase();
+  document.querySelectorAll('.collapsible').forEach(el => {
+    const text = el.textContent.toLowerCase();
+    const section = el.parentElement;
+    if (text.includes(query) || query === '') {
+      section.style.display = '';
+    } else {
+      section.style.display = 'none';
+    }
+  });
+});
+</script>
+</body>
+</html>

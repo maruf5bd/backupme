@@ -1,0 +1,120 @@
+# BackupMe V2 — Configuration Example
+# =====================================
+
+backups:
+  - source: C:\Users\Maruf\Documents
+    exclude: ["*.tmp", "node_modules", "__pycache__", ".git"]
+    mirror: false
+    backend: null            # null = auto-select best backend
+
+  - source: C:\Users\Maruf\Photos
+    mirror: true             # 2-copy redundancy
+
+backends:
+  local:
+    - name: usb_drive
+      path: E:\backup\
+      priority: 100          # higher = preferred more
+      weight: 10
+
+  ftp:
+    - name: remote_ftp
+      host: ftp.example.com
+      port: 21
+      username: user
+      password: "{{ FTP_PASS }}"    # resolved from env var
+      path: /backups
+      quota: 500GB
+      priority: 10
+
+  sftp:
+    - name: sftp_server
+      host: sftp.example.com
+      port: 22
+      username: maruf
+      password: "{{ SFTP_PASS }}"
+      key_file: ~/.ssh/id_rsa
+      path: /mnt/backup
+
+  ssh:
+    - name: linux_box
+      host: 192.168.1.100
+      port: 22
+      username: maruf
+      key_file: ~/.ssh/id_rsa
+      path: /mnt/backup
+
+  smb:
+    - name: nas
+      host: 192.168.1.50
+      share: backups
+      username: maruf
+      password: "{{ NAS_PASS }}"
+      path: backupme
+
+  rclone:
+    - name: gdrive
+      remote: "gdrive:/backupme"
+      bwlimit: "4M"
+      quota: 15GB
+    - name: dropbox
+      remote: "dropbox:/backupme"
+      quota: 2TB
+
+# --- V2 Features ---
+
+chunking:
+  enabled: true
+  min_size: 1MB             # files below this → single blob
+  chunk_size: 64MB          # each chunk size for large files
+  parallel_uploads: 4
+
+compression:
+  enabled: true              # V2: on by default
+  default_algorithm: zstd
+  default_level: 3
+  min_size: 1024             # skip files smaller than this
+  intelligent_skip: true     # skip already-compressed types by magic bytes
+  overrides:
+    - ext: .log
+      algorithm: zstd
+      level: 19
+    - ext: .txt
+      algorithm: zstd
+      level: 5
+    - ext: .jpg
+      skip: true
+    - ext: .mp4
+      skip: true
+
+encryption:
+  enabled: false
+  method: aes-256-gcm
+  key_file: ~/.backupme/key.enc
+
+verification:
+  enabled: true
+  retries: 3
+  fallback_on_fail: true      # try next backend if verify fails
+  verify_restore:
+    count: 5                  # random files per check
+    schedule: weekly
+
+retention:
+  enabled: true
+  versions: 5                 # keep last 5 versions per file
+  daily: 7                    # keep 7 daily snapshots
+  weekly: 4                   # keep 4 weekly
+  monthly: 12                 # keep 12 monthly
+
+database:
+  snapshots:
+    interval: 3600            # seconds between snapshots
+    retention: 168            # keep 7 days
+  auto_backup:
+    enabled: true
+    backends: all             # replicate DB to all backends
+
+notifications:
+  on_failure: true
+  desktop: true

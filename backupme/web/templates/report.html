@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between mb-3">
+  <h1>Integrity Report</h1>
+  <button class="btn btn-sm" onclick="fetch('/api/report/generate',{method:'POST'}).then(()=>location.reload())">Generate Fresh Report</button>
+</div>
+
+{% if report %}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="label">Status</div>
+    <div class="value">
+      {% if report.status == 'passed' or report.status == 'ok' %}
+      <span class="badge badge-green">OK</span>
+      {% elif report.status == 'failed' %}
+      <span class="badge badge-red">Failed</span>
+      {% else %}
+      <span class="badge badge-yellow">{{ report.status }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Total Checked</div>
+    <div class="value">{{ report.total_checked or report.total_files or 0 }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Passed</div>
+    <div class="value" style="color: var(--green);">{{ report.total_passed or 0 }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Failed</div>
+    <div class="value" style="color: var(--red);">{{ report.total_failed or 0 }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Report Details</h2>
+  <table>
+    <thead><tr><th>File ID</th><th>Result</th><th>Details</th></tr></thead>
+    <tbody>
+      {% if report.details %}
+        {% for d in report.details %}
+        <tr>
+          <td>{{ d.file_id }}</td>
+          <td>
+            {% if d.result == 'pass' %}
+            <span class="badge badge-green">Pass</span>
+            {% elif d.result == 'hash_mismatch' %}
+            <span class="badge badge-red">Mismatch</span>
+            {% else %}
+            <span class="badge badge-yellow">{{ d.result }}</span>
+            {% endif %}
+          </td>
+          <td style="color: var(--text2); font-size: 0.85rem;">{{ d.error or d.actual or '' }}</td>
+        </tr>
+        {% endfor %}
+      {% else %}
+      <tr><td colspan="3" class="empty">No details available</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if report.total_failed and report.total_failed > 0 %}
+<div class="card">
+  <h2>Recommendations</h2>
+  <ul style="color: var(--text2); font-size: 0.9rem; line-height: 1.8; padding-left: 1.25rem;">
+    <li>{{ report.total_failed }} file(s) failed integrity check</li>
+    <li>Consider restoring affected files from mirrored backends</li>
+    <li>Run a full restore verification for failing backends</li>
+    <li>Check backend connectivity and disk health</li>
+  </ul>
+</div>
+{% endif %}
+
+{% else %}
+<div class="card">
+  <div class="empty">
+    <p>No report yet. Click "Generate Fresh Report" to run an integrity check.</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

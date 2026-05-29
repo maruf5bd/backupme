@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between mb-3">
+  <h1>Backends</h1>
+  <span style="color: var(--text2); font-size: 0.85rem;">{{ backends|length }} backend(s)</span>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Type</th><th>Status</th><th>Priority</th><th>Quota</th></tr>
+    </thead>
+    <tbody>
+      {% for be in backends %}
+      <tr>
+        <td>{{ be.name }}</td>
+        <td><span class="badge badge-gray">{{ be.type }}</span></td>
+        <td>
+          {% if be.connected %}
+          <span class="dot dot-green"></span> Online
+          {% else %}
+          <span class="dot dot-red"></span> Offline
+          {% endif %}
+        </td>
+        <td>{{ be.priority }}</td>
+        <td>{{ be.quota or '∞' }}</td>
+      </tr>
+      {% endfor %}
+      {% if not backends %}
+      <tr><td colspan="5" class="empty">No backends configured</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

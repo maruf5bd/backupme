@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between mb-3">
+  <h1>Activity Log</h1>
+  <div class="flex gap-2">
+    <select id="op-filter" onchange="window.location.href='/logs?op='+encodeURIComponent(this.value)">
+      <option value="">All operations</option>
+      {% for op in op_types %}
+      <option value="{{ op }}" {% if current_op == op %}selected{% endif %}>{{ op }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>ID</th><th>Timestamp</th><th>Operation</th><th>Details</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for log in logs %}
+      <tr>
+        <td>{{ log.id }}</td>
+        <td>{{ log.started_at[:19] if log.started_at else '' }}</td>
+        <td><span class="badge {% if log.status == 'error' %}badge-red{% else %}badge-gray{% endif %}">{{ log.op_type or log.operation }}</span></td>
+        <td class="truncate" title="{{ log.metadata or log.details }}">{{ log.metadata or log.details }}</td>
+        <td>
+          {% if log.status == 'error' %}
+          <span class="badge badge-red">error</span>
+          {% elif log.status == 'completed' or log.status == 'done' %}
+          <span class="badge badge-green">{{ log.status }}</span>
+          {% else %}
+          <span class="badge badge-yellow">{{ log.status }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not logs %}
+      <tr><td colspan="5" class="empty">No activity logs yet</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

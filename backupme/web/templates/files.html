@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between mb-3">
+  <h1>Files</h1>
+  <div class="flex gap-2">
+    <input type="text" id="search-input" placeholder="Search files..." value="{{ q or '' }}">
+    <select id="backend-filter">
+      <option value="">All backends</option>
+      {% for be in backends %}
+      <option value="{{ be.name }}" {% if backend == be.name %}selected{% endif %}>{{ be.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Path</th><th>Size</th><th>SHA256</th><th>Backend</th><th>Version</th><th>Created</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for f in files %}
+      <tr>
+        <td>{{ f.id }}</td>
+        <td class="truncate" title="{{ f.relative_path }}">{{ f.relative_path }}</td>
+        <td>{{ "{:,.0f}".format(f.size) }}</td>
+        <td><code>{{ f.sha256[:12] }}…</code></td>
+        <td><span class="badge badge-gray">{{ f.backend_name }}</span></td>
+        <td>{{ f.version_seq or 1 }}</td>
+        <td>{{ f.created_at[:10] if f.created_at else '' }}</td>
+        <td><a href="/api/download/{{ f.id }}" class="btn btn-sm">Download</a></td>
+      </tr>
+      {% endfor %}
+      {% if not files %}
+      <tr><td colspan="8" class="empty">No files found</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <div class="flex-between mt-3">
+    <span style="color: var(--text2); font-size: 0.85rem;">{{ total }} total files</span>
+    <div class="flex gap-2">
+      {% if offset > 0 %}
+      <a href="/files?offset={{ offset - limit }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-outline btn-sm">Previous</a>
+      {% endif %}
+      {% if files|length == limit %}
+      <a href="/files?offset={{ offset + limit }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-outline btn-sm">Next</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+document.getElementById('search-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    const q = encodeURIComponent(this.value);
+    const backend = encodeURIComponent(document.getElementById('backend-filter').value);
+    window.location.href = '/files?q=' + q + '&backend=' + backend;
+  }
+});
+document.getElementById('backend-filter').addEventListener('change', function() {
+  const q = encodeURIComponent(document.getElementById('search-input').value);
+  const backend = encodeURIComponent(this.value);
+  window.location.href = '/files?q=' + q + '&backend=' + backend;
+});
+</script>
+{% endblock %}

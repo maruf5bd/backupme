@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between mb-3">
+  <h1>Database Health</h1>
+  <div class="flex gap-2">
+    <button class="btn btn-sm" onclick="fetch('/api/db/check',{method:'POST'}).then(()=>location.reload())">Run Integrity Check</button>
+    <button class="btn btn-sm btn-outline" onclick="fetch('/api/db/snapshot',{method:'POST'}).then(()=>location.reload())">Create Snapshot</button>
+    <button class="btn btn-sm btn-outline" onclick="fetch('/api/db/backup',{method:'POST'}).then(()=>location.reload())">Backup to All Backends</button>
+  </div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="label">DB Size</div>
+    <div class="value">{{ "{:,.0f}".format(db_info.size) if db_info else 0 }}</div>
+    <div class="sub">bytes on disk</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Snapshots</div>
+    <div class="value">{{ db_info.snapshot_count if db_info else 0 }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Integrity Status</div>
+    <div class="value">
+      {% if db_info and db_info.integrity_status == 'ok' %}
+      <span class="badge badge-green">OK</span>
+      {% else %}
+      <span class="badge badge-yellow">Unknown</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="label">WAL Mode</div>
+    <div class="value">
+      {% if db_info and db_info.wal_mode %}
+      <span class="badge badge-green">Enabled</span>
+      {% else %}
+      <span class="badge badge-red">Disabled</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="flex gap-3" style="display: flex; gap: 1rem;">
+  <div class="card" style="flex: 1;">
+    <h2>Snapshots</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Size</th></tr></thead>
+      <tbody>
+        {% for snap in snapshots %}
+        <tr>
+          <td class="truncate">{{ snap.name }}</td>
+          <td>{{ "{:,.0f}".format(snap.size) }} bytes</td>
+        </tr>
+        {% endfor %}
+        {% if not snapshots %}
+        <tr><td colspan="2" class="empty">No snapshots yet</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card" style="flex: 1;">
+    <h2>Recovery History</h2>
+    <table>
+      <thead><tr><th>Type</th><th>Status</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for ev in recovery %}
+        <tr>
+          <td>{{ ev.event_type }}</td>
+          <td>
+            {% if ev.status == 'ok' or ev.status == 'completed' %}
+            <span class="badge badge-green">{{ ev.status }}</span>
+            {% elif ev.status == 'error' %}
+            <span class="badge badge-red">{{ ev.status }}</span>
+            {% else %}
+            <span class="badge badge-yellow">{{ ev.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ ev.created_at[:19] if ev.created_at else '' }}</td>
+        </tr>
+        {% endfor %}
+        {% if not recovery %}
+        <tr><td colspan="3" class="empty">No recovery events</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card mt-3">
+  <h2>Restore from Consensus</h2>
+  <p style="color: var(--text2); font-size: 0.88rem; margin-bottom: 0.75rem;">
+    Restore the database from the majority copy across all backends
+  </p>
+  <button class="btn btn-sm btn-outline" onclick="if(confirm('Restore DB from consensus?'))fetch('/api/db/restore',{method:'POST'}).then(()=>location.reload())">
+    Restore from Consensus
+  </button>
+</div>
+{% endblock %}

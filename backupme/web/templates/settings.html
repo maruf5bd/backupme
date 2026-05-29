@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between mb-3">
+  <h1>Settings</h1>
+  <div class="flex gap-2">
+    <button class="btn btn-sm" onclick="fetch('/api/daemon/start',{method:'POST'}).then(()=>location.reload())">Start Daemon</button>
+    <button class="btn btn-sm btn-outline" onclick="fetch('/api/daemon/stop',{method:'POST'}).then(()=>location.reload())">Stop Daemon</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Configuration</h2>
+  <table>
+    <thead><tr><th>Section</th><th>Key</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for section, items in config_items %}
+        {% for key, value in items %}
+        <tr>
+          <td><span class="badge badge-gray">{{ section }}</span></td>
+          <td>{{ key }}</td>
+          <td style="color: var(--text2);">{{ value }}</td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Backup Sources</h2>
+  <table>
+    <thead><tr><th>Source Path</th><th>Mirror</th><th>Target Backend</th></tr></thead>
+    <tbody>
+      {% for src in sources %}
+      <tr>
+        <td>{{ src.source }}</td>
+        <td>{{ 'Yes' if src.mirror else 'No' }}</td>
+        <td>{{ src.backend or 'auto' }}</td>
+      </tr>
+      {% endfor %}
+      {% if not sources %}
+      <tr><td colspan="3" class="empty">No sources configured</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Actions</h2>
+  <div class="flex gap-2">
+    <button class="btn" onclick="fetch('/api/backup',{method:'POST'}).then(r=>r.json()).then(d=>alert('Backup triggered: '+d.status))">Trigger Backup Now</button>
+    <button class="btn btn-outline" onclick="fetch('/api/encrypt/init',{method:'POST'}).then(r=>r.json()).then(d=>alert(d.message||d.status))">Initialize Encryption</button>
+  </div>
+</div>
+{% endblock %}

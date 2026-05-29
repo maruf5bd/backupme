@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="status-bar">
+  <span class="dot dot-green"></span> System Online
+  {% if last_checkpoint %}
+  <span>Last checkpoint: {{ last_checkpoint.type }} @ {{ last_checkpoint.timestamp|round }}</span>
+  {% endif %}
+</div>
+
+<div class="stat-grid" id="stats-grid" hx-get="/api/status" hx-trigger="every 10s" hx-swap="innerHTML">
+  <div class="stat-card">
+    <div class="label">Total Files</div>
+    <div class="value">{{ total_files }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Unique Hashes</div>
+    <div class="value">{{ total_hashes }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Total References</div>
+    <div class="value">{{ total_refs }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Dedup Bytes</div>
+    <div class="value">{{ "{:,.0f}".format(total_bytes|default(0)) }}</div>
+    <div class="sub">savings from deduplication</div>
+  </div>
+</div>
+
+<div class="flex gap-3" style="display: flex; gap: 1rem;">
+  <div class="card" style="flex: 1;">
+    <h2>Backend Usage</h2>
+    <div class="chart-container">
+      <canvas id="usageChart"></canvas>
+    </div>
+  </div>
+  <div class="card" style="flex: 1;">
+    <h2>Backends</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Type</th><th>Priority</th><th>Quota</th></tr></thead>
+      <tbody>
+        {% for be in backends %}
+        <tr>
+          <td>{{ be.name }}</td>
+          <td><span class="badge badge-gray">{{ be.type }}</span></td>
+          <td>{{ be.priority }}</td>
+          <td>{{ be.quota or '∞' }}</td>
+        </tr>
+        {% endfor %}
+        {% if not backends %}
+        <tr><td colspan="4" class="empty">No backends configured</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="flex gap-3" style="display: flex; gap: 1rem; margin-top: 0.5rem;">
+  <div class="card" style="flex: 1;">
+    <h2>Recent Checkpoints</h2>
+    <table>
+      <thead><tr><th>Type</th><th>Timestamp</th></tr></thead>
+      <tbody>
+        {% for cp in checkpoints %}
+        <tr>
+          <td>{{ cp.type }}</td>
+          <td>{{ cp.timestamp|round(1) }}</td>
+        </tr>
+        {% endfor %}
+        {% if not checkpoints %}
+        <tr><td colspan="2" class="empty">No checkpoints yet</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card" style="flex: 1;">
+    <h2>Recent Files</h2>
+    <table>
+      <thead><tr><th>Path</th><th>Size</th><th>Backend</th><th>Date</th></tr></thead>
+      <tbody id="recent-files-table">
+        {% for f in recent_files %}
+        <tr>
+          <td class="truncate" title="{{ f.relative_path }}">{{ f.relative_path }}</td>
+          <td>{{ "{:,.0f}".format(f.size) }}</td>
+          <td><span class="badge badge-gray">{{ f.backend_name }}</span></td>
+          <td>{{ f.created_at[:10] if f.created_at else '' }}</td>
+        </tr>
+        {% endfor %}
+        {% if not recent_files %}
+        <tr><td colspan="4" class="empty">No files backed up yet</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+fetch('/api/status').then(r=>r.json()).then(d=>{
+  const ctx = document.getElementById('usageChart').getContext('2d');
+  const labels = (d.backends||[]).map(b=>b.name);
+  const values = (d.backends||[]).map(b=>1);
+  const colors = labels.map((_,i)=>'hsl('+(i*60%360)+',60%,60%)');
+  new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Backends', data: values, backgroundColor: colors }] },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b8fa3' } },
+        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+      }
+    }
+  });
+});
+</script>
+{% endblock %}
