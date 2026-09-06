@@ -9,6 +9,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backupme.core import database as dbmod  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_db(tmp_path, monkeypatch):
+    """Safety net: every test runs against a scratch DB, never the real one."""
+    monkeypatch.chdir(tmp_path)
+    from backupme.backends import invalidate_cache
+    invalidate_cache()
+    dbmod.close_connection()
+    dbmod.DB_PATH = tmp_path / "isolated.db"
+    dbmod.initialize()
+    yield
+    dbmod.close_connection()
+    invalidate_cache()
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     """Scratch environment: isolated config, database, storage backend, and CWD."""
