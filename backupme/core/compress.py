@@ -58,6 +58,42 @@ def choose_compression_level(file_size: int) -> tuple[str, int]:
         return ("zstd", 1)
 
 
+def _default_level(algo: str, file_size: int) -> int:
+    if algo == "zstd":
+        if file_size < 64 * 1024:
+            return 19
+        if file_size < 1024 * 1024:
+            return 10
+        if file_size < 64 * 1024 * 1024:
+            return 3
+        return 1
+    return 6
+
+
+def choose_compression(file_size: int, comp_cfg: dict | None = None, ext: str = "") -> tuple[str, int]:
+    """Pick algorithm/level from the compression config.
+
+    Extension overrides win first (``skip: true`` disables compression for
+    that extension); otherwise the configured default algorithm/level; when no
+    level is configured a size-based default is used. Compression disabled in
+    config returns ("none", 0).
+    """
+    cfg = comp_cfg or {}
+    if not cfg.get("enabled", True):
+        return ("none", 0)
+    for o in cfg.get("overrides") or []:
+        if o and str(o.get("ext", "")).lower() == ext.lower():
+            if o.get("skip"):
+                return ("none", 0)
+            return (str(o.get("algorithm", "zstd")), int(o.get("level", 3)))
+    algo = cfg.get("default_algorithm") or ("zstd" if _HAS_ZSTD else "gzip")
+    if algo not in COMPRESS_ALGORITHMS:
+        algo = "zstd" if _HAS_ZSTD else "gzip"
+    if cfg.get("default_level") is None:
+        return (algo, _default_level(algo, file_size))
+    return (algo, int(cfg["default_level"]))
+
+
 def compress(data: bytes, algorithm: str = "zstd", level: int = 3) -> bytes:
     if algorithm == "none":
         return data

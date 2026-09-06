@@ -169,7 +169,8 @@ class BackupScheduler:
     def _run_backups(self):
         for entry in self.config.get("backups", []):
             source = entry.get("source", "")
-            target = entry.get("target", "")
+            # "backend" is the real field name; "target" kept as a deprecated alias.
+            target = entry.get("backend") or entry.get("target") or ""
             redundancy = entry.get("redundancy", 1)
 
             if not source or not os.path.exists(source):

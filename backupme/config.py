@@ -1,9 +1,12 @@
 import os, re, yaml
+import logging
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
 ENV_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+_log = logging.getLogger(__name__)
 
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
@@ -23,9 +26,8 @@ def _parse_size_val(v):
 @dataclass
 class ChunkingConfig:
     enabled: bool = True
-    min_size: int = 1_048_576
+    min_size: int = 10_485_760
     chunk_size: int = 67_108_864
-    parallel_uploads: int = 4
 
 @dataclass
 class CompressOverride:
@@ -53,7 +55,6 @@ class EncryptionConfig:
 class VerificationConfig:
     enabled: bool = True
     retries: int = 3
-    fallback_on_fail: bool = True
     verify_restore_count: int = 5
     verify_restore_schedule: str = "weekly"
 
@@ -108,6 +109,7 @@ class BackupDef:
     exclude: list[str] = field(default_factory=list)
     mirror: bool = False
     backend: Optional[str] = None
+    move: bool = False
 
 @dataclass
 class Config:
@@ -144,6 +146,17 @@ def _resolve_dict(d, seen: set | None = None):
         for item in d:
             _resolve_dict(item, seen)
 
+def _filter_fields(cls, data: dict) -> dict:
+    """Keep known dataclass fields only; warn about ignored keys so existing
+    YAML files never crash when options are removed."""
+    known = cls.__dataclass_fields__
+    dropped = sorted(k for k in data if k not in known)
+    if dropped:
+        _log.warning("config: ignoring unknown %s option(s): %s",
+                     cls.__name__, ", ".join(dropped))
+    return {k: v for k, v in data.items() if k in known}
+
+
 def _build_backend(name: str, btype: str, data: dict) -> BackendDef:
     b = BackendDef(type=btype, name=name)
     _int_fields = {"port", "priority", "weight"}
@@ -170,7 +183,7 @@ def load_config(path: str | None = None) -> Config:
 
     cfg = Config()
     for bdef in raw.get("backups", []):
-        cfg.backups.append(BackupDef(**bdef))
+        cfg.backups.append(BackupDef(**_filter_fields(BackupDef, bdef)))
 
     for btype, blist in raw.get("backends", {}).items():
         for item in blist:
@@ -179,33 +192,33 @@ def load_config(path: str | None = None) -> Config:
 
     if "chunking" in raw:
         ck = {k: _parse_size_val(v) for k, v in raw["chunking"].items()}
-        cfg.chunking = ChunkingConfig(**ck)
+        cfg.chunking = ChunkingConfig(**_filter_fields(ChunkingConfig, ck))
     if "compression" in raw:
-        comp = raw["compression"]
+        comp = dict(raw["compression"])
         overrides = []
-        for o in comp.pop("overrides", []):
-            overrides.append(CompressOverride(**o))
-        cfg.compression = CompressionConfig(**comp)
+        for o in comp.pop("overrides", []) or []:
+            overrides.append(CompressOverride(**_filter_fields(CompressOverride, o)))
+        cfg.compression = CompressionConfig(**_filter_fields(CompressionConfig, comp))
         cfg.compression.overrides = overrides
     if "encryption" in raw:
-        cfg.encryption = EncryptionConfig(**raw["encryption"])
+        cfg.encryption = EncryptionConfig(**_filter_fields(EncryptionConfig, raw["encryption"]))
     if "verification" in raw:
         v = raw["verification"]
         cfg.verification = VerificationConfig(
             enabled=v.get("enabled", True),
             retries=v.get("retries", 3),
-            fallback_on_fail=v.get("fallback_on_fail", True),
             verify_restore_count=v.get("verify_restore", {}).get("count", 5),
             verify_restore_schedule=v.get("verify_restore", {}).get("schedule", "weekly"),
         )
+        _filter_fields(VerificationConfig, v)  # warn about removed/unknown keys
     if "retention" in raw:
-        cfg.retention = RetentionConfig(**raw["retention"])
+        cfg.retention = RetentionConfig(**_filter_fields(RetentionConfig, raw["retention"]))
     if "database" in raw:
         db = raw["database"]
-        snap = DatabaseSnapshotConfig(**db.get("snapshots", {}))
-        auto = DatabaseAutoBackupConfig(**db.get("auto_backup", {}))
+        snap = DatabaseSnapshotConfig(**_filter_fields(DatabaseSnapshotConfig, db.get("snapshots", {})))
+        auto = DatabaseAutoBackupConfig(**_filter_fields(DatabaseAutoBackupConfig, db.get("auto_backup", {})))
         cfg.database = DatabaseConfig(snapshots=snap, auto_backup=auto)
     if "notifications" in raw:
-        cfg.notifications = NotificationsConfig(**raw["notifications"])
+        cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
 
     return cfg

@@ -68,8 +68,9 @@ def _write_pointer(backend, pointer: dict, manifest: Manifest):
         tmp.unlink(missing_ok=True)
 
 
-def _do_upload(backend, local_path: str, remote_path: str, expected_sha256: str) -> bool:
-    retry = retry_mod.ExponentialBackoff()
+def _do_upload(backend, local_path: str, remote_path: str, expected_sha256: str,
+               retries: int = 4) -> bool:
+    retry = retry_mod.ExponentialBackoff(max_attempts=max(1, int(retries)))
     for attempt, delay in retry:
         try:
             backend.upload(local_path, remote_path)
@@ -113,6 +114,7 @@ def _upload_chunk_to_backends(
     chunk_data: bytes, blob_id: str,
     backends: list, compress_algo: str | None, compress_level: int | None,
     encrypted: bool, nonce: bytes | None, auth_tag: bytes | None,
+    retries: int = 4,
 ) -> list[dict]:
     """Upload one blob to every healthy backend. Pure I/O — no DB writes."""
     tmp = Path(tempfile.mkdtemp()) / "chunk"
@@ -129,7 +131,7 @@ def _upload_chunk_to_backends(
     for bk in backends:
         if _circuit_breaker.is_tripped(bk.name):
             continue
-        if _do_upload(bk, str(tmp), remote_path, stored_sha256):
+        if _do_upload(bk, str(tmp), remote_path, stored_sha256, retries):
             storage_rows.append({
                 "backend": bk.name,
                 "path": remote_path,
@@ -179,10 +181,12 @@ def _write_manifest_and_pointers(backends: list, manifest: Manifest, redundancy:
                   f"for {manifest.relative_path}: {e}", file=sys.stderr)
 
 
-def _compress_data(data: bytes) -> tuple[bytes, str | None, int | None]:
+def _compress_data(data: bytes, config: dict, ext: str = "") -> tuple[bytes, str | None, int | None]:
     if len(data) <= _no_compress_max:
         return data, None, None
-    algo, level = compress_mod.choose_compression_level(len(data))
+    algo, level = compress_mod.choose_compression(len(data), config.get("compression", {}), ext)
+    if algo == "none":
+        return data, None, None
     compressed = compress_mod.compress(data, algo, level)
     return compressed, algo, level
 
@@ -204,7 +208,7 @@ def _encrypt_data(data: bytes, config: dict) -> tuple[bytes, bytes | None, bytes
 
 def _upload_single_blob(
     data: bytes, blob_id: str,
-    backends: list, config: dict,
+    backends: list, config: dict, ext: str = "", retries: int = 4,
 ) -> list[dict]:
     """Upload a single blob (encrypting via file streaming when configured). Pure I/O."""
     enc_cfg = config.get("encryption", {})
@@ -212,7 +216,7 @@ def _upload_single_blob(
     key_file = enc_cfg.get("key_file", "")
 
     if enc_enabled and key_file and Path(key_file).exists():
-        compressed, algo, level = _compress_data(data)
+        compressed, algo, level = _compress_data(data, config, ext)
         tmp_dir = Path(tempfile.mkdtemp())
         try:
             comp_file = tmp_dir / "compressed"
@@ -236,7 +240,7 @@ def _upload_single_blob(
             for bk in backends:
                 if _circuit_breaker.is_tripped(bk.name):
                     continue
-                if _do_upload(bk, str(enc_file), remote_path, stored_sha256):
+                if _do_upload(bk, str(enc_file), remote_path, stored_sha256, retries):
                     storage_rows.append({
                         "backend": bk.name,
                         "path": remote_path,
@@ -253,12 +257,13 @@ def _upload_single_blob(
             import shutil
             shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
-    compressed, algo, level = _compress_data(data)
+    compressed, algo, level = _compress_data(data, config, ext)
     encrypted_data, nonce, auth_tag = _encrypt_data(compressed, config)
     return _upload_chunk_to_backends(
         encrypted_data, blob_id,
         backends, algo, level,
         encrypted=(nonce is not None), nonce=nonce, auth_tag=auth_tag,
+        retries=retries,
     )
 
 
@@ -290,6 +295,15 @@ def upload_bundle(
                                               "GB": 1024**3, "TB": 1024**4}.get((m.group(2) or "B").upper(), 1)) if m else _chunk_size
     else:
         chunk_size = int(raw_chunk)
+    raw_min = chunk_cfg.get("min_size", _vault_max)
+    if isinstance(raw_min, str):
+        import re as _re
+        m = _re.match(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)?\s*$", raw_min, _re.IGNORECASE)
+        min_size = int(float(m.group(1)) * {"B": 1, "KB": 1024, "MB": 1024**2,
+                                            "GB": 1024**3, "TB": 1024**4}.get((m.group(2) or "B").upper(), 1)) if m else _vault_max
+    else:
+        min_size = int(raw_min)
+    retries = max(1, int(config.get("verification", {}).get("retries", 4) or 4))
 
     results = []
 
@@ -315,7 +329,7 @@ def upload_bundle(
         tar_sha256 = hashlib.sha256(tar_data).hexdigest()
         tar_path.unlink(missing_ok=True)
 
-        compressed, algo, level = _compress_data(tar_data)
+        compressed, algo, level = _compress_data(tar_data, config)
         encrypted_data, nonce, auth_tag = _encrypt_data(compressed, config)
         stored_sha256 = hashlib.sha256(encrypted_data).hexdigest()
         stored_size = len(encrypted_data)
@@ -333,7 +347,7 @@ def upload_bundle(
         ok_backends = []
         failed_backends = []
         for bk in targets:
-            if _do_upload(bk, str(tmp), remote_path, stored_sha256):
+            if _do_upload(bk, str(tmp), remote_path, stored_sha256, retries):
                 ok_backends.append(bk)
             else:
                 failed_backends.append(bk.name)
@@ -457,7 +471,7 @@ def upload_bundle(
 
             # Read small files once and hash the buffer. Chunked files keep a
             # separate hash pass: dedup must be decided before uploading.
-            data = Path(src_path).read_bytes() if file_size <= _vault_max else None
+            data = Path(src_path).read_bytes() if file_size <= min_size else None
             file_sha256 = (
                 hashlib.sha256(data).hexdigest() if data is not None
                 else hasher_mod.sha256_file(src_path)
@@ -510,7 +524,7 @@ def upload_bundle(
             )
             manifest.v = 2
 
-            if file_size <= _vault_max:
+            if file_size <= min_size:
                 # `data` was already read in the prologue above.
                 item_info = {
                     "file_id": None, "sha256": file_sha256, "size": file_size,
@@ -525,12 +539,14 @@ def upload_bundle(
             else:
                 pending = []
                 min_copies = redundancy
+                file_ext = os.path.splitext(relative_path)[1]
                 with open(src_path, "rb") as fsrc:
                     for seq, offset in enumerate(range(0, file_size, chunk_size)):
                         chunk_data = fsrc.read(chunk_size)
                         chunk_sha256 = hashlib.sha256(chunk_data).hexdigest()
                         storage_rows = _upload_single_blob(
                             chunk_data, chunk_sha256, backends, config,
+                            ext=file_ext, retries=retries,
                         )
                         if not storage_rows:
                             min_copies = 0
