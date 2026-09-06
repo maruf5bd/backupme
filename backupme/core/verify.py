@@ -44,10 +44,11 @@ def run_integrity_check(
     details = []
 
     for f in files:
-        tmp = Path(tempfile.mkdtemp()) / f["relative_path"].replace("/", "_")
         try:
-            download_file(f["id"], str(tmp), backend_name)
-            actual = hasher_mod.sha256_file(str(tmp))
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td) / "check.bin"
+                download_file(f["id"], str(tmp), backend_name)
+                actual = hasher_mod.sha256_file(str(tmp))
             ok = actual == f["sha256"]
             if ok:
                 checked += 1
@@ -57,8 +58,6 @@ def run_integrity_check(
         except Exception as e:
             failed += 1
             details.append({"file_id": f["id"], "file": f["relative_path"], "status": "error", "error": str(e)})
-        finally:
-            tmp.unlink(missing_ok=True)
 
     execute(
         "UPDATE integrity_checks SET status = ?, checked_files = ?, failed_files = ?, completed_at = datetime('now'), details = ? WHERE id = ?",
@@ -106,7 +105,12 @@ def verify_file_integrity(file_id: int, backend_name: str | None = None) -> dict
 
 
 def run_verify_restore():
-    return run_integrity_check("full", 100)
+    from backupme.config import load_config
+    try:
+        count = load_config().verification.verify_restore_count or 100
+    except Exception:
+        count = 100
+    return run_integrity_check("full", count)
 
 
 def get_report() -> dict:
