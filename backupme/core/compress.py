@@ -101,7 +101,7 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
     Never lose readable data — can crash between steps and recover.
     """
     from backupme.core.database import execute, commit
-    import hashlib, tempfile, time
+    import hashlib, tempfile, time, sys
     from pathlib import Path
 
     if backend_name:
@@ -118,10 +118,15 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
         ).fetchall()
 
     recompressed = 0
+    skipped = 0
     for row_s in rows:
         try:
             row = dict(row_s)
             blob_id = row["blob_id"]
+
+            if row["encrypted"] and not key:
+                skipped += 1
+                continue
 
             from backupme.backends import get_backend
             bk = get_backend(row["backend_name"], {})
@@ -187,7 +192,8 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
                 pass
             recompressed += 1
 
-        except Exception:
+        except Exception as e:
+            print(f"recompress failed for {blob_id}: {e}", file=sys.stderr)
             continue
 
-    return {"recompressed": recompressed, "total_scanned": len(rows)}
+    return {"recompressed": recompressed, "total_scanned": len(rows), "skipped_encrypted": skipped}

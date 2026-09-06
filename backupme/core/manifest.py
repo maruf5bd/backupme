@@ -173,13 +173,20 @@ def rebuild_database_from_manifests(backends: list) -> dict:
                 execute(
                     """INSERT OR IGNORE INTO blob_storage
                        (blob_id, backend_name, storage_path, stored_size, stored_sha256,
-                        compression_algo, compression_level, encrypted)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        compression_algo, compression_level, encrypted, nonce, auth_tag)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (chunk.blob_id, s.backend, s.path, s.stored_size, s.stored_sha256,
-                     s.algo, s.level, 1 if s.encrypted else 0),
+                     s.algo, s.level, 1 if s.encrypted else 0,
+                     bytes.fromhex(s.nonce) if getattr(s, "nonce", None) else None,
+                     bytes.fromhex(s.auth_tag) if getattr(s, "auth_tag", None) else None),
                 )
 
     execute("UPDATE blobs SET ref_count = (SELECT COUNT(*) FROM file_chunks WHERE file_chunks.blob_id = blobs.blob_id)")
     commit()
 
-    return {"rebuilding": "ok", "files_rebuilt": len(seen_files)}
+    needs_reupload = [
+        r["blob_id"] for r in execute(
+            "SELECT DISTINCT blob_id FROM blob_storage WHERE encrypted = 1 AND (nonce IS NULL OR auth_tag IS NULL)"
+        ).fetchall()
+    ]
+    return {"rebuilding": "ok", "files_rebuilt": len(seen_files), "needs_reupload": needs_reupload}
