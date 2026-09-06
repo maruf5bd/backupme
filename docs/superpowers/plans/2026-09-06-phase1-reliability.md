@@ -52,12 +52,12 @@
 **Interfaces:**
 - Produces: fixtures `env` (scratch root with isolated config+DB+storage; yields `Path`), `enc_env` (env with encryption enabled + key file), `backends` (connected `list[StorageBackend]`); helpers `backup_bytes(root, rel, data, backends, redundancy=1) -> dict`, `restore_bytes(file_id, root, backends) -> bytes`, `add_backend(root, name, path) -> None`, `load_cfg() -> Config`.
 
-- [x] **Step 1: Install pytest**
+- [ ] **Step 1: Install pytest**
 
 Run: `python -m pip install pytest`
 Expected: `Successfully installed pytest-...`
 
-- [x] **Step 2: Create `pytest.ini`**
+- [ ] **Step 2: Create `pytest.ini`**
 
 ```ini
 [pytest]
@@ -65,7 +65,7 @@ testpaths = tests
 addopts = -q
 ```
 
-- [x] **Step 3: Create `tests/conftest.py`**
+- [ ] **Step 3: Create `tests/conftest.py`**
 
 ```python
 import os
@@ -140,7 +140,7 @@ def backends(env):
     return get_all_backends(load_config())
 ```
 
-- [x] **Step 4: Create `tests/helpers.py`**
+- [ ] **Step 4: Create `tests/helpers.py`**
 
 ```python
 from pathlib import Path
@@ -189,7 +189,7 @@ def add_backend(root: Path, name: str, path: Path):
     invalidate_cache()
 ```
 
-- [x] **Step 5: Create `tests/test_infra.py` and verify fixtures work**
+- [ ] **Step 5: Create `tests/test_infra.py` and verify fixtures work**
 
 ```python
 from tests.helpers import load_cfg
@@ -213,7 +213,7 @@ def test_config_isolated_per_test(env):
 Run: `python -m pytest tests/test_infra.py -v`
 Expected: 3 passed.
 
-- [x] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add pytest.ini tests/conftest.py tests/helpers.py tests/test_infra.py
@@ -230,7 +230,7 @@ git commit -m "test: add pytest infrastructure with isolated scratch environment
 **Interfaces:**
 - Consumes: `env`, `backends` fixtures; `backup_bytes`, `restore_bytes` helpers.
 
-- [x] **Step 1: Write the tests**
+- [ ] **Step 1: Write the tests**
 
 ```python
 import hashlib
@@ -300,12 +300,12 @@ def execute_count(sql):
     return execute(sql).fetchone()[0]
 ```
 
-- [x] **Step 2: Run to confirm the expected red**
+- [ ] **Step 2: Run to confirm the expected red**
 
 Run: `python -m pytest tests/test_roundtrip.py -v`
 Expected: `test_roundtrip_small_binary_file` FAILS (download returns `{"status": "error", "message": "No chunks found"}`) and `test_verify_after_backup` FAILS (small file errors). `test_roundtrip_bundle_file`, `test_roundtrip_chunked_file`, `test_roundtrip_directory_tree` may also fail if any bundled member is tiny — at minimum the small-binary and verify tests fail; the rest pass. This documents the baseline.
 
-- [x] **Step 3: Commit the red baseline**
+- [ ] **Step 3: Commit the red baseline**
 
 ```bash
 git add tests/test_roundtrip.py
@@ -329,7 +329,7 @@ git commit -m "test: round-trip integration tests documenting inline-restore def
   - `find_unrecoverable() -> list[dict]` — file_chunks rows whose blob row is missing.
 - `record_blob`, `get_blob`, `list_orphans`, `total_dedup_savings` keep current signatures.
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import pytest
@@ -409,7 +409,7 @@ def test_find_unrecoverable_lists_missing_blob_rows():
 Run: `python -m pytest tests/test_dedup.py -v`
 Expected: FAIL — `ensure_blob`/`reconcile_refcounts`/`find_unrecoverable` don't exist; cascade test fails.
 
-- [x] **Step 2: Implement in `backupme/core/dedup.py`** (add after `unref_blob`; keep `record_blob`, `get_blob`, `list_orphans`, `total_dedup_savings` unchanged)
+- [ ] **Step 2: Implement in `backupme/core/dedup.py`** (add after `unref_blob`; keep `record_blob`, `get_blob`, `list_orphans`, `total_dedup_savings` unchanged)
 
 ```python
 def _parent_blob_id(blob_id: str) -> str | None:
@@ -487,12 +487,12 @@ def find_unrecoverable() -> list[dict]:
     ]
 ```
 
-- [x] **Step 3: Run tests green**
+- [ ] **Step 3: Run tests green**
 
 Run: `python -m pytest tests/test_dedup.py -v`
 Expected: 5 passed.
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backupme/core/dedup.py tests/test_dedup.py
@@ -510,12 +510,12 @@ git commit -m "feat(dedup): ref-count primitives with bundle-parent cascade and 
 **Interfaces:**
 - Changes: files ≤ 1 KB no longer take the `content_text` inline branch — they flow into the bundle branch. `_inline_max` constant is deleted. Nothing else changes yet.
 
-- [x] **Step 1: Run the red test to confirm current failure**
+- [ ] **Step 1: Run the red test to confirm current failure**
 
 Run: `python -m pytest tests/test_roundtrip.py::test_roundtrip_small_binary_file -v`
 Expected: FAIL (No chunks found / download error).
 
-- [x] **Step 2: Edit `backupme/core/uploader.py`**
+- [ ] **Step 2: Edit `backupme/core/uploader.py`**
 
 Delete the line `_inline_max = 1024` (line 33).
 
@@ -545,12 +545,12 @@ with:
 
 and change the bundle branch condition from `elif _inline_max < file_size <= _vault_max:` to `elif file_size <= _vault_max:`.
 
-- [x] **Step 3: Run round-trip tests**
+- [ ] **Step 3: Run round-trip tests**
 
 Run: `python -m pytest tests/test_roundtrip.py -v`
 Expected: `test_roundtrip_small_binary_file` now PASSES (tiny files ride the bundle path, raw bytes preserved); `test_verify_after_backup` PASSES. No other test regresses: `python -m pytest` all green.
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backupme/core/uploader.py
@@ -572,7 +572,7 @@ git commit -m "fix(uploader): store <=1KB files as bundle members instead of los
 - New uploader helpers (module-level): `_upload_chunk_to_backends(chunk_data, blob_id, backends, compress_algo, compress_level, encrypted, nonce, auth_tag) -> list[dict]` (pure upload, no DB), `_upload_single_blob(data, blob_id, backends, config) -> list[dict]` (pure upload), `_record_chunk_upload(blob_id, pt_size, storage_rows, file_id, seq, pt_offset, pt_size)` (DB writes, no commit), `_write_manifest_and_pointers(backends, manifest, redundancy)`.
 - Retention: `scheduler.apply_retention` deletes pruned files' `file_chunks` rows and calls `dedup.unref_blob`.
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import pytest
@@ -663,7 +663,7 @@ def test_prune_original_keeps_dedup_copy_restorable(env, backends):
 Run: `python -m pytest tests/test_upload_accounting.py -v`
 Expected: FAIL — error entries currently missing (`{"file_id"... ok}` appended even when nothing uploads), no `status`/`failed_backends`, ref-count drift, extra manifest writes.
 
-- [x] **Step 2: Add `auto_commit` to `backupme/core/index.py`**
+- [ ] **Step 2: Add `auto_commit` to `backupme/core/index.py`**
 
 Change the signature and both commit sites:
 
@@ -699,7 +699,7 @@ In the INSERT branch, replace `commit()` / `return new_id` with:
     return new_id
 ```
 
-- [x] **Step 3: Add crypto fields to `ChunkStorageEntry` in `backupme/core/manifest.py`**
+- [ ] **Step 3: Add crypto fields to `ChunkStorageEntry` in `backupme/core/manifest.py`**
 
 ```python
 @dataclass
@@ -717,7 +717,7 @@ class ChunkStorageEntry:
 
 (`read_manifest` already constructs entries via `ChunkStorageEntry(**s)`; old manifests without the keys keep the defaults.)
 
-- [x] **Step 4: Rewrite the uploader write-flow in `backupme/core/uploader.py`**
+- [ ] **Step 4: Rewrite the uploader write-flow in `backupme/core/uploader.py`**
 
 4a. Replace `_upload_chunk_to_backends` (lines 110-157) with the pure-upload version plus the new DB helper:
 
@@ -1143,17 +1143,17 @@ and add at the top of `apply_retention`:
     from backupme.core import dedup as dedup_mod
 ```
 
-- [x] **Step 5: Run the accounting tests green**
+- [ ] **Step 5: Run the accounting tests green**
 
 Run: `python -m pytest tests/test_upload_accounting.py -v`
 Expected: 6 passed.
 
-- [x] **Step 6: Run the whole suite**
+- [ ] **Step 6: Run the whole suite**
 
 Run: `python -m pytest`
 Expected: all green (Tasks 1-4 tests still pass — note `test_roundtrip_directory_tree` files are ≤10 MB and still bundle; `test_dedup_second_run_no_new_blobs` still passes since dedup re-bundles nothing).
 
-- [x] **Step 7: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backupme/core/uploader.py backupme/core/index.py backupme/core/manifest.py backupme/scheduler.py tests/test_upload_accounting.py
@@ -1173,7 +1173,7 @@ git commit -m "fix(uploader): transactional accounting, ref-count invariants, fa
 - `recompress_blobs(...) -> dict` — result gains `skipped_encrypted: int`; encrypted blobs without a key are skipped, not corrupted.
 - Uploader already writes `nonce`/`auth_tag` (hex) into manifests (Task 5) and `manifest.v = 2`.
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import pytest
@@ -1262,7 +1262,7 @@ def test_recompress_skips_encrypted_without_key(env, backends):
 Run: `python -m pytest tests/test_encrypted_dr.py -v`
 Expected: FAIL — rebuild writes NULL nonce/tag (`needs_reupload` key missing / encrypted restore after rebuild fails), recompress result lacks `skipped_encrypted`.
 
-- [x] **Step 2: Persist crypto metadata in `rebuild_database_from_manifests` (`backupme/core/manifest.py`)**
+- [ ] **Step 2: Persist crypto metadata in `rebuild_database_from_manifests` (`backupme/core/manifest.py`)**
 
 Replace the `for s in chunk.storage:` insert block (lines 170-178) with:
 
@@ -1293,7 +1293,7 @@ and replace the `return` at the end of the function with:
     return {"rebuilding": "ok", "files_rebuilt": len(seen_files), "needs_reupload": needs_reupload}
 ```
 
-- [x] **Step 3: Guard `recompress_blobs` in `backupme/core/compress.py`**
+- [ ] **Step 3: Guard `recompress_blobs` in `backupme/core/compress.py`**
 
 Inside the `for row_s in rows:` loop, right after `blob_id = row["blob_id"]`, insert:
 
@@ -1319,12 +1319,12 @@ Replace the trailing bare handler `except Exception: continue` (line 190-191) wi
 
 and add `import sys` to the function's local imports (`import hashlib, tempfile, time, sys`).
 
-- [x] **Step 4: Run tests green + full suite**
+- [ ] **Step 4: Run tests green + full suite**
 
 Run: `python -m pytest tests/test_encrypted_dr.py -v` → 6 passed.
 Run: `python -m pytest` → all green.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add backupme/core/manifest.py backupme/core/compress.py tests/test_encrypted_dr.py
@@ -1345,7 +1345,7 @@ git commit -m "fix(dr): persist nonce/auth_tag in manifests and guard recompress
 - `recover_database` closes connections before replacing the DB file and re-initializes after.
 - `check_integrity()` returns `["corrupt: <error>"]` instead of raising when the DB file is unreadable.
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import shutil
@@ -1412,7 +1412,7 @@ def test_recover_picks_newest_replica(env, backends, monkeypatch, tmp_path):
 Run: `python -m pytest tests/test_database_recover.py -v`
 Expected: FAIL — `get_connection(str(b))` reuses connection A (query on table `t` unexpectedly succeeds); `_reconstruct_from_backend` returns primary generation 9; `recover_database` crashes on the corrupt DB.
 
-- [x] **Step 2: Per-path connections in `backupme/core/database.py`**
+- [ ] **Step 2: Per-path connections in `backupme/core/database.py`**
 
 Replace lines 10-23 and 46-49 with:
 
@@ -1460,7 +1460,7 @@ def close_connection(db_path: str | None = None) -> None:
 
 (Delete the unused `_write_lock = threading.Lock()` line 11.)
 
-- [x] **Step 3: Harden `check_integrity` in the same file**
+- [ ] **Step 3: Harden `check_integrity` in the same file**
 
 ```python
 def check_integrity() -> list[str]:
@@ -1471,7 +1471,7 @@ def check_integrity() -> list[str]:
     return [r[0] for r in rows if r[0] != "ok"]
 ```
 
-- [x] **Step 4: Fix `recover.py`**
+- [ ] **Step 4: Fix `recover.py`**
 
 4a. In `recover_database`, replace lines 50-54 (`best = max(...)` through `wal_checkpoint()`) with:
 
@@ -1543,12 +1543,12 @@ from backupme.core.database import (
 
 Note: the earlier `import zstandard as zstd` in the function (line 82) stays; remove the duplicated `dctx` creation if it appears twice.
 
-- [x] **Step 5: Run tests green + full suite**
+- [ ] **Step 5: Run tests green + full suite**
 
 Run: `python -m pytest tests/test_database_recover.py -v` → 3 passed.
 Run: `python -m pytest` → all green.
 
-- [x] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backupme/core/database.py backupme/core/recover.py tests/test_database_recover.py
@@ -1563,7 +1563,7 @@ git commit -m "fix(db): per-path connections; recovery replays WALs sequentially
 - Modify: `backupme/core/snapshot.py`
 - Test: `tests/test_snapshot_prune.py`
 
-- [x] **Step 1: Write failing test**
+- [ ] **Step 1: Write failing test**
 
 ```python
 import time
@@ -1588,7 +1588,7 @@ def test_prune_removes_old_snapshots(env):
 Run: `python -m pytest tests/test_snapshot_prune.py -v`
 Expected: FAIL — old snapshots survive (`int("1780080966.db")` ValueError → skip).
 
-- [x] **Step 2: Fix name parsing in `backupme/core/snapshot.py`**
+- [ ] **Step 2: Fix name parsing in `backupme/core/snapshot.py`**
 
 Add `import re` at the top and a module constant:
 
@@ -1617,11 +1617,11 @@ def prune_snapshots(retention_days: int = 7, min_keep: int = 3):
 
 Add `import sys` to the module imports.
 
-- [x] **Step 3: Run green + suite**
+- [ ] **Step 3: Run green + suite**
 
 Run: `python -m pytest tests/test_snapshot_prune.py -v` → 1 passed; `python -m pytest` → all green.
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backupme/core/snapshot.py tests/test_snapshot_prune.py
@@ -1636,7 +1636,7 @@ git commit -m "fix(snapshot): prune by parsing snapshot names correctly"
 - Modify: `backupme/core/verify.py`
 - Test: `tests/test_verify.py`
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import tempfile
@@ -1675,7 +1675,7 @@ def execute_last_check():
 Run: `python -m pytest tests/test_verify.py -v`
 Expected: FAIL — `total_files` is 100 (hardcoded), temp dirs leak.
 
-- [x] **Step 2: Fix `backupme/core/verify.py`**
+- [ ] **Step 2: Fix `backupme/core/verify.py`**
 
 Replace `run_integrity_check`'s per-file temp handling (lines 47-61) with:
 
@@ -1709,11 +1709,11 @@ def run_verify_restore():
     return run_integrity_check("full", count)
 ```
 
-- [x] **Step 3: Run green + suite**
+- [ ] **Step 3: Run green + suite**
 
 Run: `python -m pytest tests/test_verify.py -v` → 2 passed; `python -m pytest` → all green.
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backupme/core/verify.py tests/test_verify.py
@@ -1728,7 +1728,7 @@ git commit -m "fix(verify): honor configured sample count and stop leaking temp 
 - Modify: `backupme/core/downloader.py`
 - Test: `tests/test_downloader.py`
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import pytest
@@ -1773,7 +1773,7 @@ def test_encrypted_row_without_key_raises_clearly(env, backends):
 Run: `python -m pytest tests/test_downloader.py -v`
 Expected: `test_legacy_bundle_row_without_range_raises_clearly` FAILS (no "re-backup" message — it returns the whole bundle and raises a generic integrity mismatch); `test_encrypted_row_without_key_raises_clearly` FAILS (silent `backupme.key` fallback or generic mismatch).
 
-- [x] **Step 2: Fix `backupme/core/downloader.py`**
+- [ ] **Step 2: Fix `backupme/core/downloader.py`**
 
 2a. Add `import shutil` and `import sys` to the module imports; delete the local `import shutil` statements inside functions.
 
@@ -1845,11 +1845,11 @@ def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int |
 
 Note the old `else: data = tmp.read_bytes()` for encrypted-rows-without-metadata is gone — `_decrypt_if_needed` raises the explicit error.
 
-- [x] **Step 3: Run green + suite**
+- [ ] **Step 3: Run green + suite**
 
 Run: `python -m pytest tests/test_downloader.py -v` → 3 passed; `python -m pytest` → all green.
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backupme/core/downloader.py tests/test_downloader.py
@@ -1864,7 +1864,7 @@ git commit -m "fix(downloader): explicit errors for legacy bundle rows and missi
 - Modify: `backupme/core/skip.py`
 - Test: `tests/test_skip.py`
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 from backupme.core.skip import should_skip, should_skip_dir
@@ -1900,7 +1900,7 @@ def test_regular_log_still_skipped():
 Run: `python -m pytest tests/test_skip.py -v`
 Expected: FAIL — forward-slash excludes never match; `mytmp` skipped; `backupme.db` not skipped.
 
-- [x] **Step 2: Fix `backupme/core/skip.py`**
+- [ ] **Step 2: Fix `backupme/core/skip.py`**
 
 2a. `_WINDOWS_TEMP_DIRS`: remove the bare `"Temp", "tmp",` entries (keep the specific AppData patterns). `_SKIP_FILE_PATTERNS`: add `"backupme.db", "backupme.db-wal", "backupme.db-shm",` and remove `"*.sqlite-wal", "*.sqlite-shm",` (superseded). Delete `_ALWAYS_KEEP` and its check.
 
@@ -1939,11 +1939,11 @@ Expected: FAIL — forward-slash excludes never match; `mytmp` skipped; `backupm
 
 2c. In `should_skip_dir`, remove `if name.lower() in ("temp", "tmp"): return True`.
 
-- [x] **Step 3: Run green + suite**
+- [ ] **Step 3: Run green + suite**
 
 Run: `python -m pytest tests/test_skip.py -v` → 5 passed; `python -m pytest` → all green.
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backupme/core/skip.py tests/test_skip.py
@@ -1964,7 +1964,7 @@ git commit -m "fix(skip): Windows separator normalization, stop skipping user tm
 - `migration.migrate_inline_files(backends) -> dict` with keys `migrated`, `lossy`, `failed`.
 - Schema: `files.migrated INTEGER NOT NULL DEFAULT 0`; `MIGRATIONS[2]` adds it to existing DBs.
 
-- [x] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 import pytest
@@ -2034,7 +2034,7 @@ def test_migration_reports_unrecoverable_chunk_rows(env, backends):
 Run: `python -m pytest tests/test_migration.py -v`
 Expected: FAIL — `backupme.core.migration` doesn't exist.
 
-- [x] **Step 2: Add the `migrated` column in `backupme/core/schema.py`**
+- [ ] **Step 2: Add the `migrated` column in `backupme/core/schema.py`**
 
 In `SQL_SCHEMA`'s `files` table, after the `content_text TEXT,` line add:
 
@@ -2050,7 +2050,7 @@ MIGRATIONS: dict[int, str] = {
 }
 ```
 
-- [x] **Step 3: Create `backupme/core/migration.py`**
+- [ ] **Step 3: Create `backupme/core/migration.py`**
 
 ```python
 import hashlib
@@ -2125,7 +2125,7 @@ def migrate_inline_files(backends: list) -> dict:
     return {"migrated": migrated, "lossy": lossy, "failed": failed}
 ```
 
-- [x] **Step 4: Wire into `db check` (`backupme/cli/db_cmd.py`)**
+- [ ] **Step 4: Wire into `db check` (`backupme/cli/db_cmd.py`)**
 
 Replace the `check` command with:
 
@@ -2156,7 +2156,7 @@ def check(ctx, full, repair):
         click.echo(f"unrecoverable rows: {len(result['unrecoverable'])} (run 'backupme report integrity')")
 ```
 
-- [x] **Step 5: Wire into daemon startup (`backupme/cli/daemon_cmd.py`)**
+- [ ] **Step 5: Wire into daemon startup (`backupme/cli/daemon_cmd.py`)**
 
 In `daemon(ctx)`, after `cfg = dataclasses.asdict(cfg)` conversion and before `BackupScheduler(cfg).start()`, insert:
 
@@ -2170,11 +2170,11 @@ In `daemon(ctx)`, after `cfg = dataclasses.asdict(cfg)` conversion and before `B
 
 (The web dashboard relies on `db check --repair`; daemon covers the scheduled path.)
 
-- [x] **Step 6: Run green + suite**
+- [ ] **Step 6: Run green + suite**
 
 Run: `python -m pytest tests/test_migration.py -v` → 4 passed; `python -m pytest` → all green.
 
-- [x] **Step 7: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backupme/core/migration.py backupme/core/schema.py backupme/cli/db_cmd.py backupme/cli/daemon_cmd.py tests/test_migration.py
@@ -2189,7 +2189,7 @@ git commit -m "feat(migration): rebuild legacy inline files as restorable blobs;
 - Modify: `backupme/cli/backup_cmd.py`, `backupme/core/verify.py` (`get_report`)
 - Test: `tests/test_reporting.py`
 
-- [x] **Step 1: Write failing test**
+- [ ] **Step 1: Write failing test**
 
 ```python
 from backupme.core.verify import get_report
@@ -2220,7 +2220,7 @@ def test_report_counts_migrated_lossy(env, backends):
 Run: `python -m pytest tests/test_reporting.py -v`
 Expected: FAIL — keys missing.
 
-- [x] **Step 2: Extend `get_report` in `backupme/core/verify.py`**
+- [ ] **Step 2: Extend `get_report` in `backupme/core/verify.py`**
 
 Add `import sqlite3` to module imports; after the `backend_stats` query add:
 
@@ -2261,7 +2261,7 @@ plus, in the `recommendations` block:
         )
 ```
 
-- [x] **Step 3: Backup CLI summary in `backupme/cli/backup_cmd.py`**
+- [ ] **Step 3: Backup CLI summary in `backupme/cli/backup_cmd.py`**
 
 Replace the results echo loop (lines 84-102) with:
 
@@ -2303,11 +2303,11 @@ Replace the results echo loop (lines 84-102) with:
                            f"({len(results) - errors - partials} ok)")
 ```
 
-- [x] **Step 4: Full suite green**
+- [ ] **Step 4: Full suite green**
 
 Run: `python -m pytest` → all green.
 
-- [x] **Step 5: Manual end-to-end verification with the CLI**
+- [ ] **Step 5: Manual end-to-end verification with the CLI**
 
 ```bash
 python main.py -c test_tmp_backend/roundtrip/config.yaml --db-path test_tmp_backend/roundtrip/rt2.db backup test_data -r -b roundtrip_local
@@ -2318,7 +2318,7 @@ python main.py -c test_tmp_backend/roundtrip/config.yaml --db-path test_tmp_back
 
 Expected: `report verify` reports 0 failed (previously 2); file 2 and 3 (small files) download without the `KeyError: 'path'` crash and hash-match the originals (`subdir/small.txt`, `subdir/tiny.json`).
 
-- [x] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backupme/cli/backup_cmd.py backupme/core/verify.py tests/test_reporting.py
