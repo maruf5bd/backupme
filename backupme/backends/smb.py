@@ -30,12 +30,17 @@ class SMBBackend(StorageBackend):
     def disconnect(self):
         self._connected = False
 
+    @staticmethod
+    def _sanitize(rel_path: str) -> str:
+        parts = [p for p in rel_path.replace("\\", "/").split("/") if p and p != ".."]
+        return "/".join(parts)
+
     def _smb_path(self, rel_path: str = "") -> str:
         parts = [f"//{self.host}/{self.share}"]
         if self.base_path:
             parts.append(self.base_path)
         if rel_path:
-            parts.append(rel_path)
+            parts.append(self._sanitize(rel_path))
         return "/".join(parts).replace("\\", "/")
 
     def _ensure_dir(self, path: str):
@@ -56,25 +61,34 @@ class SMBBackend(StorageBackend):
         full = self._smb_path(remote_rel_path)
         dir_part = full.rsplit("/", 1)[0]
         self._ensure_dir(dir_part)
-        with open(local_path, "rb") as f:
-            data = f.read()
-        with open_file(full, mode="wb") as f:
-            f.write(data)
-        return hashlib.sha256(data).hexdigest()
+        sha = hashlib.sha256()
+        with open(local_path, "rb") as src:
+            with open_file(full, mode="wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    sha.update(chunk)
+        return sha.hexdigest()
 
     def download(self, remote_rel_path: str, local_path: str):
         from smbclient import open_file
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        with open_file(self._smb_path(remote_rel_path), mode="rb") as f:
-            data = f.read()
-        with open(local_path, "wb") as f:
-            f.write(data)
+        with open_file(self._smb_path(remote_rel_path), mode="rb") as src:
+            with open(local_path, "wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
 
     def delete(self, remote_rel_path: str):
         from smbclient import remove
+        full = self._smb_path(remote_rel_path)
         try:
-            remove(self._smb_path(remote_rel_path))
-        except Exception:
+            remove(full)
+        except FileNotFoundError:
             pass
 
     def exists(self, remote_rel_path: str) -> bool:
@@ -137,9 +151,14 @@ class SMBBackend(StorageBackend):
 
     def hash(self, remote_rel_path: str) -> str:
         from smbclient import open_file
+        sha = hashlib.sha256()
         with open_file(self._smb_path(remote_rel_path), mode="rb") as f:
-            data = f.read()
-        return hashlib.sha256(data).hexdigest()
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                sha.update(chunk)
+        return sha.hexdigest()
 
     def health(self) -> bool:
         try:
@@ -152,9 +171,14 @@ class SMBBackend(StorageBackend):
     def fingerprint(self, remote_rel_path: str) -> dict:
         from smbclient import open_file, stat as smb_stat
         s = smb_stat(self._smb_path(remote_rel_path))
+        head = b""
+        tail = b""
         with open_file(self._smb_path(remote_rel_path), mode="rb") as f:
-            data = f.read()
-        head = data[:4096]
-        tail = data[-4096:] if len(data) > 4096 else data
+            head = f.read(4096)
+            if s.st_size > 4096:
+                f.seek(-4096, 2)
+                tail = f.read(4096)
+            else:
+                tail = head
         h = hashlib.sha256(head + tail).hexdigest()
         return {"size": s.st_size, "mtime": s.st_mtime, "head_tail_sha256": h}

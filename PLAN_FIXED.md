@@ -40,6 +40,9 @@ architectural correction from the original plan.
 | B18 | `backend_blob_claims` duplicates `chunks` | Removed; derive from `chunks` via view |
 | B19 | Crash between primary commit and replica push could "rollback" via majority | Replica is never authoritative; only manual or marked-good snapshots can |
 | B20 | Pointer file format underspecified for rebuild | Versioned pointer schema with full chunk manifest |
+| B21 | High HTTP/network overhead for files under 10MB | Set bundling threshold to 10MB & tar size to 64MB; overhaul decrypted/decompressed bundle seek-extraction |
+| B22 | Background WAL and snapshot replication not automated | Hook up Replicator._run background loop to automatically invoke enqueue_wal_frames before flush_wal_bundle |
+| B23 | Diagnostic monitoring / health telemetry gap | Redesign detailed health API to verify database, daemon, all backends connectability/disk spaces, active scans, and replication status |
 
 ---
 

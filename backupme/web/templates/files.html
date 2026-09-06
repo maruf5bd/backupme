@@ -1,66 +1,2065 @@
 {% extends "base.html" %}
+{% block title %}Files{% endblock %}
+{% block breadcrumb %}Files{% endblock %}
+
 {% block content %}
-<div class="flex-between mb-3">
-  <h1>Files</h1>
-  <div class="flex gap-2">
-    <input type="text" id="search-input" placeholder="Search files..." value="{{ q or '' }}">
-    <select id="backend-filter">
+<div class="page-header">
+  <h1><i data-lucide="files" style="width:28px;height:28px;"></i> Files</h1>
+  <div class="page-header-actions">
+    <span class="badge badge-gray" id="file-count">{{ total }} total</span>
+  </div>
+</div>
+
+<!-- Files Page Dashboard Upgrades -->
+<div class="grid-2 mb-4" style="grid-template-columns: 1fr 1.2fr; gap: 1.25rem;">
+  
+  <!-- Upload Dropzone Card -->
+  <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; position:relative; overflow:hidden;">
+    <div class="card-header" style="border-bottom:none; padding-bottom:0;">
+      <span class="card-title"><i data-lucide="upload-cloud" style="width:16px;height:16px;color:var(--accent);vertical-align:middle;display:inline;"></i> Direct Web Uploader</span>
+    </div>
+    <div class="card-body" style="display:flex; flex-direction:column; gap:0.75rem; padding-top:0.75rem;">
+      <div id="dropzone" class="flex flex-col items-center justify-center" style="border: 2px dashed var(--border); border-radius: var(--radius-md); padding: 1.25rem; cursor:pointer; text-align:center; background:var(--bg-subtle); transition:all var(--transition-fast);" ondragover="event.preventDefault(); this.style.borderColor='var(--accent)';" ondragleave="this.style.borderColor='var(--border)';" ondrop="handleDrop(event)">
+        <i data-lucide="upload-cloud" style="width:36px;height:36px;color:var(--text-muted);margin-bottom:0.5rem;" id="upload-icon"></i>
+        <p class="text-xs text-muted" id="drop-text">Drag & drop files here, or <span style="color:var(--accent);text-decoration:underline;">browse</span></p>
+        <input type="file" id="dropzone-file-input" style="display:none;" onchange="handleFileSelect(event)">
+      </div>
+      
+      <div style="display:grid; grid-template-columns: 1.2fr 1fr; gap:0.5rem;">
+        <select id="upload-backend" style="font-size:0.75rem; padding:4px 8px; height:32px;">
+          <option value="">Auto Backend</option>
+          {% for be in backends %}
+          <option value="{{ be.name }}">{{ be.name }}</option>
+          {% endfor %}
+        </select>
+        <select id="upload-redundancy" style="font-size:0.75rem; padding:4px 8px; height:32px;">
+          <option value="1">1 Copy</option>
+          <option value="2">2 Copies (Mirror)</option>
+          <option value="3">3 Copies</option>
+        </select>
+      </div>
+      
+      <!-- Progress Bar -->
+      <div id="upload-progress-wrap" style="display:none;">
+        <div class="flex justify-between text-xs mb-1">
+          <span id="upload-status-text" class="text-muted truncate" style="max-width:180px;">Uploading...</span>
+          <span id="upload-pct">0%</span>
+        </div>
+        <div class="progress-bar" style="height:6px;">
+          <div class="progress-fill accent" id="upload-progress-fill" style="width:0%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Storage Analytics Card -->
+  <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
+    <div class="card-header" style="border-bottom:none; padding-bottom:0;">
+      <span class="card-title"><i data-lucide="pie-chart" style="width:16px;height:16px;color:var(--cyan);vertical-align:middle;display:inline;"></i> Backup Analytics & Types</span>
+    </div>
+    <div class="card-body" style="padding-top:0.75rem;">
+      <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; text-align:center; margin-bottom: 1rem;">
+        <div style="padding: 0.5rem; background: var(--bg-subtle); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+          <div class="text-xs text-muted">Raw Size</div>
+          <div class="font-bold text-sm font-mono mt-1" id="raw-total-stat">—</div>
+        </div>
+        <div style="padding: 0.5rem; background: var(--bg-subtle); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+          <div class="text-xs text-muted">Unique Blobs</div>
+          <div class="font-bold text-sm font-mono mt-1" id="unique-blobs-stat">—</div>
+        </div>
+        <div style="padding: 0.5rem; background: var(--bg-subtle); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+          <div class="text-xs text-muted">Saved Space</div>
+          <div class="font-bold text-sm font-mono mt-1" id="saved-space-stat" style="color:var(--green);">—</div>
+        </div>
+      </div>
+      
+      <!-- Visual Extension Distribution Bar -->
+      <div class="text-xs text-muted mb-2 font-semibold" style="text-transform:uppercase; letter-spacing:0.05em;">File Type Distribution</div>
+      <div style="height:12px; display:flex; border-radius:var(--radius-full); overflow:hidden; background:var(--bg-subtle); border:1px solid var(--border-subtle);" id="dist-bar">
+        <div style="width:0%; background:#8b5cf6;" title="Images" id="dist-img"></div>
+        <div style="width:0%; background:#ec4899;" title="Video" id="dist-vid"></div>
+        <div style="width:0%; background:#14b8a6;" title="Audio" id="dist-aud"></div>
+        <div style="width:0%; background:#f59e0b;" title="Docs" id="dist-doc"></div>
+        <div style="width:0%; background:#6366f1;" title="Archives" id="dist-arc"></div>
+        <div style="width:0%; background:#22d3ee;" title="Code" id="dist-cod"></div>
+        <div style="width:0%; background:var(--text-muted);" title="Other" id="dist-oth"></div>
+      </div>
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap; justify-content:center;">
+        <span class="flex items-center gap-1 text-xs" style="font-size: 0.7rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8b5cf6;"></span> Images <span id="lbl-dist-img">0%</span></span>
+        <span class="flex items-center gap-1 text-xs" style="font-size: 0.7rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ec4899;"></span> Video <span id="lbl-dist-vid">0%</span></span>
+        <span class="flex items-center gap-1 text-xs" style="font-size: 0.7rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#14b8a6;"></span> Audio <span id="lbl-dist-aud">0%</span></span>
+        <span class="flex items-center gap-1 text-xs" style="font-size: 0.7rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b;"></span> Docs <span id="lbl-dist-doc">0%</span></span>
+        <span class="flex items-center gap-1 text-xs" style="font-size: 0.7rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6366f1;"></span> Archives <span id="lbl-dist-arc">0%</span></span>
+        <span class="flex items-center gap-1 text-xs" style="font-size: 0.7rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22d3ee;"></span> Code <span id="lbl-dist-cod">0%</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Search & Filters -->
+<div class="card mb-4">
+  <div class="flex gap-3 items-center" style="flex-wrap: wrap;">
+    <div class="topbar-search" style="flex: 1; min-width: 200px; max-width: 400px;">
+      <i data-lucide="search" class="search-icon" style="width:16px;height:16px;"></i>
+      <input type="search" id="file-search" placeholder="Search files by name or path..." value="{{ q or '' }}" autocomplete="off">
+    </div>
+    <select id="backend-filter" style="min-width: 160px;">
       <option value="">All backends</option>
       {% for be in backends %}
       <option value="{{ be.name }}" {% if backend == be.name %}selected{% endif %}>{{ be.name }}</option>
       {% endfor %}
     </select>
-  </div>
-</div>
-
-<div class="card">
-  <table>
-    <thead>
-      <tr><th>ID</th><th>Path</th><th>Size</th><th>SHA256</th><th>Backend</th><th>Version</th><th>Created</th><th></th></tr>
-    </thead>
-    <tbody>
-      {% for f in files %}
-      <tr>
-        <td>{{ f.id }}</td>
-        <td class="truncate" title="{{ f.relative_path }}">{{ f.relative_path }}</td>
-        <td>{{ "{:,.0f}".format(f.size) }}</td>
-        <td><code>{{ f.sha256[:12] }}…</code></td>
-        <td><span class="badge badge-gray">{{ f.backend_name }}</span></td>
-        <td>{{ f.version_seq or 1 }}</td>
-        <td>{{ f.created_at[:10] if f.created_at else '' }}</td>
-        <td><a href="/api/download/{{ f.id }}" class="btn btn-sm">Download</a></td>
-      </tr>
-      {% endfor %}
-      {% if not files %}
-      <tr><td colspan="8" class="empty">No files found</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
-  <div class="flex-between mt-3">
-    <span style="color: var(--text2); font-size: 0.85rem;">{{ total }} total files</span>
-    <div class="flex gap-2">
-      {% if offset > 0 %}
-      <a href="/files?offset={{ offset - limit }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-outline btn-sm">Previous</a>
-      {% endif %}
-      {% if files|length == limit %}
-      <a href="/files?offset={{ offset + limit }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-outline btn-sm">Next</a>
-      {% endif %}
+    <select id="sort-select" style="min-width: 140px;">
+      <option value="date_desc">Newest first</option>
+      <option value="date_asc">Oldest first</option>
+      <option value="size_desc">Largest first</option>
+      <option value="size_asc">Smallest first</option>
+      <option value="name_asc">Name A-Z</option>
+      <option value="name_desc">Name Z-A</option>
+    </select>
+    <select id="search-mode" style="min-width: 120px;">
+      <option value="path">Path search</option>
+      <option value="content">Content search</option>
+      <option value="hash">Hash lookup</option>
+    </select>
+    <div class="flex gap-1" style="margin-left:auto;">
+      <button class="btn btn-ghost btn-icon sm active-view-btn" id="view-list-btn" onclick="setViewMode('list')" title="List view" style="background:var(--accent-bg);color:var(--accent);">
+        <i data-lucide="list" style="width:16px;height:16px;"></i>
+      </button>
+      <button class="btn btn-ghost btn-icon sm" id="view-tree-btn" onclick="setViewMode('tree')" title="Original path tree view">
+        <i data-lucide="folder-tree" style="width:16px;height:16px;"></i>
+      </button>
     </div>
   </div>
 </div>
 
-<script>
-document.getElementById('search-input').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    const q = encodeURIComponent(this.value);
-    const backend = encodeURIComponent(document.getElementById('backend-filter').value);
-    window.location.href = '/files?q=' + q + '&backend=' + backend;
+<!-- [OLD FOLDER BROWSER START]
+<!-- Folder Browser -->
+<!-- <div class="card mb-4" id="folder-browser">
+  <div class="card-header">
+    <span class="card-title">
+      <i data-lucide="folder-open" style="width:16px;height:16px;display:inline;vertical-align:middle;"></i>
+      Browse Folders
+    </span>
+    <button class="btn btn-ghost btn-xs" onclick="toggleBrowser()">
+      <i data-lucide="chevron-down" style="width:14px;height:14px;" id="browser-chevron"></i>
+    </button>
+  </div>
+  <div class="card-body" id="browser-body">
+    <div id="browser-breadcrumb" class="flex items-center gap-1 text-sm mb-3" style="flex-wrap:wrap;"></div>
+    <div id="browser-actions" class="mb-3" style="display:none;"></div>
+    <div id="browser-content" style="min-height:60px;"></div>
+  </div>
+</div> -->
+<!-- [OLD FOLDER BROWSER END] -->
+
+<!-- cPanel Style Folder Browser / File Manager -->
+<style>
+  /* Premium Explorer Table Styles */
+  .explorer-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    color: var(--text);
   }
-});
-document.getElementById('backend-filter').addEventListener('change', function() {
-  const q = encodeURIComponent(document.getElementById('search-input').value);
-  const backend = encodeURIComponent(this.value);
-  window.location.href = '/files?q=' + q + '&backend=' + backend;
-});
+  .explorer-table th {
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 2px solid var(--border-subtle);
+    text-align: left;
+    user-select: none;
+  }
+  .explorer-table th.col-size {
+    text-align: right;
+  }
+  .explorer-table th.col-actions {
+    text-align: right;
+  }
+  .explorer-row {
+    border-bottom: 1px solid var(--border-subtle);
+    transition: all var(--transition-fast);
+    cursor: pointer;
+  }
+  .explorer-row:hover {
+    background: rgba(var(--accent-rgb, 99, 102, 241), 0.03) !important;
+  }
+  .explorer-row.selected-row {
+    background: rgba(var(--accent-rgb, 99, 102, 241), 0.07) !important;
+    border-left: 3px solid var(--accent);
+  }
+  .explorer-row.parent-row {
+    font-weight: 500;
+  }
+  .explorer-cell {
+    padding: 0.6rem 0.75rem;
+    vertical-align: middle;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .explorer-cell.col-size {
+    text-align: right;
+    font-family: var(--font-mono, monospace);
+  }
+  .explorer-cell.col-actions {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .explorer-name-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    overflow: hidden;
+  }
+  .explorer-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .browser-btn {
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    transition: all var(--transition-fast);
+    border: 1px solid transparent;
+  }
+  .browser-btn:hover {
+    background: var(--bg-subtle);
+    color: var(--text);
+    border-color: var(--border-subtle);
+  }
+  .browser-btn.btn-accent:hover {
+    background: var(--accent-bg);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  
+  /* Breadcrumbs & Toolbar enhancements */
+  .bc-link {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+  }
+  .bc-link:hover {
+    background: var(--accent-bg);
+    text-decoration: underline;
+  }
+</style>
+
+<div class="card mb-4" id="folder-browser">
+  <div class="card-header" style="background: linear-gradient(135deg, rgba(var(--accent-rgb, 99, 102, 241), 0.03), rgba(var(--accent-rgb, 99, 102, 241), 0.005)); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1.25rem;">
+    <div class="flex items-center gap-2">
+      <div style="background: rgba(245, 158, 11, 0.1); width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm);">
+        <i data-lucide="folder-open" style="width:18px;height:18px;color:#f59e0b;"></i>
+      </div>
+      <div>
+        <span class="card-title" style="margin-bottom:0; font-size: 0.95rem; font-weight:600; display:flex; align-items:center; gap:0.25rem;">
+          File Manager
+        </span>
+        <span class="text-xs text-muted" id="browser-status-sub">cPanel Style Explorer</span>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button class="btn btn-ghost btn-xs" onclick="toggleBrowser()" style="padding: 4px; border-radius: 4px;">
+        <i data-lucide="chevron-down" style="width:16px;height:16px;" id="browser-chevron"></i>
+      </button>
+    </div>
+  </div>
+  
+  <div class="card-body" id="browser-body" style="padding: 1rem; background: var(--bg);">
+    <!-- cPanel Toolbar Controls -->
+    <div class="flex items-center gap-2 mb-3 pb-3" style="border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; justify-content: space-between;">
+      
+      <div class="flex items-center gap-1.5" id="browser-toolbar">
+        <button class="btn btn-secondary btn-sm flex items-center gap-1" id="browser-up-btn" onclick="browserGoUp()" title="Up One Level" disabled style="height:32px; font-size:0.75rem; padding: 0 10px;">
+          <i data-lucide="corner-left-up" style="width:14px;height:14px;"></i>
+          <span>Up One Level</span>
+        </button>
+        <button class="btn btn-secondary btn-sm flex items-center gap-1" onclick="browseTo('','')" title="Home (Root Drives)" style="height:32px; font-size:0.75rem; padding: 0 10px;">
+          <i data-lucide="home" style="width:14px;height:14px;"></i>
+          <span>Home</span>
+        </button>
+        <button class="btn btn-secondary btn-sm flex items-center gap-1" onclick="browserRefresh()" title="Refresh" style="height:32px; font-size:0.75rem; padding: 0 10px;">
+          <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
+          <span>Refresh</span>
+        </button>
+      </div>
+
+      <!-- Quick Instant Folder Row Search Filter -->
+      <div class="topbar-search" style="width:240px; margin: 0; position:relative;">
+        <i data-lucide="search" class="search-icon" style="width:14px;height:14px; position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--text-muted);"></i>
+        <input type="search" id="browser-search" placeholder="Search current folder..." autocomplete="off" style="font-size:0.8rem; height:32px; padding-left:30px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); background: var(--bg-subtle); width:100%; transition: border-color var(--transition-fast);" oninput="filterBrowserRows()">
+      </div>
+      
+    </div>
+
+    <!-- Breadcrumb Path Navigator -->
+    <div style="background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0.5rem 0.75rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+      <i data-lucide="folder" style="width:14px;height:14px;color:var(--text-muted);"></i>
+      <span class="text-xs text-muted font-mono" style="user-select:none;">Current Path:</span>
+      <div id="browser-breadcrumb" class="flex items-center gap-1 text-xs font-mono" style="flex-wrap:wrap;"></div>
+    </div>
+
+    <!-- Active restore targets -->
+    <div id="browser-actions" class="mb-3" style="display:none;"></div>
+    
+    <!-- Unified Explorer Area -->
+    <div id="browser-content" style="min-height:120px;"></div>
+  </div>
+</div>
+
+<!-- Original Path Tree View -->
+<div id="tree-view-card" style="display:none;">
+  <!-- Tree Toolbar -->
+  <div class="card mb-3">
+    <div class="flex items-center justify-between gap-3" style="flex-wrap:wrap;">
+      <div class="flex items-center gap-2">
+        <i data-lucide="folder-tree" style="width:18px;height:18px;color:var(--accent);"></i>
+        <span class="font-semibold">Original Path View</span>
+        <span class="badge badge-gray" id="tree-file-count">0 files</span>
+        <span class="badge badge-gray" id="tree-total-size">0 B</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="topbar-search" style="width:200px;">
+          <i data-lucide="search" class="search-icon" style="width:14px;height:14px;"></i>
+          <input type="search" id="tree-search" placeholder="Filter tree..." autocomplete="off" style="font-size:0.8rem;height:32px;">
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="treeExpandAll()" title="Expand all">
+          <i data-lucide="chevrons-down" style="width:14px;height:14px;"></i>
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="treeCollapseAll()" title="Collapse all">
+          <i data-lucide="chevrons-up" style="width:14px;height:14px;"></i>
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="treeRefresh()" title="Refresh">
+          <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tree Selection Bar -->
+  <div class="card mb-3" id="tree-select-bar" style="display:none;background:var(--accent-bg);border-color:var(--accent);">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <i data-lucide="check-square" style="width:16px;height:16px;color:var(--accent);"></i>
+        <span class="font-semibold text-sm" id="tree-sel-count">0 selected</span>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-secondary btn-sm" onclick="treeDownloadSelected()">
+          <i data-lucide="download" style="width:14px;height:14px;"></i> Download
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="treeClearSelection()">
+          <i data-lucide="x" style="width:14px;height:14px;"></i> Clear
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tree Content -->
+  <div id="tree-view-body" style="min-height:100px;">
+    <div class="text-sm text-muted">Loading...</div>
+  </div>
+</div>
+
+<!-- Restore Progress -->
+<div class="card mb-4" id="restore-progress-card" style="display:none;">
+  <div class="card-header">
+    <span class="card-title">
+      <span class="dot dot-blue dot-pulse" style="display:inline-block;"></span>
+      Restore in Progress
+    </span>
+    <button class="btn btn-ghost btn-xs" onclick="document.getElementById('restore-progress-card').style.display='none'">
+      <i data-lucide="x" style="width:14px;height:14px;"></i>
+    </button>
+  </div>
+  <div class="card-body">
+    <div class="text-sm text-muted mb-2" id="restore-current-path">Preparing...</div>
+    <div class="progress-bar mb-3">
+      <div class="progress-fill" id="restore-progress-fill" style="width:0%;"></div>
+    </div>
+    <div class="flex gap-4">
+      <div>
+        <div class="text-xs text-muted">Files</div>
+        <div class="font-semibold" id="restore-files-count">0 / 0</div>
+      </div>
+      <div>
+        <div class="text-xs text-muted">Errors</div>
+        <div class="font-semibold text-red" id="restore-error-count">0</div>
+      </div>
+    </div>
+    <div id="restore-errors-list" class="mt-2" style="max-height:100px;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- Bulk Actions Bar -->
+<div id="bulk-bar" class="card mb-4" style="display:none; background: var(--accent-bg, rgba(108,140,255,0.1)); border-color: var(--accent);">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <i data-lucide="check-square" style="width:18px;height:18px;color:var(--accent);"></i>
+      <span class="font-semibold text-sm" id="bulk-count">0 selected</span>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-secondary btn-sm" onclick="bulkDownload()">
+        <i data-lucide="download" style="width:14px;height:14px;"></i> Download All
+      </button>
+      <button class="btn btn-danger btn-sm" onclick="bulkDelete()">
+        <i data-lucide="trash-2" style="width:14px;height:14px;"></i> Delete All
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="clearSelection()">
+        <i data-lucide="x" style="width:14px;height:14px;"></i> Clear
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Files Table -->
+<div class="card">
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:32px;"><input type="checkbox" id="select-all" onchange="toggleSelectAll(this)"></th>
+          <th>Path</th>
+          <th class="sortable" data-sort="size">Size</th>
+          <th>SHA256</th>
+          <th>Backend</th>
+          <th>Version</th>
+          <th class="sortable" data-sort="date">Created</th>
+          <th style="width: 80px;"></th>
+        </tr>
+      </thead>
+      <tbody id="files-tbody">
+        {% for f in files %}
+        <tr class="file-row" data-id="{{ f.id }}">
+          <td><input type="checkbox" class="file-checkbox" data-id="{{ f.id }}" onchange="updateBulkBar()"></td>
+          <td>
+            <div class="flex items-center gap-2">
+              <i data-lucide="file" style="width:16px;height:16px;color:var(--text-muted);flex-shrink:0;"></i>
+              <span class="truncate" style="max-width: 320px;" title="{{ f.relative_path }}">{{ f.relative_path }}</span>
+            </div>
+          </td>
+          <td class="font-mono text-sm">{{ "{:,.0f}".format(f.size) }}</td>
+          <td>
+            <div class="flex items-center gap-1">
+              <code class="font-mono text-xs" style="color:var(--text-muted);">{{ f.sha256[:16] if f.sha256 else '' }}…</code>
+              {% if f.sha256 %}
+              <button class="btn btn-ghost btn-xs" onclick="App.copyToClipboard('{{ f.sha256 }}')" title="Copy full hash">
+                <i data-lucide="copy" style="width:12px;height:12px;"></i>
+              </button>
+              {% endif %}
+            </div>
+          </td>
+          <td><span class="badge badge-gray">{{ f.source_root or '—' }}</span></td>
+          <td class="text-muted">{{ f.version_seq or 1 }}</td>
+          <td class="text-muted text-sm">{{ f.created_at[:10] if f.created_at else '' }}</td>
+          <td>
+            <div class="flex gap-1">
+              <a href="/api/download/{{ f.id }}" class="btn btn-ghost btn-icon sm" title="Download">
+                <i data-lucide="download" style="width:14px;height:14px;"></i>
+              </a>
+              <button class="btn btn-ghost btn-icon sm" onclick="previewFile({{ f.id }})" title="Preview Content">
+                <i data-lucide="eye" style="width:14px;height:14px;"></i>
+              </button>
+              <button class="btn btn-ghost btn-icon sm" onclick="showFileDetail({{ f.id }})" title="Details">
+                <i data-lucide="info" style="width:14px;height:14px;"></i>
+              </button>
+              <button class="btn btn-ghost btn-icon sm" onclick="showVersions({{ f.id }})" title="Versions">
+                <i data-lucide="git-branch" style="width:14px;height:14px;"></i>
+              </button>
+              <button class="btn btn-ghost btn-icon sm" onclick="deleteFile({{ f.id }}, '{{ f.relative_path }}', this)" title="Delete" style="color:var(--red);">
+                <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not files %}
+        <tr><td colspan="8">
+          <div class="empty-state">
+            <i data-lucide="files" style="width:48px;height:48px;"></i>
+            <h3>No files found</h3>
+            <p>{% if q %}No results for "{{ q }}". Try a different search.{% else %}No files have been backed up yet.{% endif %}</p>
+          </div>
+        </td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  {% if files %}
+  <div class="flex items-center justify-between mt-3" style="padding-top: 0.75rem; border-top: 1px solid var(--border-subtle);">
+    <span class="text-sm text-muted">
+      Showing {{ offset + 1 }}–{{ offset + files|length }} of {{ total }}
+    </span>
+    <div class="flex gap-2">
+      {% if offset > 0 %}
+      <a href="/files?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-secondary btn-sm">
+        <i data-lucide="chevron-left" style="width:14px;height:14px;"></i> Previous
+      </a>
+      {% endif %}
+      {% if files|length == limit %}
+      <a href="/files?offset={{ offset + limit }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-secondary btn-sm">
+        Next <i data-lucide="chevron-right" style="width:14px;height:14px;"></i>
+      </a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- File Detail Modal -->
+<div id="file-detail-modal" class="modal-overlay">
+  <div class="modal" style="max-width: 640px;">
+    <div class="modal-header">
+      <h2 id="modal-file-title">File Details</h2>
+      <button class="modal-close" onclick="App.Modal.close('file-detail-modal')">
+        <i data-lucide="x" style="width:18px;height:18px;"></i>
+      </button>
+    </div>
+    <div id="modal-file-body">
+      <div class="skeleton skeleton-text"></div>
+      <div class="skeleton skeleton-text sm"></div>
+      <div class="skeleton skeleton-text"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Version History Modal -->
+<div id="version-modal" class="modal-overlay">
+  <div class="modal" style="max-width: 700px;">
+    <div class="modal-header">
+      <h2>Version History</h2>
+      <button class="modal-close" onclick="App.Modal.close('version-modal')">
+        <i data-lucide="x" style="width:18px;height:18px;"></i>
+      </button>
+    </div>
+    <div id="version-body">
+      <div class="skeleton skeleton-text"></div>
+      <div class="skeleton skeleton-text sm"></div>
+    </div>
+  </div>
+</div>
+
+<!-- File Preview Modal -->
+<div id="file-preview-modal" class="modal-overlay">
+  <div class="modal" style="max-width: 800px; height: 85vh; display: flex; flex-direction: column;">
+    <div class="modal-header">
+      <h2 id="preview-title" class="truncate" style="max-width: 680px;">Preview File</h2>
+      <button class="modal-close" onclick="App.Modal.close('file-preview-modal')">
+        <i data-lucide="x" style="width:18px;height:18px;"></i>
+      </button>
+    </div>
+    <div id="preview-body" style="flex: 1; overflow: auto; background: var(--bg-subtle); border-radius: var(--radius-sm); border: 1px solid var(--border); padding: 1rem; position: relative;">
+      <pre id="preview-content" class="font-mono text-xs" style="margin: 0; white-space: pre-wrap; word-break: break-all; color: var(--text);"></pre>
+      <div id="preview-binary-msg" class="empty-state" style="display: none; padding: 2rem 0;">
+        <i data-lucide="file-warning" style="width: 48px; height: 48px; color: var(--yellow);"></i>
+        <h3>Binary File</h3>
+        <p>This file is a binary format (e.g. image, video, or archive) and cannot be previewed as text. Click download below to view it.</p>
+      </div>
+      <div id="preview-loading" class="empty-state" style="display: none; padding: 2rem 0;">
+        <span class="spinner"></span>
+        <p class="mt-2 text-muted">Reading file stream from backend...</p>
+      </div>
+    </div>
+    <div class="modal-footer" style="padding-top: 1rem;">
+      <span class="text-xs text-muted" id="preview-meta" style="margin-right: auto;"></span>
+      <button class="btn btn-secondary btn-sm" onclick="copyPreviewText()">
+        <i data-lucide="copy" style="width: 14px; height: 14px;"></i> Copy Content
+      </button>
+      <a href="" id="preview-download-btn" class="btn btn-primary btn-sm">
+        <i data-lucide="download" style="width: 14px; height: 14px;"></i> Download File
+      </a>
+      <button class="btn btn-secondary btn-sm" onclick="App.Modal.close('file-preview-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  // ── File Upload Handlers ────────────────────────────────
+  window.triggerBrowse = function() {
+    document.getElementById('dropzone-file-input').click();
+  };
+  
+  document.addEventListener('DOMContentLoaded', () => {
+    const dropzone = document.getElementById('dropzone');
+    if (dropzone) {
+      dropzone.addEventListener('click', (e) => {
+        if (e.target.id !== 'dropzone-file-input') {
+          triggerBrowse();
+        }
+      });
+    }
+    
+    // Calculate file distribution analytics
+    calculateFileAnalytics();
+  });
+
+  window.handleDrop = function(e) {
+    e.preventDefault();
+    document.getElementById('dropzone').style.borderColor = 'var(--border)';
+    const files = e.dataTransfer.files;
+    if (files.length) uploadBrowserFile(files[0]);
+  };
+
+  window.handleFileSelect = function(e) {
+    const files = e.target.files;
+    if (files.length) uploadBrowserFile(files[0]);
+  };
+
+  async function uploadBrowserFile(file) {
+    const backend = document.getElementById('upload-backend').value;
+    const redundancy = document.getElementById('upload-redundancy').value;
+    
+    const wrap = document.getElementById('upload-progress-wrap');
+    const fill = document.getElementById('upload-progress-fill');
+    const pct = document.getElementById('upload-pct');
+    const status = document.getElementById('upload-status-text');
+    const icon = document.getElementById('upload-icon');
+    const dropText = document.getElementById('drop-text');
+
+    wrap.style.display = 'block';
+    fill.style.width = '0%';
+    pct.textContent = '0%';
+    status.textContent = 'Preparing ' + file.name + '...';
+    icon.style.color = 'var(--accent)';
+    dropText.textContent = 'Uploading ' + file.name + '...';
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('backend', backend);
+    formData.append('redundancy', redundancy);
+
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload/file', true);
+      
+      xhr.upload.onprogress = function(ev) {
+        if (ev.lengthComputable) {
+          const percent = Math.round((ev.loaded / ev.total) * 100);
+          fill.style.width = percent + '%';
+          pct.textContent = percent + '%';
+          status.textContent = 'Streaming blocks to backend...';
+        }
+      };
+
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          fill.style.width = '100%';
+          pct.textContent = '100%';
+          status.textContent = 'Finished successfully!';
+          App.Toast.success(file.name + ' uploaded to backup vault!');
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          let err = 'Upload failed';
+          try {
+            const data = JSON.parse(xhr.responseText);
+            err = data.detail || data.message || err;
+          } catch(e){}
+          App.Toast.error(err);
+          resetUploadUI();
+        }
+      };
+
+      xhr.onerror = function() {
+        App.Toast.error('Network error during upload');
+        resetUploadUI();
+      };
+
+      xhr.send(formData);
+    } catch(e) {
+      App.Toast.error(e.message);
+      resetUploadUI();
+    }
+  }
+
+  function resetUploadUI() {
+    document.getElementById('upload-progress-wrap').style.display = 'none';
+    document.getElementById('upload-icon').style.color = 'var(--text-muted)';
+    document.getElementById('drop-text').innerHTML = 'Drag & drop files here, or <span style="color:var(--accent);text-decoration:underline;">browse</span>';
+  }
+
+  // ── File Content Preview Handlers ───────────────────────
+  let _previewText = '';
+  
+  window.previewFile = async function(fileId) {
+    App.Modal.open('file-preview-modal');
+    document.getElementById('preview-content').style.display = 'none';
+    document.getElementById('preview-binary-msg').style.display = 'none';
+    document.getElementById('preview-loading').style.display = 'block';
+    document.getElementById('preview-title').textContent = 'Loading file...';
+    document.getElementById('preview-meta').textContent = '';
+    _previewText = '';
+
+    try {
+      const resp = await fetch('/api/files/' + fileId + '/preview').then(r => r.json());
+      document.getElementById('preview-loading').style.display = 'none';
+      
+      if (resp.status === 'binary') {
+        document.getElementById('preview-title').textContent = 'Binary Format';
+        document.getElementById('preview-binary-msg').style.display = 'block';
+        document.getElementById('preview-meta').textContent = 'Size: ' + App.formatBytes(resp.size || 0);
+      } else if (resp.status === 'ok') {
+        document.getElementById('preview-title').textContent = 'Previewing content';
+        const contentEl = document.getElementById('preview-content');
+        contentEl.style.display = 'block';
+        contentEl.textContent = resp.content;
+        _previewText = resp.content;
+        
+        let meta = 'Size: ' + App.formatBytes(resp.size || 0);
+        if (resp.truncated) meta += ' (Truncated first 100KB)';
+        document.getElementById('preview-meta').textContent = meta;
+      } else {
+        document.getElementById('preview-title').textContent = 'Error';
+        document.getElementById('preview-content').style.display = 'block';
+        document.getElementById('preview-content').textContent = resp.message || 'Failed to read preview';
+      }
+      
+      document.getElementById('preview-download-btn').href = '/api/download/' + fileId;
+    } catch (e) {
+      document.getElementById('preview-loading').style.display = 'none';
+      document.getElementById('preview-title').textContent = 'Failed';
+      document.getElementById('preview-content').style.display = 'block';
+      document.getElementById('preview-content').textContent = 'Network error: ' + e.message;
+    }
+  };
+
+  window.copyPreviewText = function() {
+    if (_previewText) {
+      App.copyToClipboard(_previewText);
+    } else {
+      App.Toast.warning('No text to copy');
+    }
+  };
+
+  // ── File Distribution & Stats Analytics ────────────────
+  function calculateFileAnalytics() {
+    const rows = Array.from(document.querySelectorAll('.file-row'));
+    if (!rows.length) return;
+    
+    let totalSize = 0;
+    const cats = { img: 0, vid: 0, aud: 0, doc: 0, arc: 0, cod: 0, oth: 0 };
+    
+    rows.forEach(r => {
+      // Find path column (index 1) and size column (index 2)
+      const pathText = r.children[1].textContent.trim();
+      const sizeVal = parseInt(r.children[2].textContent.replace(/,/g, '')) || 0;
+      totalSize += sizeVal;
+      
+      const ext = pathText.split('.').pop().toLowerCase();
+      
+      const img = ['jpg','jpeg','png','gif','bmp','svg','webp','ico','tiff','tif'];
+      const vid = ['mp4','avi','mkv','mov','wmv','flv','webm','m4v'];
+      const aud = ['mp3','wav','flac','aac','ogg','wma','m4a','opus'];
+      const doc = ['pdf','doc','docx','txt','rtf','odt','md','log','xls','xlsx','csv','ppt','pptx'];
+      const arc = ['zip','rar','7z','tar','gz','bz2','xz','zst'];
+      const cod = ['js','ts','py','java','cpp','c','h','cs','rb','go','rs','php','html','css','json','xml','yaml','yml','sql'];
+      
+      if (img.includes(ext)) cats.img += sizeVal;
+      else if (vid.includes(ext)) cats.vid += sizeVal;
+      else if (aud.includes(ext)) cats.aud += sizeVal;
+      else if (doc.includes(ext)) cats.doc += sizeVal;
+      else if (arc.includes(ext)) cats.arc += sizeVal;
+      else if (cod.includes(ext)) cats.cod += sizeVal;
+      else cats.oth += sizeVal;
+    });
+
+    document.getElementById('raw-total-stat').textContent = App.formatBytes(totalSize);
+    
+    fetch('/api/status').then(r => r.json()).then(data => {
+      document.getElementById('unique-blobs-stat').textContent = App.formatNumber(data.blob_count || 0);
+      const ratio = data.dedup_ratio || 1.0;
+      const savings = totalSize * (1 - 1/ratio);
+      document.getElementById('saved-space-stat').textContent = App.formatBytes(savings > 0 ? savings : 0);
+    }).catch(() => {});
+
+    if (totalSize > 0) {
+      const getPct = (v) => Math.round((v / totalSize) * 100);
+      
+      const setBar = (id, val) => {
+        const pct = getPct(val);
+        document.getElementById('dist-' + id).style.width = pct + '%';
+        document.getElementById('lbl-dist-' + id).textContent = pct + '%';
+      };
+      
+      setBar('img', cats.img);
+      setBar('vid', cats.vid);
+      setBar('aud', cats.aud);
+      setBar('doc', cats.doc);
+      setBar('arc', cats.arc);
+      setBar('cod', cats.cod);
+    }
+  }
+
+  const searchInput = document.getElementById('file-search');
+  const backendFilter = document.getElementById('backend-filter');
+  const sortSelect = document.getElementById('sort-select');
+  const searchMode = document.getElementById('search-mode');
+
+  function doSearch() {
+    const q = encodeURIComponent(searchInput.value);
+    const backend = encodeURIComponent(backendFilter.value);
+    const mode = searchMode.value;
+    if (mode === 'hash') {
+      window.location.href = '/files?q=' + q + '&backend=' + backend + '&mode=hash';
+    } else if (mode === 'content') {
+      window.location.href = '/files?q=' + q + '&backend=' + backend + '&mode=content';
+    } else {
+      window.location.href = '/files?q=' + q + '&backend=' + backend;
+    }
+  }
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doSearch();
+  });
+
+  backendFilter.addEventListener('change', doSearch);
+  searchMode.addEventListener('change', doSearch);
+
+  // Client-side sorting
+  sortSelect.addEventListener('change', () => {
+    const tbody = document.getElementById('files-tbody');
+    const rows = Array.from(tbody.querySelectorAll('.file-row'));
+    const sortBy = sortSelect.value;
+
+    rows.sort((a, b) => {
+      if (sortBy === 'size_desc' || sortBy === 'size_asc') {
+        const aSize = parseInt(a.children[2].textContent.replace(/,/g, '')) || 0;
+        const bSize = parseInt(b.children[2].textContent.replace(/,/g, '')) || 0;
+        return sortBy === 'size_desc' ? bSize - aSize : aSize - bSize;
+      }
+      if (sortBy === 'date_desc' || sortBy === 'date_asc') {
+        const aDate = a.children[6].textContent.trim();
+        const bDate = b.children[6].textContent.trim();
+        return sortBy === 'date_desc' ? bDate.localeCompare(aDate) : aDate.localeCompare(bDate);
+      }
+      if (sortBy === 'name_asc' || sortBy === 'name_desc') {
+        const aName = a.children[1].textContent.trim().toLowerCase();
+        const bName = b.children[1].textContent.trim().toLowerCase();
+        return sortBy === 'name_asc' ? aName.localeCompare(bName) : bName.localeCompare(aName);
+      }
+      return 0;
+    });
+
+    rows.forEach(row => tbody.appendChild(row));
+  });
+
+  // File detail modal
+  window.showFileDetail = async function(fileId) {
+    App.Modal.open('file-detail-modal');
+    const body = document.getElementById('modal-file-body');
+    body.innerHTML = '<div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text sm"></div>';
+
+    try {
+      const f = await fetch('/api/files/' + fileId).then(r => r.json());
+      if (f.error) throw new Error(f.error);
+
+      const chunks = (f.chunks || []).map(c => `
+        <tr>
+          <td>${c.seq}</td>
+          <td class="font-mono text-xs">${(c.blob_id || '').substring(0, 16)}…</td>
+          <td>${App.formatBytes(c.stored_size || c.size || 0)}</td>
+          <td><span class="badge badge-gray">${c.backend_name || '—'}</span></td>
+          <td class="text-muted">${c.compression_algo || 'none'}</td>
+          <td>${c.encrypted ? '<span class="badge badge-green">Yes</span>' : '<span class="badge badge-gray">No</span>'}</td>
+        </tr>
+      `).join('');
+
+      document.getElementById('modal-file-title').textContent = f.relative_path || f.filename || 'File #' + fileId;
+
+      body.innerHTML = `
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1.25rem;">
+          <div>
+            <div class="text-xs text-muted font-semibold" style="text-transform:uppercase;letter-spacing:0.05em;">Size</div>
+            <div class="text-sm">${App.formatBytes(f.size || 0)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-semibold" style="text-transform:uppercase;letter-spacing:0.05em;">Version</div>
+            <div class="text-sm">${f.version_seq || 1}</div>
+          </div>
+          <div style="grid-column: span 2;">
+            <div class="text-xs text-muted font-semibold" style="text-transform:uppercase;letter-spacing:0.05em;">SHA256</div>
+            <div class="flex items-center gap-2">
+              <code class="font-mono text-xs" style="word-break:break-all;">${f.sha256 || '—'}</code>
+              ${f.sha256 ? '<button class="btn btn-ghost btn-xs" onclick="App.copyToClipboard(\'' + f.sha256 + '\')"><i data-lucide="copy" style="width:12px;height:12px;"></i></button>' : ''}
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-semibold" style="text-transform:uppercase;letter-spacing:0.05em;">Backend</div>
+            <div class="text-sm">${f.source_root || '—'}</div>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-semibold" style="text-transform:uppercase;letter-spacing:0.05em;">Created</div>
+            <div class="text-sm">${App.formatTimestamp(f.created_at)}</div>
+          </div>
+        </div>
+        <div id="replication-status-${fileId}" class="mb-3" style="display:none;"></div>
+        <div id="verify-status-${fileId}" class="mb-3" style="display:none;"></div>
+        ${chunks ? `
+          <div class="card-title mb-2">Chunks</div>
+          <div class="table-wrapper">
+            <table>
+              <thead><tr><th>Seq</th><th>Blob ID</th><th>Size</th><th>Backend</th><th>Compression</th><th>Encrypted</th></tr></thead>
+              <tbody>${chunks}</tbody>
+            </table>
+          </div>
+        ` : ''}
+        <div class="modal-footer" style="border-top:none; padding-top:0.75rem;">
+          <button id="verify-btn-${fileId}" class="btn btn-accent btn-sm" onclick="verifyFile(${fileId})">
+            <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Verify Integrity
+          </button>
+          <a href="/api/download/${fileId}" class="btn btn-primary btn-sm">
+            <i data-lucide="download" style="width:14px;height:14px;"></i> Download
+          </a>
+          <button class="btn btn-secondary btn-sm" onclick="showDownloadToPath(${fileId})">
+            <i data-lucide="folder-down" style="width:14px;height:14px;"></i> Save to Path
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="App.Modal.close('file-detail-modal')">Close</button>
+        </div>
+      `;
+      App.initIcons();
+      loadReplicationStatus(fileId);
+    } catch (e) {
+      body.innerHTML = `<div class="empty-state"><p>Failed to load file details: ${e.message}</p></div>`;
+    }
+  };
+
+  // Verify File Integrity manually
+  window.verifyFile = async function(fileId) {
+    const btn = document.getElementById('verify-btn-' + fileId);
+    const statusDiv = document.getElementById('verify-status-' + fileId);
+    
+    btn.disabled = true;
+    btn.classList.add('loading');
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span> Verifying...';
+    
+    statusDiv.style.display = 'block';
+    statusDiv.innerHTML = `
+      <div style="background: rgba(var(--accent-rgb, 99, 102, 241), 0.1); border: 1px solid rgba(var(--accent-rgb, 99, 102, 241), 0.2); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 0.5rem; display: flex; align-items: center; gap: 0.75rem; animation: pulse 2s infinite ease-in-out;">
+        <span class="spinner" style="border-color: var(--accent); border-top-color: transparent;"></span>
+        <div style="flex-grow: 1;">
+          <div style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">Verifying Backed-up Chunks...</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">Downloading chunks from storage backend and cross-checking SHA-256 integrity.</div>
+        </div>
+      </div>
+    `;
+    
+    try {
+      const res = await App.fetchAPI('/api/files/' + fileId + '/verify', { method: 'POST' });
+      if (res.status === 'ok') {
+        statusDiv.innerHTML = `
+          <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.05)); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; align-items: flex-start; gap: 0.75rem; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.05);">
+            <div style="background: var(--green); color: white; border-radius: 50%; padding: 4px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);">
+              <i data-lucide="check" style="width: 14px; height: 14px; stroke-width: 3px;"></i>
+            </div>
+            <div style="flex-grow: 1; min-width: 0;">
+              <div style="font-size: 0.88rem; font-weight: 600; color: var(--green); display: flex; align-items: center; gap: 0.5rem;">
+                Integrity Verified Successfully
+                <span class="badge badge-green" style="font-size: 0.7rem; padding: 2px 6px;">MATCH</span>
+              </div>
+              <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
+                All storage chunks downloaded, decrypted, reassembled, and verified.
+              </div>
+              <div style="margin-top: 0.5rem; display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; font-size: 0.75rem; background: rgba(0,0,0,0.1); border-radius: 6px; padding: 6px 10px;">
+                <span style="color: var(--text-muted);">Expected:</span>
+                <code style="word-break: break-all; color: var(--text-secondary); font-family: monospace;">${res.expected}</code>
+                <span style="color: var(--text-muted);">Actual:</span>
+                <code style="word-break: break-all; color: var(--green); font-family: monospace; font-weight: 600;">${res.actual}</code>
+              </div>
+            </div>
+          </div>
+        `;
+        App.Toast.success('File integrity verified successfully!');
+      } else {
+        throw new Error(res.error || res.message || 'Verification check failed');
+      }
+    } catch (e) {
+      statusDiv.innerHTML = `
+        <div style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05)); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; align-items: flex-start; gap: 0.75rem; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.05);">
+          <div style="background: var(--red); color: white; border-radius: 50%; padding: 4px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(239, 68, 68, 0.3);">
+            <i data-lucide="alert-triangle" style="width: 14px; height: 14px; stroke-width: 3px;"></i>
+          </div>
+          <div style="flex-grow: 1; min-width: 0;">
+            <div style="font-size: 0.88rem; font-weight: 600; color: var(--red);">
+              Integrity Verification Failed
+            </div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem; word-break: break-word;">
+              Error during chunk retrieval or checksum match: ${e.message}
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+              Please check if the backend drive is connected and healthy, or retry.
+            </div>
+          </div>
+        </div>
+      `;
+      App.Toast.error('Integrity verification failed!');
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  // Version history
+  window.showVersions = async function(fileId) {
+    App.Modal.open('version-modal');
+    const body = document.getElementById('version-body');
+    body.innerHTML = '<div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text sm"></div>';
+
+    try {
+      const versions = await fetch('/api/files/' + fileId + '/versions').then(r => r.json());
+      if (versions.error) throw new Error(versions.error);
+
+      if (!versions.length) {
+        body.innerHTML = '<div class="empty-state"><p>No other versions found</p></div>';
+        return;
+      }
+
+      const rows = versions.map(v => `
+        <tr>
+          <td><span class="badge ${v.id === fileId ? 'badge-green' : 'badge-gray'}">v${v.version_seq || 1}</span></td>
+          <td class="text-sm">${App.formatBytes(v.size || 0)}</td>
+          <td class="font-mono text-xs">${(v.sha256 || '').substring(0, 16)}…</td>
+          <td><span class="badge badge-gray">${v.source_root || '—'}</span></td>
+          <td class="text-muted text-sm">${App.formatTimestamp(v.created_at)}</td>
+          <td>
+            ${v.deleted_at ? '<span class="badge badge-red">Deleted</span>' : '<span class="badge badge-green">Active</span>'}
+          </td>
+          <td>
+            ${!v.deleted_at ? '<a href="/api/download/' + v.id + '" class="btn btn-ghost btn-xs"><i data-lucide="download" style="width:12px;height:12px;"></i></a>' : ''}
+          </td>
+        </tr>
+      `).join('');
+
+      body.innerHTML = `
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th>Version</th><th>Size</th><th>SHA256</th><th>Backend</th><th>Created</th><th>Status</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+      App.initIcons();
+    } catch (e) {
+      body.innerHTML = `<div class="empty-state"><p>Failed to load versions: ${e.message}</p></div>`;
+    }
+  };
+
+  // Delete file
+  window.deleteFile = function(fileId, path, btn) {
+    App.Modal.confirm(
+      'Delete File',
+      'Are you sure you want to soft-delete "' + path + '"? This marks the file as deleted but preserves the blobs.',
+      async () => {
+        try {
+          await App.fetchAPI('/api/files/' + fileId, { method: 'DELETE' });
+          App.Toast.success('File deleted');
+          const row = btn.closest('tr');
+          row.style.opacity = '0.4';
+          row.style.textDecoration = 'line-through';
+        } catch (e) {}
+      },
+      'Delete',
+      true
+    );
+  };
+
+  // Replication status loader
+  async function loadReplicationStatus(fileId) {
+    try {
+      const data = await fetch('/api/files/' + fileId + '/replication').then(r => r.json());
+      if (data.error || !data.length) return;
+      const el = document.getElementById('replication-status-' + fileId);
+      if (!el) return;
+      const totalCopies = data.reduce((sum, c) => sum + c.copy_count, 0);
+      const avgCopies = (totalCopies / data.length).toFixed(1);
+      const allBackends = [...new Set(data.flatMap(c => c.copies.map(cp => cp.backend_name)))];
+      const color = avgCopies >= 2 ? 'green' : avgCopies >= 1 ? 'yellow' : 'red';
+      el.style.display = 'block';
+      el.innerHTML = '<div class="flex items-center gap-2">' +
+        '<span class="badge badge-' + color + '">' + avgCopies + ' copies avg</span>' +
+        '<span class="text-xs text-muted">' + data.length + ' chunk(s) across ' + allBackends.length + ' backend(s): ' + allBackends.join(', ') + '</span>' +
+        '</div>';
+    } catch (e) {}
+  }
+
+  // Download to server path
+  window.showDownloadToPath = function(fileId) {
+    const path = prompt('Enter server path to save file:');
+    if (!path) return;
+    App.Modal.confirm(
+      'Save to Server Path',
+      'Download file to <strong>' + path + '</strong> on the server?',
+      async () => {
+        try {
+          const result = await App.fetchAPI('/api/download/' + fileId + '/to-path', {
+            method: 'POST',
+            body: { path: path },
+          });
+          App.Toast.success('Saved to ' + result.path + ' (' + App.formatBytes(result.size) + ')');
+        } catch (e) {}
+      },
+      'Save',
+      false
+    );
+  };
+
+  // Bulk operations
+  window.toggleSelectAll = function(el) {
+    document.querySelectorAll('.file-checkbox').forEach(cb => {
+      cb.checked = el.checked;
+    });
+    updateBulkBar();
+  };
+
+  window.updateBulkBar = function() {
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    const bar = document.getElementById('bulk-bar');
+    const count = document.getElementById('bulk-count');
+    if (checked.length > 0) {
+      bar.style.display = '';
+      count.textContent = checked.length + ' selected';
+    } else {
+      bar.style.display = 'none';
+    }
+  };
+
+  window.clearSelection = function() {
+    document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = false);
+    document.getElementById('select-all').checked = false;
+    updateBulkBar();
+  };
+
+  window.bulkDelete = function() {
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    if (!checked.length) return;
+    App.Modal.confirm(
+      'Delete ' + checked.length + ' Files',
+      'Are you sure you want to soft-delete ' + checked.length + ' file(s)? Blobs will be preserved.',
+      async () => {
+        let deleted = 0;
+        for (const cb of checked) {
+          try {
+            await App.fetchAPI('/api/files/' + cb.dataset.id, { method: 'DELETE' });
+            deleted++;
+            const row = cb.closest('tr');
+            row.style.opacity = '0.4';
+            row.style.textDecoration = 'line-through';
+          } catch (e) {}
+        }
+        App.Toast.success(deleted + ' file(s) deleted');
+        clearSelection();
+      },
+      'Delete All',
+      true
+    );
+  };
+
+  window.bulkDownload = async function() {
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    if (!checked.length) return;
+    App.Toast.success('Starting download of ' + checked.length + ' file(s)...');
+    for (const cb of checked) {
+      const a = document.createElement('a');
+      a.href = '/api/download/' + cb.dataset.id;
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      await new Promise(r => setTimeout(r, 500));
+    }
+  };
+
+  // ── View Mode Toggle ──────────────────────────────────
+  let _viewMode = 'list';
+  let _treeLoaded = false;
+  let _treeData = {};  // uid -> children cache
+  let _treeSelected = new Set();  // selected file IDs
+
+  window.setViewMode = function(mode) {
+    _viewMode = mode;
+    document.getElementById('view-list-btn').style.background = mode === 'list' ? 'var(--accent-bg)' : '';
+    document.getElementById('view-list-btn').style.color = mode === 'list' ? 'var(--accent)' : '';
+    document.getElementById('view-tree-btn').style.background = mode === 'tree' ? 'var(--accent-bg)' : '';
+    document.getElementById('view-tree-btn').style.color = mode === 'tree' ? 'var(--accent)' : '';
+
+    const tableCard = document.querySelector('#files-tbody').closest('.card');
+    const treeCard = document.getElementById('tree-view-card');
+    const bulkBar = document.getElementById('bulk-bar');
+    const browserCard = document.getElementById('folder-browser');
+
+    if (mode === 'tree') {
+      tableCard.style.display = 'none';
+      if (bulkBar) bulkBar.style.display = 'none';
+      browserCard.style.display = 'none';
+      treeCard.style.display = 'block';
+      if (!_treeLoaded) loadTreeView();
+    } else {
+      tableCard.style.display = '';
+      treeCard.style.display = 'none';
+      browserCard.style.display = '';
+    }
+  };
+
+  async function loadTreeView() {
+    const body = document.getElementById('tree-view-body');
+    body.innerHTML = '<div style="padding:2rem;text-align:center;"><div class="spinner" style="margin:0 auto;width:24px;height:24px;border:3px solid var(--border-subtle);border-top-color:var(--accent);border-radius:50%;animation:spin 0.6s linear infinite;"></div><div class="text-sm text-muted mt-2">Loading original paths...</div></div>';
+    try {
+      const data = await fetch('/api/tree').then(r => r.json());
+      if (data.error) throw new Error(data.error);
+      if (!data.items || !data.items.length) {
+        body.innerHTML = '<div class="empty-state"><p>No backed-up sources found</p></div>';
+        return;
+      }
+
+      let totalFiles = 0, totalSize = 0;
+      let html = '<div class="tree-root">';
+      for (const src of data.items) {
+        totalFiles += src.files;
+        totalSize += src.size;
+        const uid = _treeUid(src.name);
+        html += renderTreeRoot(src, uid);
+      }
+      html += '</div>';
+      body.innerHTML = html;
+
+      document.getElementById('tree-file-count').textContent = totalFiles.toLocaleString() + ' files';
+      document.getElementById('tree-total-size').textContent = App.formatBytes(totalSize);
+      _treeLoaded = true;
+      App.initIcons();
+
+      // Auto-expand first root
+      const firstRoot = body.querySelector('.tree-folder');
+      if (firstRoot) toggleTreeNode(firstRoot);
+    } catch (e) {
+      body.innerHTML = '<div class="text-sm text-red">Error: ' + e.message + '</div>';
+    }
+  }
+
+  function _treeUid(s) {
+    return 't_' + btoa(unescape(encodeURIComponent(s))).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
+  }
+
+  function renderTreeRoot(src, uid) {
+    let h = '<div class="tree-node">';
+    h += '<div class="tree-row tree-root-row tree-folder" onclick="toggleTreeNode(this)" data-loaded="0" data-root="' + App.escapeHtml(src.name) + '">';
+    h += '<span class="tree-chevron-wrap"><i data-lucide="chevron-right" class="tree-chevron" style="width:14px;height:14px;"></i></span>';
+    h += '<i data-lucide="hard-drive" style="width:18px;height:18px;color:var(--accent);"></i>';
+    h += '<span class="tree-label font-semibold">' + App.escapeHtml(src.name) + '</span>';
+    h += '<span class="tree-meta"><span class="badge badge-gray">' + src.files.toLocaleString() + ' files</span> <span class="text-xs text-muted">' + App.formatBytes(src.size) + '</span></span>';
+    h += '</div>';
+    h += '<div class="tree-children" id="' + uid + '"></div>';
+    h += '</div>';
+    return h;
+  }
+
+  function renderTreeNode(item, root) {
+    if (item.type === 'folder') {
+      const uid = _treeUid(root + item.path);
+      _treeData[uid] = item.children || [];
+      let h = '<div class="tree-node">';
+      h += '<div class="tree-row tree-folder" onclick="toggleTreeNode(this)" data-loaded="0" data-uid="' + uid + '" data-root="' + App.escapeHtml(root) + '" data-path="' + App.escapeHtml(item.path) + '">';
+      h += '<span class="tree-chevron-wrap"><i data-lucide="chevron-right" class="tree-chevron" style="width:12px;height:12px;"></i></span>';
+      h += '<i data-lucide="folder" style="width:16px;height:16px;color:var(--orange);"></i>';
+      h += '<span class="tree-label">' + App.escapeHtml(item.name) + '</span>';
+      h += '<span class="tree-meta"><span class="text-xs text-muted">' + item.files.toLocaleString() + ' files</span> <span class="text-xs text-muted">' + App.formatBytes(item.size) + '</span></span>';
+      h += '</div>';
+      h += '<div class="tree-children" id="' + uid + '" data-uid="' + uid + '" data-root="' + App.escapeHtml(root) + '"></div>';
+      h += '</div>';
+      return h;
+    } else {
+      const ext = (item.name || '').split('.').pop().toLowerCase();
+      const icon = getFileIcon(ext);
+      const iconColor = getFileIconColor(ext);
+      const sel = _treeSelected.has(item.id);
+      let h = '<div class="tree-row tree-file' + (sel ? ' tree-selected' : '') + '" data-fid="' + item.id + '">';
+      h += '<span class="tree-chevron-wrap"></span>';
+      h += '<input type="checkbox" class="tree-cb" data-fid="' + item.id + '" ' + (sel ? 'checked' : '') + ' onchange="treeToggleSelect(' + item.id + ',this)" onclick="event.stopPropagation()">';
+      h += '<i data-lucide="' + icon + '" style="width:15px;height:15px;color:' + iconColor + ';"></i>';
+      h += '<span class="tree-label tree-fname" title="' + App.escapeHtml(item.sha256 || '') + '">' + App.escapeHtml(item.name) + '</span>';
+      h += '<span class="tree-file-size">' + App.formatBytes(item.size || 0) + '</span>';
+      h += '<span class="tree-file-date">' + (item.created_at ? item.created_at.slice(0, 10) : '') + '</span>';
+      h += '<span class="tree-file-actions">';
+      h += '<a href="/api/download/' + item.id + '" class="btn btn-ghost btn-xs" title="Download" onclick="event.stopPropagation()"><i data-lucide="download" style="width:12px;height:12px;"></i></a>';
+      h += '<button class="btn btn-ghost btn-xs" title="Details" onclick="event.stopPropagation();showFileDetail(' + item.id + ')"><i data-lucide="info" style="width:12px;height:12px;"></i></button>';
+      h += '</span>';
+      h += '</div>';
+      return h;
+    }
+  }
+
+  window.toggleTreeNode = function(el) {
+    const chevron = el.querySelector('.tree-chevron');
+    const childrenDiv = el.nextElementSibling;
+    if (!childrenDiv) return;
+
+    const isOpen = childrenDiv.classList.contains('tree-open');
+
+    if (isOpen) {
+      childrenDiv.classList.remove('tree-open');
+      childrenDiv.style.maxHeight = '0';
+      childrenDiv.style.opacity = '0';
+      if (chevron) chevron.style.transform = '';
+    } else {
+      childrenDiv.classList.add('tree-open');
+      childrenDiv.style.maxHeight = childrenDiv.scrollHeight + 2000 + 'px';
+      childrenDiv.style.opacity = '1';
+      if (chevron) chevron.style.transform = 'rotate(90deg)';
+
+      // Load children if not loaded
+      if (el.dataset.loaded === '0') {
+        el.dataset.loaded = '1';
+        loadTreeChildren(childrenDiv, el.dataset.root, el.dataset.path || '');
+      }
+    }
+  };
+
+  async function loadTreeChildren(container, root, path) {
+    container.innerHTML = '<div class="text-xs text-muted tree-loading">Loading...</div>';
+    try {
+      let items;
+      const uid = container.dataset.uid;
+      if (uid && _treeData[uid]) {
+        items = _treeData[uid];
+      } else {
+        const url = '/api/tree?root=' + encodeURIComponent(root);
+        const data = await fetch(url).then(r => r.json());
+        if (data.error) throw new Error(data.error);
+        items = data.items || [];
+        // Cache all children
+        for (const item of items) {
+          if (item.type === 'folder') {
+            _treeData[_treeUid(root + item.path)] = item.children || [];
+          }
+        }
+      }
+
+      let html = '';
+      for (const item of items) {
+        html += renderTreeNode(item, root);
+      }
+      if (!html) html = '<div class="text-xs text-muted tree-loading">Empty folder</div>';
+      container.innerHTML = html;
+      container.style.maxHeight = container.scrollHeight + 2000 + 'px';
+      App.initIcons();
+    } catch (e) {
+      container.innerHTML = '<div class="text-xs text-red tree-loading">Error: ' + e.message + '</div>';
+    }
+  }
+
+  window.treeToggleSelect = function(fid, cb) {
+    if (cb.checked) {
+      _treeSelected.add(fid);
+    } else {
+      _treeSelected.delete(fid);
+    }
+    const row = cb.closest('.tree-row');
+    if (row) row.classList.toggle('tree-selected', cb.checked);
+    updateTreeSelectBar();
+  };
+
+  function updateTreeSelectBar() {
+    const bar = document.getElementById('tree-select-bar');
+    const count = document.getElementById('tree-sel-count');
+    if (_treeSelected.size > 0) {
+      bar.style.display = '';
+      count.textContent = _treeSelected.size + ' selected';
+    } else {
+      bar.style.display = 'none';
+    }
+  }
+
+  window.treeClearSelection = function() {
+    _treeSelected.clear();
+    document.querySelectorAll('.tree-cb').forEach(cb => cb.checked = false);
+    document.querySelectorAll('.tree-selected').forEach(el => el.classList.remove('tree-selected'));
+    updateTreeSelectBar();
+  };
+
+  window.treeDownloadSelected = async function() {
+    if (!_treeSelected.size) return;
+    App.Toast.success('Starting download of ' + _treeSelected.size + ' file(s)...');
+    for (const fid of _treeSelected) {
+      const a = document.createElement('a');
+      a.href = '/api/download/' + fid;
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      await new Promise(r => setTimeout(r, 400));
+    }
+  };
+
+  window.treeExpandAll = function() {
+    document.querySelectorAll('.tree-folder').forEach(el => {
+      const children = el.nextElementSibling;
+      if (children && !children.classList.contains('tree-open')) {
+        toggleTreeNode(el);
+      }
+    });
+  };
+
+  window.treeCollapseAll = function() {
+    document.querySelectorAll('.tree-folder').forEach(el => {
+      const children = el.nextElementSibling;
+      if (children && children.classList.contains('tree-open')) {
+        toggleTreeNode(el);
+      }
+    });
+  };
+
+  window.treeRefresh = function() {
+    _treeLoaded = false;
+    _treeData = {};
+    loadTreeView();
+  };
+
+  // Tree search filter
+  document.addEventListener('DOMContentLoaded', function() {
+    const treeSearch = document.getElementById('tree-search');
+    if (treeSearch) {
+      let treeSearchTimer;
+      treeSearch.addEventListener('input', function() {
+        clearTimeout(treeSearchTimer);
+        treeSearchTimer = setTimeout(() => {
+          const q = this.value.toLowerCase().trim();
+          const nodes = document.querySelectorAll('#tree-view-body .tree-node');
+          if (!q) {
+            nodes.forEach(n => n.style.display = '');
+            document.querySelectorAll('.tree-file').forEach(r => r.style.display = '');
+            return;
+          }
+          // Show/hide file rows
+          document.querySelectorAll('.tree-file').forEach(r => {
+            const label = r.querySelector('.tree-fname');
+            const name = label ? label.textContent.toLowerCase() : '';
+            r.style.display = name.includes(q) ? '' : 'none';
+          });
+        }, 200);
+      });
+    }
+  });
+
+  function getFileIcon(ext) {
+    const map = {
+      jpg:'image',jpeg:'image',png:'image',gif:'image',bmp:'image',svg:'image',webp:'image',ico:'image',tiff:'image',tif:'image',raw:'image',cr2:'image',nef:'image',
+      mp4:'video',avi:'video',mkv:'video',mov:'video',wmv:'video',flv:'video',webm:'video',m4v:'video',mpg:'video',mpeg:'video',
+      mp3:'music',wav:'music',flac:'music',aac:'music',ogg:'music',wma:'music',m4a:'music',opus:'music',
+      pdf:'file-text',doc:'file-text',docx:'file-text',txt:'file-text',rtf:'file-text',odt:'file-text',md:'file-text',log:'file-text',
+      xls:'table',xlsx:'table',csv:'table',ods:'table',
+      ppt:'presentation',pptx:'presentation',odp:'presentation',
+      zip:'archive',rar:'archive','7z':'archive',tar:'archive',gz:'archive',bz2:'archive',xz:'archive',zst:'archive',
+      exe:'terminal',msi:'terminal',bat:'terminal',cmd:'terminal',ps1:'terminal',sh:'terminal',dll:'terminal',sys:'terminal',
+      js:'code',ts:'code',py:'code',java:'code',cpp:'code',c:'code',h:'code',cs:'code',rb:'code',go:'code',rs:'code',php:'code',html:'code',css:'code',scss:'code',json:'code',xml:'code',yaml:'code',yml:'code',sql:'code',
+      iso:'disc',img:'disc',vmdk:'disc',vhd:'disc',
+    };
+    return map[ext] || 'file';
+  }
+
+  function getFileIconColor(ext) {
+    const img = ['jpg','jpeg','png','gif','bmp','svg','webp','ico','tiff','tif','raw','cr2','nef'];
+    const vid = ['mp4','avi','mkv','mov','wmv','flv','webm','m4v','mpg','mpeg'];
+    const aud = ['mp3','wav','flac','aac','ogg','wma','m4a','opus'];
+    const doc = ['pdf','doc','docx','txt','rtf','odt','md','log'];
+    const arc = ['zip','rar','7z','tar','gz','bz2','xz','zst'];
+    const cod = ['js','ts','py','java','cpp','c','h','cs','rb','go','rs','php','html','css','scss','json','xml','yaml','yml','sql'];
+    if (img.includes(ext)) return '#8b5cf6';
+    if (vid.includes(ext)) return '#ec4899';
+    if (aud.includes(ext)) return '#14b8a6';
+    if (doc.includes(ext)) return '#f59e0b';
+    if (arc.includes(ext)) return '#6366f1';
+    if (cod.includes(ext)) return '#22d3ee';
+    return 'var(--text-muted)';
+  }
+
+  /* [OLD BROWSER JS START]
+  // ── Folder Browser ──────────────────────────────────────
+  let _browserOpen = true;
+  let _currentRoot = '';
+  let _currentPath = '';
+
+  window.toggleBrowser = function() {
+    _browserOpen = !_browserOpen;
+    document.getElementById('browser-body').style.display = _browserOpen ? 'block' : 'none';
+    const chev = document.getElementById('browser-chevron');
+    if (chev) chev.style.transform = _browserOpen ? 'rotate(0)' : 'rotate(-90deg)';
+  };
+
+  window.browseTo = function(root, path) {
+    _currentRoot = root;
+    _currentPath = path || '';
+    loadBrowser(root, path);
+  };
+
+  async function loadBrowser(root, path) {
+    const container = document.getElementById('browser-content');
+    container.innerHTML = '<div class="text-sm text-muted">Loading...</div>';
+
+    try {
+      const url = '/api/browse?root=' + encodeURIComponent(root || '') + '&path=' + encodeURIComponent(path || '');
+      const data = await fetch(url).then(r => r.json());
+
+      // Breadcrumb
+      const bc = document.getElementById('browser-breadcrumb');
+      if (!root) {
+        bc.innerHTML = '<span class="text-muted">Drives</span>';
+      } else {
+        let html = '<a href="#" onclick="browseTo(\'\',\'\');return false;" class="text-accent" style="text-decoration:none;">Drives</a>';
+        html += '<span class="text-muted">/</span>';
+        const parts = path ? path.split('\\') : [];
+        html += '<a href="#" onclick="browseTo(\'' + App.escapeHtml(root) + '\',\'\');return false;" class="text-accent" style="text-decoration:none;">' + App.escapeHtml(root) + '</a>';
+        let accum = '';
+        for (const part of parts) {
+          accum += (accum ? '\\' : '') + part;
+          const p = accum;
+          html += '<span class="text-muted">/</span>';
+          html += '<a href="#" onclick="browseTo(\'' + App.escapeHtml(root) + '\',\'' + App.escapeHtml(p) + '\');return false;" class="text-accent" style="text-decoration:none;">' + App.escapeHtml(part) + '</a>';
+        }
+        bc.innerHTML = html;
+      }
+
+      // Show restore action when inside a drive
+      const actionsEl = document.getElementById('browser-actions');
+      if (root) {
+        actionsEl.style.display = 'block';
+        const label = path ? root + path : root;
+        actionsEl.innerHTML = '<button class="btn btn-primary btn-sm" onclick="startRestore(\'' + App.escapeHtml(root) + '\',\'' + App.escapeHtml(path || '') + '\')">' +
+          '<i data-lucide="download" style="width:14px;height:14px;"></i> Restore "' + App.escapeHtml(label) + '" to folder</button>';
+        App.initIcons();
+      } else {
+        actionsEl.style.display = 'none';
+      }
+
+      // Content
+      let contentHtml = '';
+
+      // Drives
+      if (data.drives && data.drives.length) {
+        contentHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:0.5rem;">';
+        for (const d of data.drives) {
+          contentHtml += '<div class="flex items-center gap-2" style="padding:0.5rem;border:1px solid var(--border-subtle);border-radius:var(--radius-md);cursor:pointer;" onclick="browseTo(\'' + App.escapeHtml(d) + '\',\'\')" onmouseover="this.style.borderColor=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border-subtle)\'">';
+          contentHtml += '<i data-lucide="hard-drive" style="width:18px;height:18px;color:var(--accent);"></i>';
+          contentHtml += '<span class="font-semibold text-sm">' + App.escapeHtml(d) + '</span>';
+          contentHtml += '</div>';
+        }
+        contentHtml += '</div>';
+      }
+
+      // Directories
+      if (data.dirs && data.dirs.length) {
+        contentHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0.5rem;margin-top:0.5rem;">';
+        for (const dir of data.dirs) {
+          const newPath = path ? path + '\\' + dir : dir;
+          contentHtml += '<div class="flex items-center gap-2" style="padding:0.5rem 0.75rem;border:1px solid var(--border-subtle);border-radius:var(--radius-md);cursor:pointer;" onclick="browseTo(\'' + App.escapeHtml(root) + '\',\'' + App.escapeHtml(newPath) + '\')" onmouseover="this.style.borderColor=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border-subtle)\'">';
+          contentHtml += '<i data-lucide="folder" style="width:18px;height:18px;color:var(--orange);"></i>';
+          contentHtml += '<span class="text-sm truncate">' + App.escapeHtml(dir) + '</span>';
+          contentHtml += '</div>';
+        }
+        contentHtml += '</div>';
+      }
+
+      // Files
+      if (data.files && data.files.length) {
+        contentHtml += '<div class="table-wrapper mt-3"><table><thead><tr><th>File</th><th>Size</th><th>Date</th><th></th></tr></thead><tbody>';
+        for (const f of data.files) {
+          const name = f.relative_path ? f.relative_path.split('\\').pop() : '?';
+          contentHtml += '<tr>';
+          contentHtml += '<td><i data-lucide="file" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:6px;"></i>' + App.escapeHtml(name) + '</td>';
+          contentHtml += '<td class="text-muted">' + App.formatBytes(f.size || 0) + '</td>';
+          contentHtml += '<td class="text-muted">' + (f.created_at ? f.created_at.slice(0, 16) : '') + '</td>';
+          contentHtml += '<td><a href="/api/download/' + f.id + '" class="btn btn-ghost btn-xs"><i data-lucide="download" style="width:14px;height:14px;"></i></a></td>';
+          contentHtml += '</tr>';
+        }
+        contentHtml += '</tbody></table></div>';
+      }
+
+      if (!data.drives?.length && !data.dirs?.length && !data.files?.length) {
+        contentHtml = '<div class="empty-state" style="padding:1rem;"><p>Empty folder</p></div>';
+      }
+
+      container.innerHTML = contentHtml;
+      App.initIcons();
+    } catch (e) {
+      container.innerHTML = '<div class="text-sm text-red">Error loading: ' + e.message + '</div>';
+    }
+  }
+
+  // Load browser on page load
+  loadBrowser('', '');
+  [OLD BROWSER JS END] */
+
+  // ── Unified cPanel File Manager Explorer ──────────────────────────────────────
+  let _browserOpen = true;
+  let _currentRoot = '';
+  let _currentPath = '';
+
+  // Combined helper to escape backslashes for JS string literals and then escape HTML entities
+  function jsAttr(s) {
+    if (!s) return '';
+    return App.escapeHtml(s.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+  }
+
+  // Get dynamic file extension description forType column
+  function getFileExtensionDescription(ext) {
+    const map = {
+      pdf: 'PDF Document',
+      txt: 'Text Document',
+      log: 'Log File',
+      md: 'Markdown Document',
+      json: 'JSON Configuration',
+      xml: 'XML Document',
+      csv: 'Comma Separated Values',
+      html: 'HTML Webpage',
+      css: 'Cascading Style Sheet',
+      js: 'JavaScript File',
+      ts: 'TypeScript File',
+      py: 'Python Script',
+      sh: 'Shell Script',
+      bat: 'Batch File',
+      zip: 'ZIP Compressed Archive',
+      rar: 'RAR Compressed Archive',
+      '7z': '7Z Compressed Archive',
+      tar: 'TAR Tarball Archive',
+      gz: 'GZIP Compressed Archive',
+      jpg: 'JPEG Image',
+      jpeg: 'JPEG Image',
+      png: 'PNG Image',
+      gif: 'GIF Image',
+      bmp: 'BMP Image',
+      svg: 'SVG Vector Graphic',
+      webp: 'WEBP Web Image',
+      ico: 'Icon File',
+      mp3: 'MP3 Audio Track',
+      wav: 'WAVE Audio File',
+      flac: 'FLAC Lossless Audio',
+      aac: 'AAC Audio Track',
+      mp4: 'MP4 Video File',
+      avi: 'AVI Video Clip',
+      mkv: 'Matroska Video Container',
+      mov: 'QuickTime Movie',
+      exe: 'Executable Application',
+      msi: 'Windows Installer',
+      dll: 'System Library',
+      sys: 'System File',
+      iso: 'Disk Image'
+    };
+    return map[ext] ? map[ext] : (ext ? ext.toUpperCase() + ' File' : 'Document File');
+  }
+
+  // Helper to extract parent path
+  function getParentPath(path) {
+    if (!path) return '';
+    const parts = path.split('\\');
+    parts.pop();
+    return parts.join('\\');
+  }
+
+  // UI Actions
+  window.toggleBrowser = function() {
+    _browserOpen = !_browserOpen;
+    document.getElementById('browser-body').style.display = _browserOpen ? 'block' : 'none';
+    const chev = document.getElementById('browser-chevron');
+    if (chev) chev.style.transform = _browserOpen ? 'rotate(0)' : 'rotate(-90deg)';
+  };
+
+  window.browseTo = function(root, path) {
+    _currentRoot = root;
+    _currentPath = path || '';
+    
+    // Clear search filter input when navigating
+    const searchInput = document.getElementById('browser-search');
+    if (searchInput) searchInput.value = '';
+    
+    loadBrowser(root, _currentPath);
+  };
+
+  window.browserGoUp = function() {
+    if (!_currentRoot) return;
+    const parent = getParentPath(_currentPath);
+    if (!_currentPath) {
+      // At drive root, go up to drives view
+      browseTo('', '');
+    } else {
+      browseTo(_currentRoot, parent);
+    }
+  };
+
+  window.browserRefresh = function() {
+    loadBrowser(_currentRoot, _currentPath);
+  };
+
+  // Row selection highlighting
+  window.selectBrowserRow = function(rowEl, event) {
+    if (event.target.closest('.browser-btn') || event.target.closest('a') || event.target.closest('input')) {
+      return; // Do not highlight when clicking buttons/links
+    }
+    document.querySelectorAll('#browser-content-tbody .explorer-row').forEach(r => r.classList.remove('selected-row'));
+    rowEl.classList.add('selected-row');
+  };
+
+  // Instant client-side quick filter
+  window.filterBrowserRows = function() {
+    const q = document.getElementById('browser-search').value.toLowerCase().trim();
+    const rows = document.querySelectorAll('#browser-content-tbody tr.explorer-row');
+    let matchCount = 0;
+    
+    rows.forEach(row => {
+      if (row.classList.contains('parent-row')) {
+        row.style.display = ''; // Keep [..] parent row always visible
+        return;
+      }
+      const nameEl = row.querySelector('.explorer-item-name');
+      const name = nameEl ? nameEl.textContent.toLowerCase() : '';
+      if (name.includes(q)) {
+        row.style.display = '';
+        matchCount++;
+      } else {
+        row.style.display = 'none';
+      }
+    });
+    
+    const statusSub = document.getElementById('browser-status-sub');
+    if (q) {
+      statusSub.textContent = 'Filtered: ' + matchCount + ' item(s) match';
+    } else {
+      statusSub.textContent = 'cPanel Style Explorer';
+    }
+  };
+
+  window.loadBrowser = async function(root, path) {
+    const container = document.getElementById('browser-content');
+    container.innerHTML = `
+      <div class="flex items-center justify-center gap-2" style="padding: 2.5rem; color: var(--text-muted);">
+        <div class="spinner" style="width:20px;height:20px;border:2.5px solid var(--border-subtle);border-top-color:var(--accent);border-radius:50%;animation:spin 0.6s linear infinite;"></div>
+        <span class="text-sm">Scanning metadata vault...</span>
+      </div>
+    `;
+
+    // Disable/Enable the Up level button
+    const upBtn = document.getElementById('browser-up-btn');
+    if (upBtn) {
+      upBtn.disabled = (!root && !path);
+    }
+
+    try {
+      const url = '/api/browse?root=' + encodeURIComponent(root || '') + '&path=' + encodeURIComponent(path || '');
+      const data = await fetch(url).then(r => r.json());
+
+      // Update Breadcrumbs Pathway
+      const bc = document.getElementById('browser-breadcrumb');
+      if (!root) {
+        bc.innerHTML = '<span class="text-muted" style="font-weight:600;">Home (Root Drives)</span>';
+      } else {
+        let html = '<a href="#" onclick="browseTo(\'\',\'\');return false;" class="bc-link"><i data-lucide="home" style="width:12px;height:12px;display:inline-block;vertical-align:middle;"></i> Home</a>';
+        html += '<i data-lucide="chevron-right" style="width:11px;height:11px;color:var(--text-muted);margin:0 2px;"></i>';
+        
+        const parts = path ? path.split('\\') : [];
+        html += '<a href="#" onclick="browseTo(\'' + jsAttr(root) + '\',\'\');return false;" class="bc-link" style="font-weight:500;">' + App.escapeHtml(root) + '</a>';
+        
+        let accum = '';
+        for (const part of parts) {
+          if (!part) continue;
+          accum += (accum ? '\\' : '') + part;
+          const p = accum;
+          html += '<i data-lucide="chevron-right" style="width:11px;height:11px;color:var(--text-muted);margin:0 2px;"></i>';
+          html += '<a href="#" onclick="browseTo(\'' + jsAttr(root) + '\',\'' + jsAttr(p) + '\');return false;" class="bc-link">' + App.escapeHtml(part) + '</a>';
+        }
+        bc.innerHTML = html;
+      }
+
+      // Restore Action Bar (Folder/Drive actions)
+      const actionsEl = document.getElementById('browser-actions');
+      if (root) {
+        actionsEl.style.display = 'block';
+        const label = path ? root + path : root;
+        actionsEl.innerHTML = `
+          <div class="flex items-center justify-between" style="background: rgba(var(--accent-rgb, 99, 102, 241), 0.04); border: 1px dashed var(--accent); border-radius: var(--radius-sm); padding: 0.5rem 0.75rem;">
+            <div class="text-xs text-muted">
+              <span class="font-semibold text-accent">Active Folder Target:</span> <code>${App.escapeHtml(label)}</code>
+            </div>
+            <button class="btn btn-primary btn-sm flex items-center gap-1.5" onclick="startRestore('${jsAttr(root)}','${jsAttr(path || '')}')" style="height:28px; font-size:0.75rem; padding: 0 10px;">
+              <i data-lucide="download" style="width:12px;height:12px;"></i>
+              Restore this Folder
+            </button>
+          </div>
+        `;
+      } else {
+        actionsEl.style.display = 'none';
+      }
+
+      // Build Explorer Table View
+      let tableHtml = `
+        <div class="table-wrapper" style="margin-top: 0.25rem;">
+          <table class="explorer-table">
+            <thead>
+              <tr>
+                <th style="width: 45%;">Name</th>
+                <th class="col-size" style="width: 12%;">Size</th>
+                <th style="width: 20%;">Date Modified</th>
+                <th style="width: 15%;">Type</th>
+                <th class="col-actions" style="width: 100px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="browser-content-tbody">
+      `;
+
+      let isEmpty = true;
+
+      // 1. Parent Folder Row [..]
+      if (root) {
+        isEmpty = false;
+        const parentPath = getParentPath(path);
+        const upAction = (!path) ? "browseTo('','')" : `browseTo('${jsAttr(root)}', '${jsAttr(parentPath)}')`;
+        tableHtml += `
+          <tr class="explorer-row parent-row" onclick="${upAction}" title="Go up one level">
+            <td class="explorer-cell">
+              <div class="explorer-name-wrap">
+                <i data-lucide="corner-left-up" style="width:15px;height:15px;color:var(--text-muted);"></i>
+                <span class="explorer-item-name" style="color:var(--accent);">..</span>
+              </div>
+            </td>
+            <td class="explorer-cell col-size">—</td>
+            <td class="explorer-cell text-muted">—</td>
+            <td class="explorer-cell text-muted" style="font-size:0.75rem;">Parent Folder</td>
+            <td class="explorer-cell col-actions"></td>
+          </tr>
+        `;
+      }
+
+      // 2. Drives (when root is empty)
+      if (!root && data.drives && data.drives.length) {
+        isEmpty = false;
+        for (const d of data.drives) {
+          tableHtml += `
+            <tr class="explorer-row" onclick="browseTo('${jsAttr(d)}', '')" onmousedown="selectBrowserRow(this, event)">
+              <td class="explorer-cell">
+                <div class="explorer-name-wrap">
+                  <i data-lucide="hard-drive" style="width:15px;height:15px;color:var(--accent);"></i>
+                  <span class="explorer-item-name font-semibold">${App.escapeHtml(d)}</span>
+                </div>
+              </td>
+              <td class="explorer-cell col-size">—</td>
+              <td class="explorer-cell text-muted">—</td>
+              <td class="explorer-cell text-muted" style="font-size:0.75rem;">System Drive</td>
+              <td class="explorer-cell col-actions">
+                <button class="browser-btn btn-accent" onclick="event.stopPropagation(); startRestore('${jsAttr(d)}', '')" title="Restore Entire Drive">
+                  <i data-lucide="download" style="width:13px;height:13px;"></i>
+                </button>
+              </td>
+            </tr>
+          `;
+        }
+      }
+
+      // 3. Directories (Folders first)
+      if (data.dirs && data.dirs.length) {
+        isEmpty = false;
+        for (const dir of data.dirs) {
+          const newPath = path ? path + '\\' + dir : dir;
+          tableHtml += `
+            <tr class="explorer-row" onclick="browseTo('${jsAttr(root)}', '${jsAttr(newPath)}')" onmousedown="selectBrowserRow(this, event)">
+              <td class="explorer-cell">
+                <div class="explorer-name-wrap">
+                  <i data-lucide="folder" style="width:15px;height:15px;color:#f59e0b;"></i>
+                  <span class="explorer-item-name font-semibold" style="color: var(--text);">${App.escapeHtml(dir)}</span>
+                </div>
+              </td>
+              <td class="explorer-cell col-size">—</td>
+              <td class="explorer-cell text-muted">—</td>
+              <td class="explorer-cell text-muted" style="font-size:0.75rem;">File Folder</td>
+              <td class="explorer-cell col-actions">
+                <button class="browser-btn btn-accent" onclick="event.stopPropagation(); startRestore('${jsAttr(root)}', '${jsAttr(newPath)}')" title="Restore Folder">
+                  <i data-lucide="download" style="width:13px;height:13px;"></i>
+                </button>
+              </td>
+            </tr>
+          `;
+        }
+      }
+
+      // 4. Files
+      if (data.files && data.files.length) {
+        isEmpty = false;
+        for (const f of data.files) {
+          const name = f.relative_path ? f.relative_path.split('\\').pop() : '?';
+          const ext = name.split('.').pop().toLowerCase();
+          const icon = getFileIcon(ext);
+          const iconColor = getFileIconColor(ext);
+          const desc = getFileExtensionDescription(ext);
+          const formattedSize = App.formatBytes(f.size || 0);
+          const formattedDate = f.created_at ? f.created_at.slice(0, 16).replace('T', ' ') : '';
+          
+          // Previewable text extensions
+          const isText = ['txt', 'log', 'md', 'json', 'xml', 'csv', 'html', 'css', 'js', 'ts', 'py', 'sh', 'bat', 'go', 'rs', 'c', 'cpp', 'java', 'sql', 'yaml', 'yml', 'ini', 'conf'].includes(ext);
+          
+          tableHtml += `
+            <tr class="explorer-row" onmousedown="selectBrowserRow(this, event)">
+              <td class="explorer-cell">
+                <div class="explorer-name-wrap">
+                  <i data-lucide="${icon}" style="width:15px;height:15px;color:${iconColor};"></i>
+                  <span class="explorer-item-name" style="color: var(--text-muted);">${App.escapeHtml(name)}</span>
+                </div>
+              </td>
+              <td class="explorer-cell col-size">${formattedSize}</td>
+              <td class="explorer-cell text-muted" style="font-size:0.75rem;">${formattedDate}</td>
+              <td class="explorer-cell text-muted" style="font-size:0.75rem;">${desc}</td>
+              <td class="explorer-cell col-actions">
+                <div class="flex gap-1 justify-end">
+                  ${isText ? `
+                    <button class="browser-btn btn-accent" onclick="previewFile(${f.id})" title="Preview Content">
+                      <i data-lucide="eye" style="width:13px;height:13px;color:var(--accent);"></i>
+                    </button>
+                  ` : `
+                    <button class="browser-btn btn-accent" onclick="previewFile(${f.id})" title="File Details">
+                      <i data-lucide="eye" style="width:13px;height:13px;opacity:0.35;"></i>
+                    </button>
+                  `}
+                  <a href="/api/download/${f.id}" class="browser-btn btn-accent" title="Download File">
+                    <i data-lucide="download" style="width:13px;height:13px;"></i>
+                  </a>
+                  <button class="browser-btn btn-accent" onclick="showFileDetail(${f.id})" title="Properties">
+                    <i data-lucide="info" style="width:13px;height:13px;"></i>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }
+      }
+
+      if (isEmpty) {
+        tableHtml += `
+          <tr>
+            <td colspan="5" style="text-align:center; padding:3rem; color:var(--text-muted);">
+              <div class="flex flex-col items-center justify-center gap-2">
+                <i data-lucide="folder-open" style="width:36px;height:36px;opacity:0.3;color:var(--text-muted);margin:0 auto;"></i>
+                <p class="text-sm font-semibold mt-1">Empty Directory</p>
+                <p class="text-xs text-muted">No folders or backups discovered in this path.</p>
+              </div>
+            </td>
+          </tr>
+        `;
+      }
+
+      tableHtml += `
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      container.innerHTML = tableHtml;
+      App.initIcons();
+    } catch (e) {
+      container.innerHTML = `
+        <div class="text-sm text-red" style="padding: 1.5rem; text-align:center; border: 1px solid rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); border-radius: var(--radius-sm);">
+          <i data-lucide="alert-triangle" style="width:20px;height:20px;margin: 0 auto 0.5rem; display:block;"></i>
+          <span>Failed to scan folder contents: ${e.message}</span>
+        </div>
+      `;
+      App.initIcons();
+    }
+  };
+
+  // Load browser on page load
+  loadBrowser('', '');
+
+  // ── Restore All ────────────────────────────────────────
+  window.startRestore = async function(root, path) {
+    const dest = prompt('Restore to folder path:', root.replace(/\\$/, '') + '_restore');
+    if (!dest) return;
+
+    const card = document.getElementById('restore-progress-card');
+    card.style.display = 'block';
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    document.getElementById('restore-progress-fill').style.width = '0%';
+    document.getElementById('restore-files-count').textContent = '0 / 0';
+    document.getElementById('restore-error-count').textContent = '0';
+    document.getElementById('restore-errors-list').innerHTML = '';
+    document.getElementById('restore-current-path').textContent = 'Starting restore...';
+
+    try {
+      await App.fetchAPI('/api/restore/all', {
+        method: 'POST',
+        body: { source_root: root, dest_path: dest, path: path || '' }
+      });
+      connectRestoreSSE();
+    } catch (e) {
+      App.Toast.error('Failed to start restore: ' + e.message);
+      card.style.display = 'none';
+    }
+  };
+
+  function connectRestoreSSE() {
+    const sse = new EventSource('/api/restore/stream');
+    sse.onmessage = function(ev) {
+      try {
+        const s = JSON.parse(ev.data);
+        const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+        document.getElementById('restore-progress-fill').style.width = pct + '%';
+        document.getElementById('restore-files-count').textContent = s.done + ' / ' + s.total;
+        document.getElementById('restore-error-count').textContent = s.errors;
+        document.getElementById('restore-current-path').textContent =
+          s.running ? 'Restoring: ' + s.current : (s.completed ? 'Restore complete' : 'Preparing...');
+
+        if (s.error_list && s.error_list.length > 0) {
+          document.getElementById('restore-errors-list').innerHTML =
+            s.error_list.slice(-5).map(e => '<div class="text-xs text-red">' + App.escapeHtml(e) + '</div>').join('');
+        }
+
+        if (s.completed && !s.running) {
+          sse.close();
+          if (s.errors > 0) {
+            App.Toast.warning('Restore complete with ' + s.errors + ' error(s)');
+          } else {
+            App.Toast.success('Restore complete: ' + s.done + ' files restored');
+          }
+        }
+      } catch (e) {}
+    };
+    sse.onerror = function() {
+      sse.close();
+      fetch('/api/restore/status').then(r => r.json()).then(s => {
+        const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+        document.getElementById('restore-progress-fill').style.width = pct + '%';
+        document.getElementById('restore-files-count').textContent = s.done + ' / ' + s.total;
+        document.getElementById('restore-error-count').textContent = s.errors;
+        if (s.completed) {
+          App.Toast.success('Restore complete: ' + s.done + ' files');
+        }
+      }).catch(() => {});
+    };
+  }
+
+  // Check if restore is already running on page load
+  (async function() {
+    try {
+      const s = await fetch('/api/restore/status').then(r => r.json());
+      if (s.running) {
+        document.getElementById('restore-progress-card').style.display = 'block';
+        connectRestoreSSE();
+      }
+    } catch (e) {}
+  })();
+})();
 </script>
 {% endblock %}

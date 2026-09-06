@@ -1,99 +1,417 @@
 {% extends "base.html" %}
+{% block title %}DB Health{% endblock %}
+{% block breadcrumb %}DB Health{% endblock %}
+
 {% block content %}
-<div class="flex-between mb-3">
-  <h1>Database Health</h1>
-  <div class="flex gap-2">
-    <button class="btn btn-sm" onclick="fetch('/api/db/check',{method:'POST'}).then(()=>location.reload())">Run Integrity Check</button>
-    <button class="btn btn-sm btn-outline" onclick="fetch('/api/db/snapshot',{method:'POST'}).then(()=>location.reload())">Create Snapshot</button>
-    <button class="btn btn-sm btn-outline" onclick="fetch('/api/db/backup',{method:'POST'}).then(()=>location.reload())">Backup to All Backends</button>
+<div class="page-header">
+  <h1><i data-lucide="hard-drive" style="width:28px;height:28px;"></i> Database Health</h1>
+  <div class="page-header-actions">
+    <button class="btn btn-secondary btn-sm" onclick="runIntegrityCheck(this)">
+      <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Integrity Check
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="createSnapshot(this)">
+      <i data-lucide="camera" style="width:14px;height:14px;"></i> Create Snapshot
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="walCheckpoint(this)">
+      <i data-lucide="save" style="width:14px;height:14px;"></i> WAL Checkpoint
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="backupToAll(this)">
+      <i data-lucide="upload-cloud" style="width:14px;height:14px;"></i> Backup to All
+    </button>
   </div>
 </div>
 
+<!-- Stat Cards -->
 <div class="stat-grid">
   <div class="stat-card">
-    <div class="label">DB Size</div>
-    <div class="value">{{ "{:,.0f}".format(db_info.size) if db_info else 0 }}</div>
-    <div class="sub">bytes on disk</div>
+    <div class="stat-icon blue">
+      <i data-lucide="hard-drive" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">DB Size</div>
+    <div class="stat-value" id="db-size">{{ "{:,.0f}".format(db_info.size) if db_info else '0' }}</div>
+    <div class="stat-sub">bytes on disk</div>
   </div>
   <div class="stat-card">
-    <div class="label">Snapshots</div>
-    <div class="value">{{ db_info.snapshot_count if db_info else 0 }}</div>
+    <div class="stat-icon purple">
+      <i data-lucide="camera" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Snapshots</div>
+    <div class="stat-value" id="snapshot-count">{{ snapshots|length if snapshots else 0 }}</div>
   </div>
   <div class="stat-card">
-    <div class="label">Integrity Status</div>
-    <div class="value">
+    <div class="stat-icon green">
+      <i data-lucide="shield" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Integrity</div>
+    <div class="stat-value">
       {% if db_info and db_info.integrity_status == 'ok' %}
-      <span class="badge badge-green">OK</span>
+        <span class="badge badge-green" id="integrity-badge">OK</span>
       {% else %}
-      <span class="badge badge-yellow">Unknown</span>
+        <span class="badge badge-yellow" id="integrity-badge">Unknown</span>
       {% endif %}
     </div>
   </div>
   <div class="stat-card">
-    <div class="label">WAL Mode</div>
-    <div class="value">
+    <div class="stat-icon cyan">
+      <i data-lucide="file-text" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">WAL Mode</div>
+    <div class="stat-value">
       {% if db_info and db_info.wal_mode %}
-      <span class="badge badge-green">Enabled</span>
+        <span class="badge badge-green">Enabled</span>
       {% else %}
-      <span class="badge badge-red">Disabled</span>
+        <span class="badge badge-red">Disabled</span>
       {% endif %}
     </div>
   </div>
 </div>
 
-<div class="flex gap-3" style="display: flex; gap: 1rem;">
-  <div class="card" style="flex: 1;">
-    <h2>Snapshots</h2>
-    <table>
-      <thead><tr><th>Name</th><th>Size</th></tr></thead>
-      <tbody>
-        {% for snap in snapshots %}
-        <tr>
-          <td class="truncate">{{ snap.name }}</td>
-          <td>{{ "{:,.0f}".format(snap.size) }} bytes</td>
-        </tr>
-        {% endfor %}
-        {% if not snapshots %}
-        <tr><td colspan="2" class="empty">No snapshots yet</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
+<!-- Gauge + Info -->
+<div class="grid-2 mb-4">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Integrity Status</span>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:center;padding:1rem;">
+      <div id="integrity-gauge"></div>
+    </div>
+    <div class="text-center text-sm text-muted" id="integrity-text">
+      {% if db_info and db_info.integrity_status == 'ok' %}
+        Database integrity verified
+      {% else %}
+        Run an integrity check to verify database health
+      {% endif %}
+    </div>
   </div>
-  <div class="card" style="flex: 1;">
-    <h2>Recovery History</h2>
-    <table>
-      <thead><tr><th>Type</th><th>Status</th><th>Date</th></tr></thead>
-      <tbody>
-        {% for ev in recovery %}
-        <tr>
-          <td>{{ ev.event_type }}</td>
-          <td>
-            {% if ev.status == 'ok' or ev.status == 'completed' %}
-            <span class="badge badge-green">{{ ev.status }}</span>
-            {% elif ev.status == 'error' %}
-            <span class="badge badge-red">{{ ev.status }}</span>
-            {% else %}
-            <span class="badge badge-yellow">{{ ev.status }}</span>
-            {% endif %}
-          </td>
-          <td>{{ ev.created_at[:19] if ev.created_at else '' }}</td>
-        </tr>
-        {% endfor %}
-        {% if not recovery %}
-        <tr><td colspan="3" class="empty">No recovery events</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Database Info</span>
+    </div>
+    <div class="card-body">
+      <div style="display:grid; gap: 0.75rem;">
+        <div class="flex justify-between" style="padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
+          <span class="text-muted text-sm">Generation</span>
+          <span class="font-semibold text-sm" id="db-generation">{{ db_info.generation if db_info else '—' }}</span>
+        </div>
+        <div class="flex justify-between" style="padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
+          <span class="text-muted text-sm">Instance ID</span>
+          <span class="font-mono text-xs text-muted" id="db-instance">{{ db_info.instance_id[:12] if db_info and db_info.instance_id else '—' }}…</span>
+        </div>
+        <div class="flex justify-between" style="padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
+          <span class="text-muted text-sm">Page Count</span>
+          <span class="font-semibold text-sm">{{ db_info.page_count if db_info and db_info.page_count else '—' }}</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-muted text-sm">Page Size</span>
+          <span class="font-semibold text-sm">{{ db_info.page_size if db_info and db_info.page_size else '—' }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
-<div class="card mt-3">
-  <h2>Restore from Consensus</h2>
-  <p style="color: var(--text2); font-size: 0.88rem; margin-bottom: 0.75rem;">
-    Restore the database from the majority copy across all backends
-  </p>
-  <button class="btn btn-sm btn-outline" onclick="if(confirm('Restore DB from consensus?'))fetch('/api/db/restore',{method:'POST'}).then(()=>location.reload())">
-    Restore from Consensus
-  </button>
+<!-- Snapshots + Recovery -->
+<div class="grid-2">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Snapshots</span>
+      {% if snapshots %}
+      <button class="btn btn-ghost btn-xs" onclick="pruneSnapshots()" title="Keep latest 5, delete rest">
+        <i data-lucide="scissors" style="width:12px;height:12px;"></i> Prune
+      </button>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      {% if snapshots %}
+        {% for snap in snapshots %}
+        <div class="flex items-center justify-between" style="padding: 0.6rem 0; {% if not loop.last %}border-bottom: 1px solid var(--border-subtle);{% endif %}">
+          <div class="flex items-center gap-2">
+            <i data-lucide="file-archive" style="width:16px;height:16px;color:var(--text-muted);"></i>
+            <div>
+              <div class="text-sm font-semibold truncate" style="max-width: 220px;">{{ snap.name }}</div>
+              <div class="text-xs text-muted">{{ "{:,.0f}".format(snap.size) }} bytes</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-1">
+            <button class="btn btn-ghost btn-xs" onclick="downloadSnapshot('{{ snap.name }}')" title="Download">
+              <i data-lucide="download" style="width:12px;height:12px;"></i>
+            </button>
+            <button class="btn btn-ghost btn-xs" onclick="deleteSnapshot('{{ snap.name }}')" title="Delete" style="color:var(--red);">
+              <i data-lucide="trash-2" style="width:12px;height:12px;"></i>
+            </button>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty-state" style="padding: 1.5rem;">
+          <p>No snapshots yet</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Recovery History</span>
+    </div>
+    <div class="card-body">
+      {% if recovery %}
+        <div class="timeline">
+          {% for ev in recovery %}
+          <div class="timeline-item">
+            <div class="timeline-dot {% if ev.status in ['ok', 'completed'] %}green{% elif ev.status == 'error' %}red{% else %}yellow{% endif %}"></div>
+            <div class="timeline-time">{{ ev.created_at[:19] if ev.created_at else '' }}</div>
+            <div class="timeline-content">
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-sm">{{ ev.event_type }}</span>
+                <span class="badge {% if ev.status in ['ok', 'completed'] %}badge-green{% elif ev.status == 'error' %}badge-red{% else %}badge-yellow{% endif %}">
+                  {{ ev.status }}
+                </span>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state" style="padding: 1.5rem;">
+          <p>No recovery events</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
 </div>
+
+<!-- Restore / Rebuild -->
+<div class="grid-2 mt-4">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Replication Health</span>
+      <button class="btn btn-ghost btn-xs" onclick="loadReplication()">
+        <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
+      </button>
+    </div>
+    <div class="card-body" id="replication-body">
+      <div class="skeleton skeleton-text"></div>
+      <div class="skeleton skeleton-text sm"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Rebuild from Manifests</span>
+    </div>
+    <div class="card-body">
+      <p class="text-sm text-secondary mb-3">
+        Rebuild the database from scratch using manifest files stored on backends. Use when all replicas are lost.
+      </p>
+      <button class="btn btn-danger btn-sm" onclick="rebuildFromManifests()">
+        <i data-lucide="hammer" style="width:14px;height:14px;"></i> Rebuild from Manifests
+      </button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  // Integrity gauge
+  const isOk = {{ 'true' if db_info and db_info.integrity_status == 'ok' else 'false' }};
+  Charts.createGauge('integrity-gauge', isOk ? 100 : 0, 100, {
+    size: 140,
+    color: isOk ? 'green' : 'red',
+    label: 'integrity',
+    colorThresholds: { green: 80, yellow: 50 },
+  });
+
+  window.runIntegrityCheck = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Checking...';
+    try {
+      const result = await App.fetchAPI('/api/db/check', { method: 'POST' });
+      if (result.status === 'ok') {
+        App.Toast.success('Integrity check passed');
+        Charts.createGauge('integrity-gauge', 100, 100, { size: 140, color: 'green', label: 'integrity' });
+        document.getElementById('integrity-badge').className = 'badge badge-green';
+        document.getElementById('integrity-badge').textContent = 'OK';
+        document.getElementById('integrity-text').textContent = 'Database integrity verified';
+      } else {
+        App.Toast.error('Integrity issues found');
+        Charts.createGauge('integrity-gauge', 0, 100, { size: 140, color: 'red', label: 'integrity' });
+      }
+    } catch (e) {
+      // Error shown by fetchAPI
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.createSnapshot = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Creating...';
+    try {
+      await App.fetchAPI('/api/db/snapshot', { method: 'POST' });
+      App.Toast.success('Snapshot created');
+      setTimeout(() => location.reload(), 800);
+    } catch (e) {
+      // Error shown by fetchAPI
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.backupToAll = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Backing up...';
+    try {
+      await App.fetchAPI('/api/db/replicate', { method: 'POST' });
+      App.Toast.success('Database replicated to all backends');
+    } catch (e) {
+      // Error shown by fetchAPI
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.restoreFromConsensus = function() {
+    App.Modal.confirm(
+      'Restore from Consensus',
+      'This will restore the database from backend replicas using consensus. Continue?',
+      async () => {
+        try {
+          const result = await App.fetchAPI('/api/db/restore', { method: 'POST' });
+          App.Toast.success(result.message || 'Database restored');
+          setTimeout(() => location.reload(), 1000);
+        } catch (e) {}
+      },
+      'Restore',
+      true
+    );
+  };
+
+  window.rebuildFromManifests = function() {
+    App.Modal.confirm(
+      'Rebuild from Manifests',
+      'This will rebuild the database from manifest files on backends. This is a destructive operation — the current DB will be preserved as a corrupt copy. Continue?',
+      async () => {
+        try {
+          const result = await App.fetchAPI('/api/db/rebuild', { method: 'POST' });
+          App.Toast.success('Rebuilt: ' + (result.files || 0) + ' files');
+          setTimeout(() => location.reload(), 1000);
+        } catch (e) {
+          // Error shown by fetchAPI
+        }
+      },
+      'Rebuild',
+      true
+    );
+  };
+
+  window.walCheckpoint = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await App.fetchAPI('/api/db/checkpoint', { method: 'POST' });
+      App.Toast.success('WAL checkpoint completed');
+    } catch (e) {
+      // Error shown by fetchAPI
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.downloadSnapshot = async function(name) {
+    try {
+      const resp = await fetch('/api/db/snapshots/' + encodeURIComponent(name) + '/download');
+      if (!resp.ok) throw new Error('Download failed');
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+      App.Toast.success('Downloading ' + name);
+    } catch (e) {
+      App.Toast.error('Download failed');
+    }
+  };
+
+  window.deleteSnapshot = function(name) {
+    App.Modal.confirm(
+      'Delete Snapshot',
+      'Delete <strong>' + name + '</strong>? This cannot be undone.',
+      async () => {
+        try {
+          await App.fetchAPI('/api/db/snapshots/' + encodeURIComponent(name), { method: 'DELETE' });
+          App.Toast.success('Snapshot deleted');
+          setTimeout(() => location.reload(), 600);
+        } catch (e) {}
+      },
+      'Delete',
+      true
+    );
+  };
+
+  window.pruneSnapshots = function() {
+    App.Modal.confirm(
+      'Prune Snapshots',
+      'Keep the 5 most recent snapshots and delete all older ones. Continue?',
+      async () => {
+        try {
+          const result = await App.fetchAPI('/api/db/snapshots/prune?keep=5', { method: 'POST' });
+          App.Toast.success('Pruned ' + (result.deleted || 0) + ' snapshot(s)');
+          setTimeout(() => location.reload(), 600);
+        } catch (e) {}
+      },
+      'Prune',
+      true
+    );
+  };
+
+  // Replication health
+  async function loadReplication() {
+    const body = document.getElementById('replication-body');
+    try {
+      const data = await fetch('/api/replication/status').then(r => r.json());
+      if (data.error) throw new Error(data.error);
+      const pct = data.total_blobs > 0 ? Math.round((data.fully_replicated / data.total_blobs) * 100) : 0;
+      const color = pct >= 80 ? 'green' : pct >= 50 ? 'yellow' : 'red';
+      let backendRows = '';
+      for (const [name, count] of Object.entries(data.per_backend || {})) {
+        backendRows += '<div class="flex justify-between" style="padding:0.4rem 0;border-bottom:1px solid var(--border-subtle);">' +
+          '<span class="text-sm"><span class="badge badge-gray">' + name + '</span></span>' +
+          '<span class="font-mono text-sm">' + count + ' blobs</span></div>';
+      }
+      body.innerHTML =
+        '<div class="flex items-center gap-3 mb-3">' +
+          '<span class="badge badge-' + color + '" style="font-size:1rem;padding:0.5rem 1rem;">' + pct + '% replicated</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.75rem;">' +
+          '<div class="text-sm"><span class="text-muted">Fully replicated (2+):</span> <strong>' + data.fully_replicated + '</strong></div>' +
+          '<div class="text-sm"><span class="text-muted">Single copy:</span> <strong style="color:var(--orange);">' + data.single_copy + '</strong></div>' +
+        '</div>' +
+        '<div class="text-xs text-muted font-semibold mb-2" style="text-transform:uppercase;">Per Backend</div>' +
+        backendRows +
+        '<div class="mt-3"><button class="btn btn-secondary btn-sm" onclick="restoreFromConsensus()"><i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Restore from Consensus</button></div>';
+      App.initIcons();
+    } catch (e) {
+      body.innerHTML = '<div class="empty-state"><p>Failed to load replication status</p></div>';
+    }
+  }
+  loadReplication();
+})();
+</script>
 {% endblock %}

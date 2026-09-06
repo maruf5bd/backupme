@@ -4,7 +4,7 @@ import time
 import threading
 from pathlib import Path
 
-from backupme.core.database import get_connection, get_generation, wal_checkpoint, commit
+from backupme.core.database import get_connection, get_generation, wal_checkpoint, commit, DB_PATH
 from backupme.backends import get_all_backends
 
 
@@ -40,6 +40,7 @@ class Replicator:
         while not self._stop.is_set():
             now = time.time()
             if now - last_flush >= self.interval_flush:
+                self.enqueue_wal_frames()
                 self.flush_wal_bundle()
                 last_flush = now
             if now - last_snapshot >= self.interval_snapshot:
@@ -50,8 +51,8 @@ class Replicator:
     def enqueue_wal_frames(self):
         conn = get_connection()
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        wal_path = Path(conn.execute("PRAGMA wal_checkpoint").fetchone()[0])
-        if not wal_path or not Path(str(wal_path)).exists():
+        wal_path = Path(str(DB_PATH) + "-wal")
+        if not wal_path.exists():
             return
         gen = get_generation()
         import shutil
@@ -77,7 +78,12 @@ class Replicator:
             with open(bundle, "wb") as fout:
                 with cctx.stream_writer(fout) as compressor:
                     for f in files:
-                        compressor.write(f.read_bytes())
+                        with open(f, "rb") as fin:
+                            while True:
+                                chunk = fin.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                compressor.write(chunk)
                         f.unlink(missing_ok=True)
 
             backends = get_all_backends(self.config)
@@ -88,7 +94,6 @@ class Replicator:
                     import traceback
                     traceback.print_exc()
             bundle.unlink(missing_ok=True)
-            sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest() if bundle.exists() else "unknown"
 
     def create_and_upload_snapshot(self):
         gen = get_generation()
@@ -105,13 +110,25 @@ class Replicator:
         import zstandard as zstd
         compressed_path = snapshot_path.with_suffix(".db.zst")
         cctx = zstd.ZstdCompressor(level=3)
-        with open(compressed_path, "wb") as fout:
-            with cctx.stream_writer(fout) as compressor:
-                compressor.write(snapshot_path.read_bytes())
+        with open(snapshot_path, "rb") as fin:
+            with open(compressed_path, "wb") as fout:
+                with cctx.stream_writer(fout) as compressor:
+                    while True:
+                        chunk = fin.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        compressor.write(chunk)
         snapshot_path.unlink()
 
         hash_path = compressed_path.with_suffix(compressed_path.suffix + ".sha256")
-        hash_path.write_text(hashlib.sha256(compressed_path.read_bytes()).hexdigest())
+        sha = hashlib.sha256()
+        with open(compressed_path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                sha.update(chunk)
+        hash_path.write_text(sha.hexdigest())
 
         backends = get_all_backends(self.config)
         for bk in backends:
@@ -132,24 +149,24 @@ class Replicator:
             try:
                 wals = bk.db_list("wal")
                 snaps = bk.db_list("snapshots")
-                snaps.sort(reverse=True)
-                if len(snaps) >= 2:
-                    keep_snaps = set(snaps[:2])
-                    for wal in sorted(wals):
-                        gen_from_to = Path(wal).stem.replace("bundle-", "")
-                        if gen_from_to:
-                            parts = gen_from_to.split("-")
-                            if len(parts) >= 2:
-                                try:
-                                    wal_gen = int(parts[0])
-                                    snap_gen = max(
-                                        (int(Path(s).stem.split("-")[1]) for s in snaps if Path(s).stem.split("-")[1].isdigit()),
-                                        default=0,
-                                    )
-                                    if wal_gen < snap_gen:
-                                        bk.delete(wal)
-                                except (ValueError, IndexError):
-                                    pass
+                if not snaps:
+                    continue
+                snap_gens = []
+                for s in snaps:
+                    parts = Path(s).stem.split("-")
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        snap_gens.append(int(parts[1]))
+                if not snap_gens:
+                    continue
+                max_snap_gen = max(snap_gens)
+                for wal in sorted(wals):
+                    # WAL bundle format: bundle-{gen}.zst
+                    wal_stem = Path(wal).stem  # "bundle-{gen}"
+                    wal_part = wal_stem.replace("bundle-", "")
+                    if wal_part.isdigit():
+                        wal_gen = int(wal_part)
+                        if wal_gen < max_snap_gen:
+                            bk.delete(wal)
             except Exception:
                 import traceback
                 traceback.print_exc()

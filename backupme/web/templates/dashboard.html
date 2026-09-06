@@ -1,117 +1,777 @@
 {% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block breadcrumb %}Dashboard{% endblock %}
+
 {% block content %}
-<div class="status-bar">
-  <span class="dot dot-green"></span> System Online
+<!-- Status Bar -->
+<div class="status-bar" id="status-bar">
+  <span class="dot dot-green dot-pulse"></span>
+  <span class="status-label">System Online</span>
   {% if last_checkpoint %}
-  <span>Last checkpoint: {{ last_checkpoint.type }} @ {{ last_checkpoint.timestamp|round }}</span>
+  <span class="text-muted">•</span>
+  <span>Last checkpoint: <strong>{{ last_checkpoint.op_type or 'unknown' }}</strong> {{ last_checkpoint.started_at[:16] if last_checkpoint.started_at else '' }}</span>
   {% endif %}
+  <span class="text-muted">•</span>
+  <span>Generation: <strong id="gen-value">{{ generation }}</strong></span>
+  <span style="margin-left:auto;">
+    <button class="btn btn-ghost btn-xs" onclick="restartServer()" title="Restart Server">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> Restart
+    </button>
+  </span>
 </div>
 
-<div class="stat-grid" id="stats-grid" hx-get="/api/status" hx-trigger="every 10s" hx-swap="innerHTML">
+<!-- Stat Cards -->
+<div class="stat-grid" id="stats-grid">
   <div class="stat-card">
-    <div class="label">Total Files</div>
-    <div class="value">{{ total_files }}</div>
+    <div class="stat-icon blue">
+      <i data-lucide="files" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Total Files</div>
+    <div class="stat-value" id="stat-files">{{ total_files }}</div>
+    <div class="stat-sub">across {{ backends|length }} backend(s)</div>
   </div>
   <div class="stat-card">
-    <div class="label">Unique Hashes</div>
-    <div class="value">{{ total_hashes }}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Total References</div>
-    <div class="value">{{ total_refs }}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Dedup Bytes</div>
-    <div class="value">{{ "{:,.0f}".format(total_bytes|default(0)) }}</div>
-    <div class="sub">savings from deduplication</div>
-  </div>
-</div>
-
-<div class="flex gap-3" style="display: flex; gap: 1rem;">
-  <div class="card" style="flex: 1;">
-    <h2>Backend Usage</h2>
-    <div class="chart-container">
-      <canvas id="usageChart"></canvas>
+    <div class="stat-icon purple">
+      <i data-lucide="database" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Stored Size</div>
+    <div class="stat-value" id="stat-stored">{{ "{:,.0f}".format(stored_bytes|default(0)) }}</div>
+    <div class="stat-sub">
+      dedup ratio: <strong id="stat-ratio">{{ "%.2f"|format(ratio|default(1.0)) }}x</strong>
     </div>
   </div>
-  <div class="card" style="flex: 1;">
-    <h2>Backends</h2>
-    <table>
-      <thead><tr><th>Name</th><th>Type</th><th>Priority</th><th>Quota</th></tr></thead>
-      <tbody>
-        {% for be in backends %}
-        <tr>
-          <td>{{ be.name }}</td>
-          <td><span class="badge badge-gray">{{ be.type }}</span></td>
-          <td>{{ be.priority }}</td>
-          <td>{{ be.quota or '∞' }}</td>
-        </tr>
-        {% endfor %}
-        {% if not backends %}
-        <tr><td colspan="4" class="empty">No backends configured</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
+  <div class="stat-card">
+    <div class="stat-icon cyan">
+      <i data-lucide="hash" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Unique Blobs</div>
+    <div class="stat-value" id="stat-blobs">{{ blob_count }}</div>
+    <div class="stat-sub">content-addressed storage</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon green">
+      <i data-lucide="shield-check" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Integrity</div>
+    <div class="stat-value">
+      {% if report and report.status == 'completed' %}
+        <span class="badge badge-green">OK</span>
+      {% elif report and report.status == 'failed' %}
+        <span class="badge badge-red">Failed</span>
+      {% elif report and report.status == 'running' %}
+        <span class="badge badge-yellow">Running...</span>
+      {% else %}
+        <span class="badge badge-gray">Unknown</span>
+      {% endif %}
+    </div>
+    <div class="stat-sub">last verified: {{ (report.completed_at or report.started_at)[:10] if report else 'never' }}</div>
   </div>
 </div>
 
-<div class="flex gap-3" style="display: flex; gap: 1rem; margin-top: 0.5rem;">
-  <div class="card" style="flex: 1;">
-    <h2>Recent Checkpoints</h2>
+<!-- Quick Actions -->
+<div class="quick-actions">
+  <div class="dropdown-wrap" style="position:relative;display:inline-block;">
+    <button class="quick-action-btn" onclick="toggleSourceDropdown()" id="backup-btn">
+      <i data-lucide="play" style="width:16px;height:16px;"></i>
+      Run Backup
+      <i data-lucide="chevron-down" style="width:12px;height:12px;margin-left:4px;"></i>
+    </button>
+    <div id="source-dropdown" class="dropdown-menu" style="display:none;position:absolute;top:100%;left:0;z-index:100;min-width:240px;margin-top:4px;">
+      <div class="dropdown-item" onclick="triggerBackup(null, this)">
+        <i data-lucide="layers" style="width:14px;height:14px;"></i> All Sources
+      </div>
+      <div id="source-list-items"></div>
+    </div>
+  </div>
+  <button class="quick-action-btn" onclick="openScanModal()" id="scan-btn">
+    <i data-lucide="hard-drive" style="width:16px;height:16px;"></i>
+    Scan Drive
+  </button>
+  <button class="quick-action-btn" onclick="createSnapshot(this)">
+    <i data-lucide="camera" style="width:16px;height:16px;"></i>
+    Create Snapshot
+  </button>
+  <button class="quick-action-btn" onclick="openVerifyModal()">
+    <i data-lucide="shield-check" style="width:16px;height:16px;"></i>
+    Verify Backups
+  </button>
+</div>
+
+<!-- Scan Drive Modal -->
+<div class="modal-overlay" id="scan-modal">
+  <div class="modal" style="max-width: 520px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Scan & Backup Drive</h3>
+      <button class="modal-close" onclick="App.Modal.close('scan-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="input-group">
+        <label>Folder Path</label>
+        <input type="text" id="scan-path" placeholder="E:\MyData or /mnt/backup">
+        <div class="text-xs text-muted mt-1">Full path to folder or file to scan and back up</div>
+      </div>
+      <div class="grid-2" style="gap: 1rem;">
+        <div class="input-group">
+          <label>Target Backend</label>
+          <select id="scan-backend">
+            <option value="">All backends (auto)</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label>Redundancy</label>
+          <select id="scan-redundancy">
+            <option value="1">1 copy</option>
+            <option value="2">2 copies</option>
+            <option value="3">3 copies</option>
+          </select>
+        </div>
+      </div>
+      <div class="input-group">
+        <label>Exclude Patterns <span class="text-muted">(comma-separated)</span></label>
+        <input type="text" id="scan-exclude" placeholder="*.tmp, *.log, node_modules">
+      </div>
+      <div class="input-group">
+        <label style="display:flex;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="scan-delete-source">
+          Delete source files after successful backup
+        </label>
+        <div class="text-xs text-muted">Warning: moves files to storage, removes originals</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.Modal.close('scan-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="startScan()" id="scan-start-btn">
+        <i data-lucide="search" style="width:14px;height:14px;"></i> Start Scan
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Verify Backups Modal -->
+<div class="modal-overlay" id="verify-modal">
+  <div class="modal" style="max-width: 520px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Verify Backed-up Files</h3>
+      <button class="modal-close" onclick="App.Modal.close('verify-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="text-sm text-muted mb-4">
+        Perform an integrity scan over historical backup files. The engine will download backend chunks and validate their SHA-256 hashes to guarantee complete recoverability.
+      </p>
+      
+      <div class="input-group">
+        <label>Storage Backend</label>
+        <select id="verify-backend">
+          <option value="">All Backends</option>
+        </select>
+        <div class="text-xs text-muted mt-1">Select which backend to verify files from</div>
+      </div>
+      
+      <div class="grid-2" style="gap: 1rem; margin-bottom: 1.25rem;">
+        <div class="input-group" style="margin-bottom: 0;">
+          <label>Verification Depth</label>
+          <select id="verify-type" onchange="toggleVerifyCount(this.value)">
+            <option value="sample">Sample Check (Fast)</option>
+            <option value="full">Full Integrity Check</option>
+          </select>
+        </div>
+        <div class="input-group" style="margin-bottom: 0;" id="verify-count-wrapper">
+          <label>File Count Limit</label>
+          <select id="verify-count">
+            <option value="5">5 random files</option>
+            <option value="10" selected>10 random files</option>
+            <option value="25">25 random files</option>
+            <option value="50">50 random files</option>
+            <option value="100">100 random files</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.Modal.close('verify-modal')">Cancel</button>
+      <button class="btn btn-accent" onclick="startVerification(this)" id="verify-start-btn">
+        <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Start Verification
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Live Scan Progress -->
+<div class="card mb-4" id="scan-progress-card" style="display:none;">
+  <div class="card-header">
+    <span class="card-title">
+      <span class="dot dot-blue dot-pulse" style="display:inline-block;"></span>
+      Scan in Progress
+    </span>
+    <button class="btn btn-ghost btn-xs" onclick="document.getElementById('scan-progress-card').style.display='none'">
+      <i data-lucide="x" style="width:14px;height:14px;"></i>
+    </button>
+  </div>
+  <div class="card-body">
+    <div class="text-sm text-muted mb-2" id="scan-current-path">Preparing...</div>
+    <div class="progress-bar mb-3">
+      <div class="progress-fill" id="scan-progress-fill" style="width:0%;"></div>
+    </div>
+    <div class="stat-grid" style="grid-template-columns: repeat(4, 1fr); gap: 0.75rem;">
+      <div>
+        <div class="text-xs text-muted">Files</div>
+        <div class="font-semibold" id="scan-files-count">0 / 0</div>
+      </div>
+      <div>
+        <div class="text-xs text-muted">Data</div>
+        <div class="font-semibold" id="scan-bytes-count">0 B</div>
+      </div>
+      <div>
+        <div class="text-xs text-muted">Skipped</div>
+        <div class="font-semibold" id="scan-skipped-count">0</div>
+      </div>
+      <div>
+        <div class="text-xs text-muted">Errors</div>
+        <div class="font-semibold text-red" id="scan-error-count">0</div>
+      </div>
+    </div>
+    <div class="text-xs text-muted mt-2" id="scan-elapsed">Elapsed: 0s</div>
+    <div id="scan-current-file" class="text-xs mt-1" style="word-break:break-all;"></div>
+    <div id="scan-errors-list" class="mt-2" style="max-height:120px;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- Charts Row -->
+<div class="grid-2 mb-4">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Storage Distribution</span>
+    </div>
+    <div style="height: 280px; position: relative;">
+      <canvas id="storageChart"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Backup Activity (7 days)</span>
+    </div>
+    <div style="height: 280px; position: relative;">
+      <canvas id="activityChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Storage Growth Trend -->
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">Operations Over Time (30 days)</span>
+  </div>
+  <div style="height: 240px; position: relative;">
+    <canvas id="storageTrendChart"></canvas>
+  </div>
+</div>
+
+<!-- Backends + Recent Activity -->
+<div class="grid-2">
+  <!-- Backends -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Backends</span>
+      <a href="/backends" class="btn btn-ghost btn-xs">View all</a>
+    </div>
+    <div class="card-body">
+      {% for be in backends %}
+      <div class="flex items-center justify-between" style="padding: 0.6rem 0; {% if not loop.last %}border-bottom: 1px solid var(--border-subtle);{% endif %}">
+        <div class="flex items-center gap-2">
+          <span class="dot {% if be.connected %}dot-green{% else %}dot-red{% endif %}"></span>
+          <div>
+            <div class="font-semibold text-sm">{{ be.name }}</div>
+            <div class="text-xs text-muted">{{ be.type }}</div>
+          </div>
+        </div>
+        <span class="badge badge-gray">{{ be.type }}</span>
+      </div>
+      {% endfor %}
+      {% if not backends %}
+      <div class="empty-state" style="padding: 1.5rem;">
+        <p>No backends configured</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Recent Activity -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Recent Activity</span>
+      <a href="/logs" class="btn btn-ghost btn-xs">View all</a>
+    </div>
+    <div class="card-body">
+      <div class="timeline" id="recent-activity">
+        {% for f in recent_files[:5] %}
+        <div class="timeline-item">
+          <div class="timeline-dot blue"></div>
+          <div class="timeline-time">{{ f.created_at[:16] if f.created_at else '' }}</div>
+          <div class="timeline-content">
+            <strong class="truncate" style="max-width:200px;display:inline-block;vertical-align:bottom;" title="{{ f.relative_path }}">{{ f.relative_path }}</strong>
+            <span class="text-muted">— {{ "{:,.0f}".format(f.size) }} bytes</span>
+          </div>
+        </div>
+        {% endfor %}
+        {% if not recent_files %}
+        <div class="empty-state" style="padding: 1.5rem;">
+          <p>No recent activity</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent Checkpoints -->
+{% if checkpoints %}
+<div class="card mt-4">
+  <div class="card-header">
+    <span class="card-title">Recent Checkpoints</span>
+  </div>
+  <div class="table-wrapper">
     <table>
       <thead><tr><th>Type</th><th>Timestamp</th></tr></thead>
       <tbody>
         {% for cp in checkpoints %}
         <tr>
-          <td>{{ cp.type }}</td>
-          <td>{{ cp.timestamp|round(1) }}</td>
+          <td><span class="badge badge-accent">{{ cp.op_type or 'unknown' }}</span></td>
+          <td class="text-muted">{{ cp.started_at[:19] if cp.started_at else '' }}</td>
         </tr>
         {% endfor %}
-        {% if not checkpoints %}
-        <tr><td colspan="2" class="empty">No checkpoints yet</td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-  <div class="card" style="flex: 1;">
-    <h2>Recent Files</h2>
-    <table>
-      <thead><tr><th>Path</th><th>Size</th><th>Backend</th><th>Date</th></tr></thead>
-      <tbody id="recent-files-table">
-        {% for f in recent_files %}
-        <tr>
-          <td class="truncate" title="{{ f.relative_path }}">{{ f.relative_path }}</td>
-          <td>{{ "{:,.0f}".format(f.size) }}</td>
-          <td><span class="badge badge-gray">{{ f.backend_name }}</span></td>
-          <td>{{ f.created_at[:10] if f.created_at else '' }}</td>
-        </tr>
-        {% endfor %}
-        {% if not recent_files %}
-        <tr><td colspan="4" class="empty">No files backed up yet</td></tr>
-        {% endif %}
       </tbody>
     </table>
   </div>
 </div>
+{% endif %}
+{% endblock %}
 
+{% block scripts %}
 <script>
-fetch('/api/status').then(r=>r.json()).then(d=>{
-  const ctx = document.getElementById('usageChart').getContext('2d');
-  const labels = (d.backends||[]).map(b=>b.name);
-  const values = (d.backends||[]).map(b=>1);
-  const colors = labels.map((_,i)=>'hsl('+(i*60%360)+',60%,60%)');
-  new Chart(ctx, {
-    type: 'bar',
-    data: { labels, datasets: [{ label: 'Backends', data: values, backgroundColor: colors }] },
-    options: {
-      responsive: true, maintainAspectRatio: true,
-      plugins: { legend: { display: false } },
-      scales: {
-        y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b8fa3' } },
-        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+(function() {
+  // Quick action handlers
+  window.triggerBackup = async function(source, btn) {
+    const backupBtn = document.getElementById('backup-btn');
+    backupBtn.classList.add('loading');
+    backupBtn.innerHTML = '<span class="spinner"></span> Running...';
+    try {
+      let data;
+      if (source) {
+        data = await App.fetchAPI('/api/backup/source', { method: 'POST', body: { source } });
+        App.Toast.success('Backup completed for ' + source);
+      } else {
+        data = await App.fetchAPI('/api/backup', { method: 'POST' });
+        App.Toast.success('Backup completed: ' + (data.results ? data.results.length + ' source(s)' : 'done'));
       }
+    } catch (e) {
+      App.Toast.error('Backup failed: ' + e.message);
+    } finally {
+      backupBtn.classList.remove('loading');
+      backupBtn.innerHTML = '<i data-lucide="play" style="width:16px;height:16px;"></i> Run Backup <i data-lucide="chevron-down" style="width:12px;height:12px;margin-left:4px;"></i>';
+      App.initIcons();
+      closeSourceDropdown();
     }
+  };
+
+  // Source dropdown
+  window.toggleSourceDropdown = function() {
+    const dd = document.getElementById('source-dropdown');
+    dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+    if (dd.style.display === 'block' && !dd.dataset.loaded) {
+      loadSources();
+    }
+  };
+
+  function closeSourceDropdown() {
+    document.getElementById('source-dropdown').style.display = 'none';
+  }
+
+  async function loadSources() {
+    try {
+      const data = await App.fetchAPI('/api/sources');
+      const container = document.getElementById('source-list-items');
+      if (data.length) {
+        container.innerHTML = data.map(s =>
+          '<div class="dropdown-item" onclick="triggerBackup(\'' + s.replace(/'/g, "\\'") + '\', this)">' +
+          '<i data-lucide="folder" style="width:14px;height:14px;"></i> ' + s + '</div>'
+        ).join('');
+      } else {
+        container.innerHTML = '<div class="dropdown-item text-muted" style="cursor:default;">No sources configured</div>';
+      }
+      document.getElementById('source-dropdown').dataset.loaded = '1';
+      App.initIcons();
+    } catch (e) {}
+  }
+
+  document.addEventListener('click', (e) => {
+    const wrap = document.querySelector('.dropdown-wrap');
+    if (wrap && !wrap.contains(e.target)) closeSourceDropdown();
   });
-});
+
+  window.createSnapshot = async function(btn) {
+    btn.classList.add('loading');
+    btn.innerHTML = '<span class="spinner"></span> Creating...';
+    try {
+      await App.fetchAPI('/api/db/snapshot', { method: 'POST' });
+      App.Toast.success('Snapshot created');
+    } catch (e) {
+      App.Toast.error('Snapshot failed: ' + e.message);
+    } finally {
+      btn.classList.remove('loading');
+      btn.innerHTML = '<i data-lucide="camera" style="width:16px;height:16px;"></i> Create Snapshot';
+      App.initIcons();
+    }
+  };
+
+  window.openVerifyModal = function() {
+    App.Modal.open('verify-modal');
+    loadVerifyBackends();
+  };
+
+  async function loadVerifyBackends() {
+    try {
+      const data = await App.fetchAPI('/api/backends');
+      const sel = document.getElementById('verify-backend');
+      sel.innerHTML = '<option value="">All Backends</option>';
+      (data || []).forEach(b => {
+        sel.innerHTML += '<option value="' + b.name + '">' + b.name + ' (' + b.type + ')</option>';
+      });
+    } catch (e) {}
+  }
+
+  window.toggleVerifyCount = function(val) {
+    const wrapper = document.getElementById('verify-count-wrapper');
+    if (val === 'full') {
+      wrapper.style.display = 'none';
+    } else {
+      wrapper.style.display = 'block';
+    }
+  };
+
+  window.startVerification = async function(btn) {
+    const backend = document.getElementById('verify-backend').value;
+    const checkType = document.getElementById('verify-type').value;
+    let count = 10;
+    if (checkType === 'sample') {
+      count = parseInt(document.getElementById('verify-count').value) || 10;
+    } else {
+      count = 999999;
+    }
+    
+    btn.disabled = true;
+    btn.classList.add('loading');
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span> Verifying...';
+    
+    try {
+      const result = await App.fetchAPI(`/api/report/generate?backend=${encodeURIComponent(backend)}&count=${count}`, { method: 'POST' });
+      if (result.status === 'completed' || result.status === 'ok') {
+        App.Toast.success(`Verification completed! Checked ${result.checked} files. ${result.failed} failed.`);
+        setTimeout(() => {
+          App.Modal.close('verify-modal');
+          location.reload();
+        }, 1200);
+      } else {
+        throw new Error(result.message || 'Verification check failed');
+      }
+    } catch (e) {
+      App.Toast.error('Verification failed: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  // Storage Distribution Chart
+  async function loadStorageChart() {
+    try {
+      const data = await fetch('/api/status').then(r => r.json());
+      const backends = data.backends || [];
+      if (backends.length === 0) {
+        document.getElementById('storageChart').parentElement.innerHTML =
+          '<div class="empty-state"><p>No backend data available</p></div>';
+        return;
+      }
+      
+      const labels = backends.map(b => b.name);
+      const values = backends.map(b => b.stored_bytes || 0);
+      const totalStored = values.reduce((sum, v) => sum + v, 0);
+      
+      if (totalStored === 0) {
+        // Fallback when nothing is backed up yet: show equal proportions
+        Charts.doughnut('storageChart',
+          labels,
+          backends.map(() => 1),
+          { formatValue: () => 'No data backed up yet' }
+        );
+      } else {
+        Charts.doughnut('storageChart',
+          labels,
+          values,
+          { formatValue: v => App.formatBytes(v) }
+        );
+      }
+    } catch (e) {
+      console.error('Storage chart error:', e);
+    }
+  }
+
+
+  // Activity Chart (7-day trend)
+  async function loadActivityChart() {
+    try {
+      const data = await fetch('/api/stats/trend').then(r => r.json());
+      const labels = data.map(d => d.date);
+      Charts.line('activityChart', labels, [
+        { label: 'Files', data: data.map(d => d.count), color: Charts.COLORS.accent },
+      ], {
+        formatY: v => v.toLocaleString(),
+      });
+    } catch (e) {
+      // Fallback: empty chart
+      const days = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        days.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+      }
+      Charts.line('activityChart', days, [
+        { label: 'Files', data: [0, 0, 0, 0, 0, 0, 0], color: Charts.COLORS.accent },
+      ]);
+    }
+  }
+
+  // Live stat polling
+  App.Poller.start('/api/status', (data) => {
+    const el = (id) => document.getElementById(id);
+    if (el('stat-files')) el('stat-files').textContent = App.formatNumber(data.total_files);
+    if (el('stat-blobs')) el('stat-blobs').textContent = App.formatNumber(data.blob_count);
+    if (el('stat-stored')) el('stat-stored').textContent = App.formatBytes(data.stored_bytes);
+    if (el('stat-ratio')) el('stat-ratio').textContent = (data.dedup_ratio || 1).toFixed(2) + 'x';
+    if (el('gen-value')) el('gen-value').textContent = data.generation;
+  }, 10000, {
+    onError: () => {} // silent
+  });
+
+  // Init charts
+  loadStorageChart();
+  loadActivityChart();
+  loadStorageTrendChart();
+
+  async function loadStorageTrendChart() {
+    try {
+      const data = await fetch('/api/stats/storage-trend').then(r => r.json());
+      if (!data.length) return;
+      Charts.line('storageTrendChart', data.map(d => d.date), [
+        { label: 'Total Ops', data: data.map(d => d.total), color: Charts.COLORS.accent },
+        { label: 'Completed', data: data.map(d => d.completed), color: '#22c55e' },
+      ], { formatY: v => v.toLocaleString() });
+    } catch (e) {}
+  }
+
+  // ── Scan Drive ────────────────────────────────────────────
+  let _scanSSE = null;
+  let _scanTimer = null;
+
+  window.openScanModal = function() {
+    App.Modal.open('scan-modal');
+    loadScanBackends();
+  };
+
+  window.closeScanModal = function() {
+    App.Modal.close('scan-modal');
+  };
+
+  async function loadScanBackends() {
+    try {
+      const data = await App.fetchAPI('/api/backends');
+      const sel = document.getElementById('scan-backend');
+      sel.innerHTML = '<option value="">All backends (auto)</option>';
+      (data || []).forEach(b => {
+        sel.innerHTML += '<option value="' + b.name + '">' + b.name + ' (' + b.type + ')</option>';
+      });
+    } catch (e) {}
+  }
+
+  window.startScan = async function() {
+    const path = document.getElementById('scan-path').value.trim();
+    if (!path) {
+      App.Toast.error('Please enter a folder path');
+      return;
+    }
+
+    const backend = document.getElementById('scan-backend').value || null;
+    const redundancy = parseInt(document.getElementById('scan-redundancy').value) || 1;
+    const excludeRaw = document.getElementById('scan-exclude').value.trim();
+    const excludes = excludeRaw ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const deleteSource = document.getElementById('scan-delete-source').checked;
+
+    closeScanModal();
+    const card = document.getElementById('scan-progress-card');
+    card.style.display = 'block';
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Reset progress UI
+    document.getElementById('scan-progress-fill').style.width = '0%';
+    document.getElementById('scan-files-count').textContent = '0 / 0';
+    document.getElementById('scan-bytes-count').textContent = '0 B';
+    document.getElementById('scan-skipped-count').textContent = '0';
+    document.getElementById('scan-error-count').textContent = '0';
+    document.getElementById('scan-current-file').textContent = '';
+    document.getElementById('scan-errors-list').innerHTML = '';
+    document.getElementById('scan-current-path').textContent = 'Starting scan...';
+    document.getElementById('scan-elapsed').textContent = 'Elapsed: 0s';
+
+    try {
+      await App.fetchAPI('/api/backup/scan', {
+        method: 'POST',
+        body: { path, backend, redundancy, excludes, delete_source: deleteSource }
+      });
+      connectScanSSE();
+    } catch (e) {
+      App.Toast.error('Failed to start scan: ' + e.message);
+      card.style.display = 'none';
+    }
+  };
+
+  function connectScanSSE() {
+    if (_scanSSE) _scanSSE.close();
+    if (_scanTimer) clearInterval(_scanTimer);
+
+    _scanSSE = new EventSource('/api/backup/scan/stream');
+    _scanSSE.onmessage = function(ev) {
+      try {
+        const s = JSON.parse(ev.data);
+        updateScanProgress(s);
+        if (s.completed && !s.running) {
+          _scanSSE.close();
+          _scanSSE = null;
+          clearInterval(_scanTimer);
+          _scanTimer = null;
+          onScanComplete(s);
+        }
+      } catch (e) {}
+    };
+    _scanSSE.onerror = function() {
+      _scanSSE.close();
+      _scanSSE = null;
+      clearInterval(_scanTimer);
+      _scanTimer = null;
+      // Fallback: poll once to get final state
+      fetch('/api/backup/scan/status').then(r => r.json()).then(s => {
+        updateScanProgress(s);
+        if (s.completed) onScanComplete(s);
+      }).catch(() => {});
+    };
+
+    // Elapsed timer
+    const startTime = Date.now();
+    _scanTimer = setInterval(() => {
+      const secs = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      document.getElementById('scan-elapsed').textContent =
+        'Elapsed: ' + (m > 0 ? m + 'm ' : '') + s + 's';
+    }, 1000);
+  }
+
+  function updateScanProgress(s) {
+    const pct = s.files_total > 0 ? Math.round((s.files_done / s.files_total) * 100) : 0;
+    document.getElementById('scan-progress-fill').style.width = pct + '%';
+    document.getElementById('scan-files-count').textContent = s.files_done + ' / ' + s.files_total;
+    document.getElementById('scan-bytes-count').textContent = App.formatBytes(s.bytes_done);
+    document.getElementById('scan-skipped-count').textContent = s.files_skipped;
+    document.getElementById('scan-error-count').textContent = s.files_error;
+    document.getElementById('scan-current-path').textContent =
+      s.running ? 'Scanning: ' + s.path : (s.completed ? 'Scan complete' : 'Preparing...');
+
+    if (s.current_file) {
+      document.getElementById('scan-current-file').innerHTML =
+        '<i data-lucide="file" style="width:12px;height:12px;display:inline;vertical-align:middle;"></i> ' +
+        App.escapeHtml(s.current_file);
+      App.initIcons();
+    }
+
+    // Show errors
+    if (s.errors && s.errors.length > 0) {
+      const container = document.getElementById('scan-errors-list');
+      container.innerHTML = s.errors.slice(-5).map(e =>
+        '<div class="text-xs text-red" style="padding:2px 0;">' + App.escapeHtml(e) + '</div>'
+      ).join('');
+    }
+  }
+
+  function onScanComplete(s) {
+    const elapsed = s.started_at ? Math.round(Date.now() / 1000 - s.started_at) : 0;
+    const m = Math.floor(elapsed / 60);
+    const sec = elapsed % 60;
+    document.getElementById('scan-elapsed').textContent =
+      'Completed in ' + (m > 0 ? m + 'm ' : '') + sec + 's';
+    document.getElementById('scan-current-file').textContent = '';
+    document.getElementById('scan-current-path').textContent =
+      'Done: ' + s.files_done + ' files processed, ' + s.files_error + ' errors';
+
+    if (s.files_error > 0) {
+      App.Toast.warning('Scan complete with ' + s.files_error + ' error(s)');
+    } else {
+      App.Toast.success('Scan complete: ' + (s.files_done - s.files_skipped) + ' files backed up');
+    }
+
+    // Refresh stats
+    App.Poller.start('/api/status', (data) => {
+      const el = (id) => document.getElementById(id);
+      if (el('stat-files')) el('stat-files').textContent = App.formatNumber(data.total_files);
+      if (el('stat-blobs')) el('stat-blobs').textContent = App.formatNumber(data.blob_count);
+      if (el('stat-stored')) el('stat-stored').textContent = App.formatBytes(data.stored_bytes);
+      if (el('stat-ratio')) el('stat-ratio').textContent = (data.dedup_ratio || 1).toFixed(2) + 'x';
+      if (el('gen-value')) el('gen-value').textContent = data.generation;
+    }, 10000, { onError: () => {} });
+  }
+
+  // Check on page load if a scan is already running
+  (async function checkExistingScan() {
+    try {
+      const s = await fetch('/api/backup/scan/status').then(r => r.json());
+      if (s.running) {
+        document.getElementById('scan-progress-card').style.display = 'block';
+        updateScanProgress(s);
+        connectScanSSE();
+      }
+    } catch (e) {}
+  })();
+
+  window.restartServer = function() {
+    App.Modal.confirm(
+      'Restart Server',
+      'The server will restart to reload config. The page will auto-reload. Continue?',
+      async () => {
+        try {
+          App.Toast.info('Server restarting...');
+          await App.fetchAPI('/api/server/restart', { method: 'POST' });
+          let attempts = 0;
+          const check = setInterval(async () => {
+            attempts++;
+            try {
+              const r = await fetch('/health');
+              if (r.ok) {
+                clearInterval(check);
+                App.Toast.success('Server restarted');
+                setTimeout(() => location.reload(), 500);
+              }
+            } catch (e) {}
+            if (attempts > 30) {
+              clearInterval(check);
+              location.reload();
+            }
+          }, 1000);
+        } catch (e) {}
+      },
+      'Restart',
+      true
+    );
+  };
+})();
 </script>
 {% endblock %}

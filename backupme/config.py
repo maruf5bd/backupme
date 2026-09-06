@@ -5,6 +5,21 @@ from typing import Optional
 
 ENV_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
+_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)?\s*$", re.IGNORECASE)
+_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+
+def _parse_size_val(v):
+    """Parse a value that might be a human-readable size string (e.g. '64MB') into int."""
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        m = _SIZE_RE.match(v)
+        if m:
+            num = float(m.group(1))
+            unit = (m.group(2) or "B").upper()
+            return int(num * _SIZE_UNITS.get(unit, 1))
+    return v
+
 @dataclass
 class ChunkingConfig:
     enabled: bool = True
@@ -131,12 +146,20 @@ def _resolve_dict(d, seen: set | None = None):
 
 def _build_backend(name: str, btype: str, data: dict) -> BackendDef:
     b = BackendDef(type=btype, name=name)
+    _int_fields = {"port", "priority", "weight"}
     for k, v in data.items():
         if hasattr(b, k):
+            if k in _int_fields:
+                try:
+                    v = int(v)
+                except (ValueError, TypeError):
+                    continue
             setattr(b, k, v)
     return b
 
-def load_config(path: str = "config.yaml") -> Config:
+def load_config(path: str | None = None) -> Config:
+    if path is None:
+        path = os.environ.get("BACKUPME_CONFIG", "config.yaml")
     if not os.path.exists(path):
         return Config()
     with open(path, "r", encoding="utf-8") as f:
@@ -151,11 +174,12 @@ def load_config(path: str = "config.yaml") -> Config:
 
     for btype, blist in raw.get("backends", {}).items():
         for item in blist:
-            name = item.pop("name", f"{btype}_{len(cfg.backends.get(btype, []))}")
-            cfg.backends.setdefault(btype, []).append(_build_backend(name, btype, item))
+            name = item.get("name", f"{btype}_{len(cfg.backends.get(btype, []))}")
+            cfg.backends.setdefault(btype, []).append(_build_backend(name, btype, dict(item)))
 
     if "chunking" in raw:
-        cfg.chunking = ChunkingConfig(**raw["chunking"])
+        ck = {k: _parse_size_val(v) for k, v in raw["chunking"].items()}
+        cfg.chunking = ChunkingConfig(**ck)
     if "compression" in raw:
         comp = raw["compression"]
         overrides = []

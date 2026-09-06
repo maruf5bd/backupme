@@ -7,6 +7,9 @@ import click
 @click.pass_context
 def cli(ctx, config, db_path):
     ctx.ensure_object(dict)
+    import os
+    if config:
+        os.environ["BACKUPME_CONFIG"] = config
     from .. import config as cfgmod
     cfg = cfgmod.load_config(config)
     ctx.obj["config"] = cfg

@@ -23,6 +23,13 @@ def index_file(
             "UPDATE files SET sha256 = ?, size = ?, mtime = ?, chunked = ?, updated_at = datetime('now') WHERE id = ?",
             (sha256, size, mtime, 1 if chunked else 0, row[0]),
         )
+        execute(
+            "DELETE FROM files_fts WHERE rowid = ?", (row[0],)
+        )
+        execute(
+            "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
+            (row[0], relative_path, content_text),
+        )
         commit()
         return row[0]
 
@@ -33,8 +40,13 @@ def index_file(
         (source_root, relative_path, sha256, size, mtime,
          1 if chunked else 0, redundancy, vg, version_seq, content_text),
     )
+    new_id = execute("SELECT last_insert_rowid()").fetchone()[0]
+    execute(
+        "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
+        (new_id, relative_path, content_text),
+    )
     commit()
-    return execute("SELECT last_insert_rowid()").fetchone()[0]
+    return new_id
 
 
 def find_by_path(source_root: str, relative_path: str) -> list[dict]:
@@ -79,16 +91,25 @@ def search_files(query: str, source_root: str | None = None) -> list[dict]:
 
 
 def get_all_files(source_root: str | None = None, backend: str | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
-    sql = "SELECT * FROM files WHERE deleted_at IS NULL"
-    params = []
-    if source_root:
-        sql += " AND source_root = ?"
-        params.append(source_root)
     if backend:
-        sql += " AND backend_name = ?"
-        params.append(backend)
-    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+        sql = ("SELECT DISTINCT f.* FROM files f "
+               "INNER JOIN file_chunks fc ON f.id = fc.file_id "
+               "INNER JOIN blob_storage bs ON fc.blob_id = bs.blob_id "
+               "WHERE f.deleted_at IS NULL AND bs.backend_name = ?")
+        params: list = [backend]
+        if source_root:
+            sql += " AND f.source_root = ?"
+            params.append(source_root)
+        sql += " ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    else:
+        sql = "SELECT * FROM files WHERE deleted_at IS NULL"
+        params = []
+        if source_root:
+            sql += " AND source_root = ?"
+            params.append(source_root)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     rows = execute(sql, tuple(params)).fetchall()
     return [dict(r) for r in rows]
 

@@ -24,21 +24,30 @@ def run_integrity_check(
     check_id = execute("SELECT last_insert_rowid()").fetchone()[0]
     commit()
 
-    files = execute(
-        "SELECT id, relative_path, sha256 FROM files WHERE deleted_at IS NULL ORDER BY RANDOM() LIMIT ?",
-        (count,),
-    ).fetchall()
+    if backend_name:
+        files = execute(
+            "SELECT DISTINCT f.id, f.relative_path, f.sha256 FROM files f "
+            "INNER JOIN file_chunks fc ON f.id = fc.file_id "
+            "INNER JOIN blob_storage bs ON fc.blob_id = bs.blob_id "
+            "WHERE f.deleted_at IS NULL AND bs.backend_name = ? "
+            "ORDER BY RANDOM() LIMIT ?",
+            (backend_name, count),
+        ).fetchall()
+    else:
+        files = execute(
+            "SELECT id, relative_path, sha256 FROM files WHERE deleted_at IS NULL ORDER BY RANDOM() LIMIT ?",
+            (count,),
+        ).fetchall()
 
     checked = 0
     failed = 0
     details = []
 
     for f in files:
+        tmp = Path(tempfile.mkdtemp()) / f["relative_path"].replace("/", "_")
         try:
-            tmp = Path(tempfile.mkdtemp()) / f["relative_path"].replace("/", "_")
             download_file(f["id"], str(tmp), backend_name)
             actual = hasher_mod.sha256_file(str(tmp))
-            tmp.unlink()
             ok = actual == f["sha256"]
             if ok:
                 checked += 1
@@ -48,6 +57,8 @@ def run_integrity_check(
         except Exception as e:
             failed += 1
             details.append({"file_id": f["id"], "file": f["relative_path"], "status": "error", "error": str(e)})
+        finally:
+            tmp.unlink(missing_ok=True)
 
     execute(
         "UPDATE integrity_checks SET status = ?, checked_files = ?, failed_files = ?, completed_at = datetime('now'), details = ? WHERE id = ?",
@@ -56,6 +67,42 @@ def run_integrity_check(
     commit()
 
     return {"check_id": check_id, "status": "completed" if failed == 0 else "failed", "checked": checked, "failed": failed}
+
+
+def verify_file_integrity(file_id: int, backend_name: str | None = None) -> dict:
+    row = execute("SELECT id, relative_path, sha256 FROM files WHERE id = ?", (file_id,)).fetchone()
+    if not row:
+        return {"status": "error", "message": "File not found"}
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    tmp = tmp_dir / row["relative_path"].replace("/", "_").replace("\\", "_")
+    try:
+        download_file(file_id, str(tmp), backend_name)
+        actual = hasher_mod.sha256_file(str(tmp))
+        ok = actual == row["sha256"]
+        return {
+            "status": "ok" if ok else "failed",
+            "file_id": file_id,
+            "file": row["relative_path"],
+            "expected": row["sha256"],
+            "actual": actual,
+            "match": ok
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "file_id": file_id,
+            "file": row["relative_path"],
+            "error": str(e)
+        }
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+            if tmp_dir.exists():
+                tmp_dir.rmdir()
+        except Exception:
+            pass
 
 
 def run_verify_restore():

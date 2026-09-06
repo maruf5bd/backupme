@@ -1,83 +1,325 @@
 {% extends "base.html" %}
+{% block title %}Report{% endblock %}
+{% block breadcrumb %}Report{% endblock %}
+
 {% block content %}
-<div class="flex-between mb-3">
-  <h1>Integrity Report</h1>
-  <button class="btn btn-sm" onclick="fetch('/api/report/generate',{method:'POST'}).then(()=>location.reload())">Generate Fresh Report</button>
+<div class="page-header">
+  <h1><i data-lucide="shield-check" style="width:28px;height:28px;"></i> Integrity Report</h1>
+  <div class="page-header-actions">
+    <button class="btn btn-primary btn-sm" onclick="openVerifyModal()">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> Run Verification Scan
+    </button>
+  </div>
 </div>
 
 {% if report %}
-<div class="stat-grid">
-  <div class="stat-card">
-    <div class="label">Status</div>
-    <div class="value">
-      {% if report.status == 'passed' or report.status == 'ok' %}
-      <span class="badge badge-green">OK</span>
-      {% elif report.status == 'failed' %}
-      <span class="badge badge-red">Failed</span>
-      {% else %}
-      <span class="badge badge-yellow">{{ report.status }}</span>
-      {% endif %}
+<!-- Report Summary -->
+<div class="grid-2 mb-4">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Pass Rate</span>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:center;padding:1.5rem;">
+      <div id="pass-rate-gauge"></div>
     </div>
   </div>
-  <div class="stat-card">
-    <div class="label">Total Checked</div>
-    <div class="value">{{ report.total_checked or report.total_files or 0 }}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Passed</div>
-    <div class="value" style="color: var(--green);">{{ report.total_passed or 0 }}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Failed</div>
-    <div class="value" style="color: var(--red);">{{ report.total_failed or 0 }}</div>
+
+  <div class="stat-grid" style="margin-bottom:0;">
+    <div class="stat-card">
+      <div class="stat-icon accent">
+        <i data-lucide="file-search" style="width:20px;height:20px;"></i>
+      </div>
+      <div class="stat-label">Total Checked</div>
+      <div class="stat-value">{{ report.checked_files or report.total_files or 0 }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon green">
+        <i data-lucide="check-circle-2" style="width:20px;height:20px;"></i>
+      </div>
+      <div class="stat-label">Passed</div>
+      <div class="stat-value" style="color: var(--green);">{{ (report.checked_files or 0) - (report.failed_files or 0) }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon red">
+        <i data-lucide="x-circle" style="width:20px;height:20px;"></i>
+      </div>
+      <div class="stat-label">Failed</div>
+      <div class="stat-value" style="color: var(--red);">{{ report.failed_files or 0 }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon {% if report.status == 'completed' %}green{% elif report.status == 'failed' %}red{% else %}yellow{% endif %}">
+        <i data-lucide="shield" style="width:20px;height:20px;"></i>
+      </div>
+      <div class="stat-label">Status</div>
+      <div class="stat-value">
+        {% if report.status == 'completed' %}
+          <span class="badge badge-green">Passed</span>
+        {% elif report.status == 'failed' %}
+          <span class="badge badge-red">Failed</span>
+        {% else %}
+          <span class="badge badge-yellow">{{ report.status }}</span>
+        {% endif %}
+      </div>
+    </div>
   </div>
 </div>
 
-<div class="card">
-  <h2>Report Details</h2>
-  <table>
-    <thead><tr><th>File ID</th><th>Result</th><th>Details</th></tr></thead>
-    <tbody>
-      {% if report.details %}
+<!-- Report Details -->
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">Report Details</span>
+      <span class="badge badge-gray">{{ (report.details|length) if report.details else 0 }} files checked</span>
+  </div>
+  {% if report.details %}
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>File ID</th>
+          <th>Result</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
         {% for d in report.details %}
         <tr>
-          <td>{{ d.file_id }}</td>
           <td>
-            {% if d.result == 'pass' %}
-            <span class="badge badge-green">Pass</span>
-            {% elif d.result == 'hash_mismatch' %}
-            <span class="badge badge-red">Mismatch</span>
+            <a href="/files?q={{ d.file_id }}" class="text-sm font-semibold" style="color: var(--accent);">{{ d.file_id }}</a>
+          </td>
+          <td>
+            {% if d.status == 'ok' or d.result == 'pass' %}
+              <span class="badge badge-green">
+                <i data-lucide="check-circle-2" style="width:10px;height:10px;"></i> Pass
+              </span>
+            {% elif d.status == 'failed' or d.result == 'hash_mismatch' %}
+              <span class="badge badge-red">
+                <i data-lucide="x-circle" style="width:10px;height:10px;"></i> Mismatch
+              </span>
             {% else %}
-            <span class="badge badge-yellow">{{ d.result }}</span>
+              <span class="badge badge-yellow">{{ d.status or d.result }}</span>
             {% endif %}
           </td>
-          <td style="color: var(--text2); font-size: 0.85rem;">{{ d.error or d.actual or '' }}</td>
+          <td class="text-sm text-secondary">{{ d.error or d.actual or '' }}</td>
         </tr>
         {% endfor %}
-      {% else %}
-      <tr><td colspan="3" class="empty">No details available</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding: 2rem;">
+    <p>No details available</p>
+  </div>
+  {% endif %}
 </div>
 
-{% if report.total_failed and report.total_failed > 0 %}
-<div class="card">
-  <h2>Recommendations</h2>
-  <ul style="color: var(--text2); font-size: 0.9rem; line-height: 1.8; padding-left: 1.25rem;">
-    <li>{{ report.total_failed }} file(s) failed integrity check</li>
-    <li>Consider restoring affected files from mirrored backends</li>
-    <li>Run a full restore verification for failing backends</li>
-    <li>Check backend connectivity and disk health</li>
-  </ul>
+<!-- Recommendations -->
+{% if report.failed_files and report.failed_files > 0 %}
+<div class="card" style="border-color: var(--red);">
+  <div class="card-header">
+    <span class="card-title" style="color: var(--red);">
+      <i data-lucide="alert-triangle" style="width:16px;height:16px;vertical-align:middle;"></i> Recommendations
+    </span>
+  </div>
+  <div class="card-body">
+    <ul style="color: var(--text-secondary); font-size: 0.88rem; line-height: 2; padding-left: 1.25rem;">
+      <li>{{ report.failed_files }} file(s) failed integrity check</li>
+      <li>Consider restoring affected files from mirrored backends</li>
+      <li>Run a full restore verification for failing backends</li>
+      <li>Check backend connectivity and disk health</li>
+    </ul>
+  </div>
 </div>
 {% endif %}
 
 {% else %}
+<!-- Empty State -->
 <div class="card">
-  <div class="empty">
-    <p>No report yet. Click "Generate Fresh Report" to run an integrity check.</p>
+  <div class="empty-state">
+    <i data-lucide="shield-check" style="width:64px;height:64px;"></i>
+    <h3>No report yet</h3>
+    <p>Perform an integrity verification scan over historical files in your storage backends.</p>
+    <button class="btn btn-primary btn-sm mt-3" onclick="openVerifyModal()">
+      <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Verify Backups
+    </button>
   </div>
 </div>
 {% endif %}
+
+<!-- Report History -->
+<div class="card mt-4">
+  <div class="card-header">
+    <span class="card-title">Report History</span>
+    <button class="btn btn-ghost btn-sm" onclick="loadReportHistory()">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> Refresh
+    </button>
+  </div>
+  <div id="report-history-body" class="card-body">
+    <div class="skeleton skeleton-text"></div>
+    <div class="skeleton skeleton-text sm"></div>
+  </div>
+</div>
+
+<!-- Verify Backups Modal -->
+<div class="modal-overlay" id="verify-modal">
+  <div class="modal" style="max-width: 520px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Verify Backed-up Files</h3>
+      <button class="modal-close" onclick="App.Modal.close('verify-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="text-sm text-muted mb-4">
+        Perform an integrity scan over historical backup files. The engine will download backend chunks and validate their SHA-256 hashes to guarantee complete recoverability.
+      </p>
+      
+      <div class="input-group">
+        <label>Storage Backend</label>
+        <select id="verify-backend">
+          <option value="">All Backends</option>
+        </select>
+        <div class="text-xs text-muted mt-1">Select which backend to verify files from</div>
+      </div>
+      
+      <div class="grid-2" style="gap: 1rem; margin-bottom: 1.25rem;">
+        <div class="input-group" style="margin-bottom: 0;">
+          <label>Verification Depth</label>
+          <select id="verify-type" onchange="toggleVerifyCount(this.value)">
+            <option value="sample">Sample Check (Fast)</option>
+            <option value="full">Full Integrity Check</option>
+          </select>
+        </div>
+        <div class="input-group" style="margin-bottom: 0;" id="verify-count-wrapper">
+          <label>File Count Limit</label>
+          <select id="verify-count">
+            <option value="5">5 random files</option>
+            <option value="10" selected>10 random files</option>
+            <option value="25">25 random files</option>
+            <option value="50">50 random files</option>
+            <option value="100">100 random files</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.Modal.close('verify-modal')">Cancel</button>
+      <button class="btn btn-accent" onclick="startVerification(this)" id="verify-start-btn">
+        <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Start Verification
+      </button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  {% if report %}
+  // Pass rate gauge
+  const total = {{ report.checked_files or report.total_files or 0 }};
+  const passed = {{ (report.checked_files or 0) - (report.failed_files or 0) }};
+  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+
+  Charts.createGauge('pass-rate-gauge', passRate, 100, {
+    size: 160,
+    strokeWidth: 10,
+    label: 'pass rate',
+    colorThresholds: { green: 90, yellow: 70 },
+  });
+  {% endif %}
+
+  window.openVerifyModal = function() {
+    App.Modal.open('verify-modal');
+    loadVerifyBackends();
+  };
+
+  async function loadVerifyBackends() {
+    try {
+      const data = await App.fetchAPI('/api/backends');
+      const sel = document.getElementById('verify-backend');
+      sel.innerHTML = '<option value="">All Backends</option>';
+      (data || []).forEach(b => {
+        sel.innerHTML += '<option value="' + b.name + '">' + b.name + ' (' + b.type + ')</option>';
+      });
+    } catch (e) {}
+  }
+
+  window.toggleVerifyCount = function(val) {
+    const wrapper = document.getElementById('verify-count-wrapper');
+    if (val === 'full') {
+      wrapper.style.display = 'none';
+    } else {
+      wrapper.style.display = 'block';
+    }
+  };
+
+  window.startVerification = async function(btn) {
+    const backend = document.getElementById('verify-backend').value;
+    const checkType = document.getElementById('verify-type').value;
+    let count = 10;
+    if (checkType === 'sample') {
+      count = parseInt(document.getElementById('verify-count').value) || 10;
+    } else {
+      count = 999999;
+    }
+    
+    btn.disabled = true;
+    btn.classList.add('loading');
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span> Verifying...';
+    
+    try {
+      const result = await App.fetchAPI(`/api/report/generate?backend=${encodeURIComponent(backend)}&count=${count}`, { method: 'POST' });
+      if (result.status === 'completed' || result.status === 'ok') {
+        App.Toast.success(`Verification completed! Checked ${result.checked} files. ${result.failed} failed.`);
+        setTimeout(() => {
+          App.Modal.close('verify-modal');
+          location.reload();
+        }, 1200);
+      } else {
+        throw new Error(result.message || 'Verification check failed');
+      }
+    } catch (e) {
+      App.Toast.error('Verification failed: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  // Report history
+  window.loadReportHistory = async function() {
+    const body = document.getElementById('report-history-body');
+    try {
+      const reports = await fetch('/api/reports?limit=20').then(r => r.json());
+      if (!reports.length) {
+        body.innerHTML = '<div class="empty-state"><p>No past reports</p></div>';
+        return;
+      }
+      const rows = reports.map(r => {
+        const statusBadge = r.status === 'completed' ? 'badge-green' : r.status === 'failed' ? 'badge-red' : 'badge-yellow';
+        return `<tr>
+          <td class="font-semibold">#${r.id}</td>
+          <td><span class="badge badge-gray">${r.check_type || '—'}</span></td>
+          <td><span class="badge ${statusBadge}">${r.status}</span></td>
+          <td>${r.checked_files || 0} / ${r.total_files || 0}</td>
+          <td style="color:var(--red);">${r.failed_files || 0}</td>
+          <td class="text-muted text-sm">${App.formatTimestamp(r.started_at)}</td>
+        </tr>`;
+      }).join('');
+      body.innerHTML = `
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Checked</th><th>Failed</th><th>Date</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    } catch (e) {
+      body.innerHTML = '<div class="empty-state"><p>Failed to load history</p></div>';
+    }
+  };
+  loadReportHistory();
+})();
+</script>
 {% endblock %}

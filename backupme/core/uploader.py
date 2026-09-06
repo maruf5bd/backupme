@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import struct
+import sys
 import tempfile
 import time
 import uuid
@@ -19,12 +20,20 @@ from backupme.core import op_log as op_log_mod
 from backupme.core.manifest import Manifest, ManifestChunk, ChunkStorageEntry, write_manifest
 from backupme.backends import get_backend
 
-_chunk_min_size = 1024 * 1024
+
+def _long_path(p: str) -> str:
+    """On Windows, prefix path with \\\\?\\ to bypass 260-char limit."""
+    if sys.platform == "win32" and not p.startswith("\\\\?\\"):
+        return "\\\\?\\" + os.path.abspath(p)
+    return p
+
+
+_chunk_min_size = 10 * 1024 * 1024
 _chunk_size = 64 * 1024 * 1024
 _inline_max = 1024
-_vault_max = 64 * 1024
+_vault_max = 10 * 1024 * 1024
 _no_compress_max = 256
-_bundle_target_size = 16 * 1024 * 1024
+_bundle_target_size = 64 * 1024 * 1024
 _circuit_breaker = retry_mod.CircuitBreaker()
 
 _BUNDLE_HEADER_FMT = struct.Struct(">32sQQI")
@@ -57,24 +66,39 @@ def _write_pointer(backend, pointer: dict, manifest: Manifest):
     try:
         backend.upload(str(tmp), remote_path)
     finally:
-        tmp.unlink()
+        tmp.unlink(missing_ok=True)
 
 
 def _do_upload(backend, local_path: str, remote_path: str) -> bool:
     retry = retry_mod.ExponentialBackoff(max_attempts=4)
-    expected = hashlib.sha256(Path(local_path).read_bytes()).hexdigest()
+    expected = hasher_mod.sha256_file(local_path)
     for attempt, delay in retry:
         try:
             backend.upload(local_path, remote_path)
-            remote_hash = backend.hash(remote_path)
-            if remote_hash is None:
-                dl = Path(tempfile.mkdtemp()) / "verify.tmp"
+            
+            # Strict post-upload download and cross-check verification
+            dl_dir = Path(tempfile.mkdtemp())
+            dl = dl_dir / "verify.tmp"
+            try:
                 backend.download(remote_path, str(dl))
-                remote_hash = hashlib.sha256(dl.read_bytes()).hexdigest()
-                dl.unlink()
+                if dl.exists():
+                    downloaded_size = dl.stat().st_size
+                    # Check for 0-byte stub files created by async virtual file systems (like DriveFS)
+                    if downloaded_size == 0 and os.path.getsize(local_path) > 0:
+                        raise RuntimeError("Downloaded file is empty (detected broken virtual stub)")
+                    
+                    remote_hash = hasher_mod.sha256_file(str(dl))
+                else:
+                    raise RuntimeError("Downloaded file does not exist after verification download")
+            finally:
+                import shutil
+                shutil.rmtree(str(dl_dir), ignore_errors=True)
+                
             if remote_hash == expected:
                 _circuit_breaker.record_success(backend.name)
                 return True
+            else:
+                raise RuntimeError(f"Hash mismatch: expected {expected}, got {remote_hash}")
         except Exception as e:
             if attempt < 4:
                 time.sleep(delay)
@@ -100,6 +124,7 @@ def _upload_chunk_to_backends(
         remote_path += f".{compress_algo}"
 
     storage_rows = []
+    dedup_mod.record_blob(blob_id, pt_size)
     for bk in backends:
         if _circuit_breaker.is_tripped(bk.name):
             continue
@@ -128,7 +153,7 @@ def _upload_chunk_to_backends(
         (file_id, seq, blob_id, pt_offset, pt_size),
     )
     commit()
-    tmp.unlink()
+    tmp.unlink(missing_ok=True)
     return storage_rows
 
 
@@ -160,6 +185,64 @@ def _upload_single_blob(
     backends: list, config: dict, redundancy: int,
     seq: int, file_id: int,
 ) -> list[dict]:
+    enc_cfg = config.get("encryption", {})
+    if enc_cfg.get("enabled", False):
+        key_file = enc_cfg.get("key_file", "")
+        if key_file and Path(key_file).exists():
+            compressed, algo, level = _compress_data(data)
+            tmp_dir = Path(tempfile.mkdtemp())
+            try:
+                comp_file = tmp_dir / "compressed"
+                comp_file.write_bytes(compressed)
+                del compressed
+                
+                key = crypto_mod.load_key(str(key_file))
+                enc_file = tmp_dir / "encrypted"
+                nonce, auth_tag = crypto_mod.encrypt_file(str(comp_file), str(enc_file), key)
+                
+                stored_sha256 = hasher_mod.sha256_file(str(enc_file))
+                stored_size = os.path.getsize(str(enc_file))
+                
+                remote_path = _make_blob_id(blob_id)
+                if algo and algo != "none":
+                    remote_path += f".{algo}.aes"
+                else:
+                    remote_path += ".aes"
+                
+                storage_rows = []
+                dedup_mod.record_blob(blob_id, pt_size)
+                for bk in backends[:redundancy]:
+                    if _circuit_breaker.is_tripped(bk.name):
+                        continue
+                    ok = _do_upload(bk, str(enc_file), remote_path)
+                    if ok:
+                        execute(
+                            """INSERT OR IGNORE INTO blob_storage
+                               (blob_id, backend_name, storage_path, stored_size, stored_sha256,
+                                compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                            (blob_id, bk.name, remote_path, stored_size, stored_sha256,
+                             algo, level, 1, nonce, auth_tag),
+                        )
+                        storage_rows.append({
+                            "backend": bk.name,
+                            "path": remote_path,
+                            "stored_size": stored_size,
+                            "stored_sha256": stored_sha256,
+                            "algo": algo,
+                            "level": level,
+                            "encrypted": True,
+                        })
+                execute(
+                    "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
+                    (file_id, seq, blob_id, pt_offset, pt_size),
+                )
+                commit()
+                return storage_rows
+            finally:
+                import shutil
+                shutil.rmtree(str(tmp_dir), ignore_errors=True)
+
     compressed, algo, level = _compress_data(data)
     encrypted_data, nonce, auth_tag = _encrypt_data(compressed, config)
     targets = backends[:redundancy]
@@ -187,6 +270,10 @@ def upload_bundle(
     tar, so download can extract individual files without downloading the whole
     bundle.
     """
+    if not isinstance(config, dict):
+        from dataclasses import asdict
+        config = asdict(config)
+
     results = []
 
     batch: list[tuple[dict, Manifest, int, bytes]] = []
@@ -209,7 +296,7 @@ def upload_bundle(
 
         tar_data = tar_path.read_bytes()
         tar_sha256 = hashlib.sha256(tar_data).hexdigest()
-        tar_path.unlink()
+        tar_path.unlink(missing_ok=True)
 
         compressed, algo, level = _compress_data(tar_data)
         encrypted_data, nonce, auth_tag = _encrypt_data(compressed, config)
@@ -240,9 +327,28 @@ def upload_bundle(
             entries_by_file.setdefault(file_id, []).append(entry)
             offset += hdr_len + len(data)
 
+        uploaded_to_any = False
+        recorded_blobs: set[str] = set()
         for bk in targets:
             ok = _do_upload(bk, str(tmp), remote_path)
             if ok:
+                # [OLD BATCH UPLOAD DB INSERTION START]
+                # uploaded_to_any = True
+                # execute(
+                #     """INSERT OR IGNORE INTO blob_storage
+                #        (blob_id, backend_name, storage_path, stored_size, stored_sha256,
+                #         compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
+                #        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                #     (bundle_blob_id, bk.name, remote_path, stored_size, stored_sha256,
+                #      algo, level, 1 if nonce is not None else 0, nonce, auth_tag),
+                # )
+                # [OLD BATCH UPLOAD DB INSERTION END]
+
+                # Call record_blob BEFORE inserting into blob_storage/file_chunks to avoid FOREIGN KEY failures
+                if not uploaded_to_any:
+                    dedup_mod.record_blob(bundle_blob_id, stored_size)
+                uploaded_to_any = True
+                
                 execute(
                     """INSERT OR IGNORE INTO blob_storage
                        (blob_id, backend_name, storage_path, stored_size, stored_sha256,
@@ -269,12 +375,25 @@ def upload_bundle(
                             encrypted=(nonce is not None),
                         ))
                         manifest.chunks.append(mc)
+                        
+                        unique_chunk_blob_id = f"bundle/{tar_sha256[:2]}/{tar_sha256[2:4]}/{tar_sha256}/{entry['blob_id']}"
+                        dedup_mod.record_blob(unique_chunk_blob_id, entry["pt_size"])
+                        execute(
+                            """INSERT OR IGNORE INTO blob_storage
+                               (blob_id, backend_name, storage_path, stored_size, stored_sha256,
+                                compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                            (unique_chunk_blob_id, bk.name, f"{remote_path}@{entry['stored_offset']}:{entry['stored_len']}",
+                             entry["stored_len"], stored_sha256, algo, level, 1 if nonce is not None else 0, nonce, auth_tag),
+                        )
                         execute(
                             "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
-                            (file_id, 0, bundle_blob_id, 0, entry["pt_size"]),
+                            (file_id, 0, unique_chunk_blob_id, 0, entry["pt_size"]),
                         )
 
-                    dedup_mod.record_blob(item["sha256"], item["size"])
+                    if item["sha256"] not in recorded_blobs:
+                        dedup_mod.record_blob(item["sha256"], item["size"])
+                        recorded_blobs.add(item["sha256"])
                     for bk2 in backends[:redundancy]:
                         try:
                             write_manifest(bk2, manifest)
@@ -284,110 +403,140 @@ def upload_bundle(
                             pass
 
                 results.extend([
-                    {"file_id": item["file_id"], "sha256": item["sha256"], "bundled": True}
+                    {"file_id": item["file_id"], "sha256": item["sha256"], "bundled": True, "local_path": item["local_path"]}
                     for item, _, _, _ in batch
                 ])
 
+        # [OLD RECORD_BLOB POST-LOOP START]
+        # if uploaded_to_any:
+        #     dedup_mod.record_blob(bundle_blob_id, stored_size)
+        # [OLD RECORD_BLOB POST-LOOP END]
         commit()
-        tmp.unlink()
+        tmp.unlink(missing_ok=True)
         batch.clear()
-        nonlocal batch_size
         batch_size = 0
 
     for file_info in files:
-        local_path = file_info["local_path"]
-        source_root = file_info.get("source_root", "")
-        relative_path = file_info.get("relative_path", local_path)
-        version_group = file_info.get("version_group")
-        version_seq = file_info.get("version_seq", 1)
+        try:
+            local_path = file_info["local_path"]
+            src_path = _long_path(local_path)
+            source_root = file_info.get("source_root", "")
+            relative_path = file_info.get("relative_path", local_path)
+            version_group = file_info.get("version_group")
+            version_seq = file_info.get("version_seq", 1)
 
-        file_size = os.path.getsize(local_path)
-        file_sha256 = hasher_mod.sha256_file(local_path)
+            file_size = os.path.getsize(src_path)
+            file_sha256 = hasher_mod.sha256_file(src_path)
 
-        existing = dedup_mod.get_blob(file_sha256)
-        if existing and existing["ref_count"] > 0:
-            file_id = index_mod.index_file(
-                source_root, relative_path, file_sha256, file_size,
-                mtime=os.path.getmtime(local_path), chunked=False,
-                redundancy=redundancy, version_seq=version_seq,
-                version_group=version_group,
-            )
-            results.append({"file_id": file_id, "sha256": file_sha256, "dedup": True})
-            continue
-
-        manifest = Manifest(
-            file_uuid=uuid.uuid4().hex,
-            source_root=source_root,
-            relative_path=relative_path,
-            sha256=file_sha256,
-            size=file_size,
-            mtime=os.path.getmtime(local_path),
-            version_group=version_group or file_sha256[:16],
-            version_seq=version_seq,
-            redundancy=redundancy,
-        )
-
-        if file_size <= _inline_max:
-            content_text = Path(local_path).read_bytes().decode("utf-8", errors="replace")
-            file_id = index_mod.index_file(
-                source_root, relative_path, file_sha256, file_size,
-                mtime=os.path.getmtime(local_path), chunked=False,
-                redundancy=redundancy, version_seq=version_seq,
-                version_group=manifest.version_group, content_text=content_text,
-            )
-            dedup_mod.record_blob(file_sha256, file_size)
-            results.append({"file_id": file_id, "sha256": file_sha256, "inline": True})
-            continue
-
-        file_id = index_mod.index_file(
-            source_root, relative_path, file_sha256, file_size,
-            mtime=os.path.getmtime(local_path), chunked=(file_size > _chunk_min_size),
-            redundancy=redundancy, version_seq=version_seq,
-            version_group=manifest.version_group,
-        )
-
-        data = Path(local_path).read_bytes()
-
-        if file_size > _chunk_min_size:
-            for seq, offset in enumerate(range(0, file_size, _chunk_size)):
-                chunk_data = data[offset:offset + _chunk_size]
-                chunk_sha256 = hashlib.sha256(chunk_data).hexdigest()
-                dedup_mod.record_blob(chunk_sha256, len(chunk_data))
-                storage_rows = _upload_single_blob(
-                    chunk_data, chunk_sha256, offset, len(chunk_data),
-                    backends, config, redundancy, seq, file_id,
+            existing = dedup_mod.get_blob(file_sha256)
+            if existing and existing["ref_count"] > 0:
+                file_id = index_mod.index_file(
+                    source_root, relative_path, file_sha256, file_size,
+                    mtime=os.path.getmtime(src_path), chunked=False,
+                    redundancy=redundancy, version_seq=version_seq,
+                    version_group=version_group,
                 )
-                mc = ManifestChunk(seq=seq, blob_id=chunk_sha256, pt_offset=offset, pt_size=len(chunk_data))
+                # Find the original file's chunks and copy them to the deduplicated file!
+                orig_file = execute(
+                    "SELECT id FROM files WHERE sha256 = ? AND id != ? AND deleted_at IS NULL ORDER BY id ASC LIMIT 1",
+                    (file_sha256, file_id),
+                ).fetchone()
+                if orig_file:
+                    orig_chunks = execute(
+                        "SELECT seq, blob_id, pt_offset, pt_size FROM file_chunks WHERE file_id = ?",
+                        (orig_file["id"],),
+                    ).fetchall()
+                    for c in orig_chunks:
+                        execute(
+                            "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
+                            (file_id, c["seq"], c["blob_id"], c["pt_offset"], c["pt_size"]),
+                        )
+                else:
+                    # Fallback: if no original file chunks found, map it directly to the file's own sha256 blob
+                    execute(
+                        "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
+                        (file_id, 0, file_sha256, 0, file_size),
+                    )
+                commit()
+                results.append({"file_id": file_id, "sha256": file_sha256, "dedup": True, "local_path": local_path})
+                continue
+
+            manifest = Manifest(
+                file_uuid=uuid.uuid4().hex,
+                source_root=source_root,
+                relative_path=relative_path,
+                sha256=file_sha256,
+                size=file_size,
+                mtime=os.path.getmtime(src_path),
+                version_group=version_group or file_sha256[:16],
+                version_seq=version_seq,
+                redundancy=redundancy,
+            )
+
+            if file_size <= _inline_max:
+                content_text = Path(src_path).read_bytes().decode("utf-8", errors="replace")
+                file_id = index_mod.index_file(
+                    source_root, relative_path, file_sha256, file_size,
+                    mtime=os.path.getmtime(src_path), chunked=False,
+                    redundancy=redundancy, version_seq=version_seq,
+                    version_group=manifest.version_group, content_text=content_text,
+                )
+                dedup_mod.record_blob(file_sha256, file_size)
+                results.append({"file_id": file_id, "sha256": file_sha256, "inline": True, "local_path": local_path})
+                continue
+
+            file_id = index_mod.index_file(
+                source_root, relative_path, file_sha256, file_size,
+                mtime=os.path.getmtime(src_path), chunked=(file_size > _chunk_min_size),
+                redundancy=redundancy, version_seq=version_seq,
+                version_group=manifest.version_group,
+            )
+
+            if file_size > _chunk_min_size:
+                with open(src_path, "rb") as fsrc:
+                    for seq, offset in enumerate(range(0, file_size, _chunk_size)):
+                        chunk_data = fsrc.read(_chunk_size)
+                        chunk_sha256 = hashlib.sha256(chunk_data).hexdigest()
+                        dedup_mod.record_blob(chunk_sha256, len(chunk_data))
+                        storage_rows = _upload_single_blob(
+                            chunk_data, chunk_sha256, offset, len(chunk_data),
+                            backends, config, redundancy, seq, file_id,
+                        )
+                        mc = ManifestChunk(seq=seq, blob_id=chunk_sha256, pt_offset=offset, pt_size=len(chunk_data))
+                        for s in storage_rows:
+                            mc.storage.append(ChunkStorageEntry(**s))
+                        manifest.chunks.append(mc)
+            elif _inline_max < file_size <= _vault_max:
+                data = Path(src_path).read_bytes()
+                dedup_mod.record_blob(file_sha256, file_size)
+                batch.append(({"file_id": file_id, "sha256": file_sha256, "size": file_size, "local_path": local_path}, manifest, file_id, data))
+                batch_size += _BUNDLE_HEADER_FMT.size + len(data)
+                if batch_size >= _bundle_target_size:
+                    _flush_batch()
+            else:
+                data = Path(src_path).read_bytes()
+                storage_rows = _upload_single_blob(
+                    data, file_sha256, 0, file_size,
+                    backends, config, redundancy, 0, file_id,
+                )
+                mc = ManifestChunk(seq=0, blob_id=file_sha256, pt_offset=0, pt_size=file_size)
                 for s in storage_rows:
                     mc.storage.append(ChunkStorageEntry(**s))
                 manifest.chunks.append(mc)
-        elif _inline_max < file_size <= _vault_max:
-            dedup_mod.record_blob(file_sha256, file_size)
-            batch.append(({"file_id": file_id, "sha256": file_sha256, "size": file_size}, manifest, file_id, data))
-            batch_size += _BUNDLE_HEADER_FMT.size + len(data)
-            if batch_size >= _bundle_target_size:
-                _flush_batch()
-        else:
-            storage_rows = _upload_single_blob(
-                data, file_sha256, 0, file_size,
-                backends, config, redundancy, 0, file_id,
-            )
-            mc = ManifestChunk(seq=0, blob_id=file_sha256, pt_offset=0, pt_size=file_size)
-            for s in storage_rows:
-                mc.storage.append(ChunkStorageEntry(**s))
-            manifest.chunks.append(mc)
+                dedup_mod.record_blob(file_sha256, file_size)
 
-        dedup_mod.record_blob(file_sha256, file_size)
+            for bk in backends[:redundancy]:
+                try:
+                    write_manifest(bk, manifest)
+                    pointer = _make_pointer(manifest)
+                    _write_pointer(bk, pointer, manifest)
+                except Exception:
+                    pass
 
-        for bk in backends[:redundancy]:
-            try:
-                write_manifest(bk, manifest)
-                pointer = _make_pointer(manifest)
-                _write_pointer(bk, pointer, manifest)
-            except Exception:
-                pass
-
-        results.append({"file_id": file_id, "sha256": file_sha256, "file_uuid": manifest.file_uuid})
+            results.append({"file_id": file_id, "sha256": file_sha256, "file_uuid": manifest.file_uuid, "local_path": local_path})
+        except Exception as e:
+            print(f"Error processing {file_info.get('local_path')}: {e}", file=sys.stderr)
+            results.append({"local_path": file_info.get("local_path"), "error": str(e)})
 
     _flush_batch()
     bump_generation()

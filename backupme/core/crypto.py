@@ -83,3 +83,87 @@ def save_key(key: bytes, path: str):
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def encrypt_file(in_path: str, out_path: str, key: bytes) -> tuple[bytes, bytes]:
+    salt = secrets.token_bytes(_SALT_SIZE)
+    derived_key = _derive_key(key, salt)
+    nonce = secrets.token_bytes(_NONCE_SIZE)
+    
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        use_aesgcm_layout = True
+    except ImportError:
+        use_aesgcm_layout = False
+        
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    cipher = Cipher(algorithms.AES(derived_key), modes.GCM(nonce))
+    encryptor = cipher.encryptor()
+    
+    with open(in_path, "rb") as fin, open(out_path, "wb") as fout:
+        if use_aesgcm_layout:
+            fout.write(salt + nonce)
+        else:
+            fout.write(salt + nonce + b"\0" * _TAG_SIZE)
+            
+        while True:
+            chunk = fin.read(64 * 1024)
+            if not chunk:
+                break
+            fout.write(encryptor.update(chunk))
+        fout.write(encryptor.finalize())
+        tag = encryptor.tag
+        
+        if use_aesgcm_layout:
+            fout.write(tag)
+        else:
+            fout.seek(_SALT_SIZE + _NONCE_SIZE)
+            fout.write(tag)
+            
+    return nonce, tag
+
+
+def decrypt_file(in_path: str, out_path: str, key: bytes):
+    with open(in_path, "rb") as fin:
+        fin.seek(0, os.SEEK_END)
+        total_len = fin.tell()
+        if total_len < _SALT_SIZE + _NONCE_SIZE + _TAG_SIZE:
+            raise ValueError("Encrypted file too short")
+            
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            use_aesgcm_layout = True
+        except ImportError:
+            use_aesgcm_layout = False
+            
+        fin.seek(0)
+        salt = fin.read(_SALT_SIZE)
+        nonce = fin.read(_NONCE_SIZE)
+        
+        if use_aesgcm_layout:
+            fin.seek(total_len - _TAG_SIZE)
+            tag = fin.read(_TAG_SIZE)
+            ct_len = total_len - _SALT_SIZE - _NONCE_SIZE - _TAG_SIZE
+            start_offset = _SALT_SIZE + _NONCE_SIZE
+        else:
+            tag = fin.read(_TAG_SIZE)
+            ct_len = total_len - _SALT_SIZE - _NONCE_SIZE - _TAG_SIZE
+            start_offset = _SALT_SIZE + _NONCE_SIZE + _TAG_SIZE
+            
+        derived_key = _derive_key(key, salt)
+        
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        cipher = Cipher(algorithms.AES(derived_key), modes.GCM(nonce, tag))
+        decryptor = cipher.decryptor()
+        
+        with open(out_path, "wb") as fout:
+            fin.seek(start_offset)
+            bytes_read = 0
+            while bytes_read < ct_len:
+                chunk_to_read = min(64 * 1024, ct_len - bytes_read)
+                chunk = fin.read(chunk_to_read)
+                if not chunk:
+                    break
+                bytes_read += len(chunk)
+                fout.write(decryptor.update(chunk))
+            fout.write(decryptor.finalize())

@@ -1,3 +1,4 @@
+import dataclasses
 import time
 import click
 
@@ -8,6 +9,8 @@ from .base import cli
 @click.pass_context
 def daemon(ctx):
     cfg = ctx.obj["config"]
+    if dataclasses.is_dataclass(cfg) and not isinstance(cfg, type):
+        cfg = dataclasses.asdict(cfg)
     from ..scheduler import BackupScheduler
     scheduler = BackupScheduler(cfg)
     scheduler.start()

@@ -446,6 +446,27 @@ backupme recompress --backend my_ftp --algo zstd --level 19
 
 This uses the safe write-new→verify→commit→delete-old pipeline (no data loss risk).
 
+### 7.6 Move Feature (Delete Source on Success)
+
+If you want to move files to your backup backends rather than copying them (i.e. delete the original files from the local source disk after a successful backup), you can use the move option:
+
+**Via CLI:**
+```bash
+# Add --move or -m option to delete local files upon successful upload
+backupme backup ~/Docs -b my_usb_drive -r --move
+```
+
+**Via Config (for background scheduler/daemon):**
+Add `move: true` to the backups list:
+```yaml
+backups:
+  - source: D:\MySourceFolder
+    target: hostraj Gdrive
+    move: true                      # Deletes local files after verified replication
+```
+
+Deletions are highly secure: they are executed strictly after a successful database commit and verification signature check.
+
 ---
 
 ## 8. Maintenance & Monitoring
@@ -612,7 +633,7 @@ backupme encrypt change-password
 **Slow uploads?**
 - Use `--redundancy 1` for faster single-backend uploads
 - Enable compression: `compression: enabled: true` in config
-- Small files are auto-bundled (1KB-64KB) for 3-5× faster transfers
+- Small files are auto-bundled (under 10MB) into 64MB tar archives for 3-5× faster transfers
 
 **Slow downloads?**
 - Check backend health: `backupme status`
@@ -627,7 +648,7 @@ backupme encrypt change-password
 
 | Command | Description | Example |
 |---|---|---|
-| `backupme backup PATHS` | Backup files/directories | `backupme backup ~/Docs -b local --recursive` |
+| `backupme backup PATHS` | Backup or move files/directories | `backupme backup ~/Docs -b local --recursive --move` |
 | `backupme upload-bundle DIR` | Batch-upload small files | `backupme upload-bundle ~/Photos -b local` |
 | `backupme download ID\|PATH` | Restore a file | `backupme download 142 --dest ./restored/` |
 | `backupme restore` | Restore entire directory | `backupme restore --source ~/Docs --dest ./old/` |
@@ -649,7 +670,7 @@ backupme encrypt change-password
 ### All CLI Options
 
 ```bash
-backupme backup [PATHS]... [--backend NAME] [--redundancy N] [--recursive/-r]
+backupme backup [PATHS]... [--backend NAME] [--redundancy N] [--recursive/-r] [--move/-m]
 backupme upload-bundle DIR [--backend NAME] [--redundancy N]
 backupme download <file_id|path> [--from BACKEND] [--dest PATH]
 backupme restore [--source ROOT] [--dest PATH]

@@ -1,42 +1,181 @@
 {% extends "base.html" %}
+{% block title %}Activity{% endblock %}
+{% block breadcrumb %}Activity{% endblock %}
+
 {% block content %}
-<div class="flex-between mb-3">
-  <h1>Activity Log</h1>
-  <div class="flex gap-2">
-    <select id="op-filter" onchange="window.location.href='/logs?op='+encodeURIComponent(this.value)">
+<div class="page-header">
+  <h1><i data-lucide="activity" style="width:28px;height:28px;"></i> Activity Log</h1>
+  <div class="page-header-actions">
+    <div class="flex items-center gap-2">
+      <span class="dot dot-green dot-pulse" id="live-dot"></span>
+      <span class="text-xs text-muted" id="live-label">Live</span>
+    </div>
+    <button class="btn btn-secondary btn-sm" id="live-toggle" onclick="toggleLive()">
+      <i data-lucide="pause" style="width:14px;height:14px;"></i> Pause
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick="exportLogs('json')" title="Export JSON">
+      <i data-lucide="download" style="width:14px;height:14px;"></i> JSON
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick="exportLogs('csv')" title="Export CSV">
+      <i data-lucide="file-text" style="width:14px;height:14px;"></i> CSV
+    </button>
+  </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+  <div class="flex gap-3 items-center" style="flex-wrap: wrap;">
+    <select id="op-filter" style="min-width: 160px;">
       <option value="">All operations</option>
       {% for op in op_types %}
       <option value="{{ op }}" {% if current_op == op %}selected{% endif %}>{{ op }}</option>
       {% endfor %}
     </select>
+    <select id="status-filter" style="min-width: 140px;">
+      <option value="">All statuses</option>
+      <option value="completed" {% if current_status == 'completed' %}selected{% endif %}>Completed</option>
+      <option value="error" {% if current_status == 'error' %}selected{% endif %}>Error</option>
+      <option value="pending" {% if current_status == 'pending' %}selected{% endif %}>Pending</option>
+    </select>
+    <div class="topbar-search" style="flex: 1; min-width: 180px; max-width: 320px;">
+      <i data-lucide="search" class="search-icon" style="width:16px;height:16px;"></i>
+      <input type="search" id="log-search" placeholder="Filter logs..." autocomplete="off">
+    </div>
   </div>
 </div>
 
+<!-- Log Timeline -->
 <div class="card">
-  <table>
-    <thead><tr><th>ID</th><th>Timestamp</th><th>Operation</th><th>Details</th><th>Status</th></tr></thead>
-    <tbody>
+  <div class="card-header">
+    <span class="card-title">Events</span>
+    <span class="badge badge-gray" id="log-count">{{ logs|length }}</span>
+  </div>
+  <div class="card-body">
+    <div class="timeline" id="log-timeline">
       {% for log in logs %}
-      <tr>
-        <td>{{ log.id }}</td>
-        <td>{{ log.started_at[:19] if log.started_at else '' }}</td>
-        <td><span class="badge {% if log.status == 'error' %}badge-red{% else %}badge-gray{% endif %}">{{ log.op_type or log.operation }}</span></td>
-        <td class="truncate" title="{{ log.metadata or log.details }}">{{ log.metadata or log.details }}</td>
-        <td>
-          {% if log.status == 'error' %}
-          <span class="badge badge-red">error</span>
-          {% elif log.status == 'completed' or log.status == 'done' %}
-          <span class="badge badge-green">{{ log.status }}</span>
-          {% else %}
-          <span class="badge badge-yellow">{{ log.status }}</span>
+      <div class="timeline-item log-entry" data-op="{{ log.op_type or log.operation }}" data-status="{{ log.status or '' }}">
+        <div class="timeline-dot {% if log.status == 'error' %}red{% elif log.status in ['completed', 'done'] %}green{% elif log.status == 'pending' %}yellow{% else %}blue{% endif %}"></div>
+        <div class="timeline-time">{{ log.started_at[:19] if log.started_at else '' }}</div>
+        <div class="timeline-content">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="badge {% if log.status == 'error' %}badge-red{% elif log.status in ['completed', 'done'] %}badge-green{% elif log.status == 'pending' %}badge-yellow{% else %}badge-gray{% endif %}">
+              {{ log.op_type or log.operation }}
+            </span>
+            <span class="badge {% if log.status == 'error' %}badge-red{% elif log.status in ['completed', 'done'] %}badge-green{% elif log.status == 'pending' %}badge-yellow{% else %}badge-gray{% endif %}">
+              {% if log.status == 'error' %}
+                <i data-lucide="x-circle" style="width:10px;height:10px;"></i>
+              {% elif log.status in ['completed', 'done'] %}
+                <i data-lucide="check-circle-2" style="width:10px;height:10px;"></i>
+              {% elif log.status == 'pending' %}
+                <i data-lucide="loader" style="width:10px;height:10px;"></i>
+              {% endif %}
+              {{ log.status or 'unknown' }}
+            </span>
+          </div>
+          {% if log.target_json or log.last_error %}
+          <div class="text-sm text-secondary log-details" style="cursor:pointer;" onclick="this.classList.toggle('expanded')">
+            <span class="truncate" style="max-width: 500px; display: inline-block; vertical-align: bottom;">{{ log.last_error or log.target_json }}</span>
+          </div>
           {% endif %}
-        </td>
-      </tr>
+        </div>
+      </div>
       {% endfor %}
       {% if not logs %}
-      <tr><td colspan="5" class="empty">No activity logs yet</td></tr>
+      <div class="empty-state">
+        <i data-lucide="activity" style="width:48px;height:48px;"></i>
+        <h3>No activity yet</h3>
+        <p>Activity will appear here as backups and operations run.</p>
+      </div>
       {% endif %}
-    </tbody>
-  </table>
+    </div>
+  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const opFilter = document.getElementById('op-filter');
+  const statusFilter = document.getElementById('status-filter');
+  const logSearch = document.getElementById('log-search');
+  let liveEnabled = true;
+  let pollerId = null;
+
+  // Filter handlers
+  opFilter.addEventListener('change', () => {
+    const op = opFilter.value;
+    const status = statusFilter.value;
+    let url = '/logs?';
+    if (op) url += 'op=' + encodeURIComponent(op) + '&';
+    if (status) url += 'status=' + encodeURIComponent(status);
+    window.location.href = url;
+  });
+
+  statusFilter.addEventListener('change', () => {
+    const op = opFilter.value;
+    const status = statusFilter.value;
+    let url = '/logs?';
+    if (op) url += 'op=' + encodeURIComponent(op) + '&';
+    if (status) url += 'status=' + encodeURIComponent(status);
+    window.location.href = url;
+  });
+
+  // Client-side text search
+  logSearch.addEventListener('input', App.debounce(() => {
+    const q = logSearch.value.toLowerCase();
+    document.querySelectorAll('.log-entry').forEach(entry => {
+      const text = entry.textContent.toLowerCase();
+      entry.style.display = !q || text.includes(q) ? '' : 'none';
+    });
+  }, 200));
+
+  // Live polling
+  function startLive() {
+    pollerId = App.Poller.start('/api/logs?limit=50', (data) => {
+      if (!liveEnabled) return;
+      // We'll let the page refresh handle updates for now
+      // Full real-time timeline updates would need more complex DOM diffing
+    }, 5000);
+  }
+
+  window.toggleLive = function() {
+    liveEnabled = !liveEnabled;
+    const btn = document.getElementById('live-toggle');
+    const dot = document.getElementById('live-dot');
+    const label = document.getElementById('live-label');
+
+    if (liveEnabled) {
+      btn.innerHTML = '<i data-lucide="pause" style="width:14px;height:14px;"></i> Pause';
+      dot.classList.add('dot-pulse');
+      label.textContent = 'Live';
+      startLive();
+    } else {
+      btn.innerHTML = '<i data-lucide="play" style="width:14px;height:14px;"></i> Resume';
+      dot.classList.remove('dot-pulse');
+      label.textContent = 'Paused';
+      if (pollerId) App.Poller.stop(pollerId);
+    }
+    App.initIcons();
+  };
+
+  startLive();
+
+  window.exportLogs = async function(fmt) {
+    try {
+      const resp = await fetch('/api/logs/export?fmt=' + fmt + '&limit=500');
+      if (!resp.ok) throw new Error('Export failed');
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'logs.' + fmt;
+      a.click();
+      URL.revokeObjectURL(url);
+      App.Toast.success('Logs exported as ' + fmt.toUpperCase());
+    } catch (e) {
+      App.Toast.error('Export failed');
+    }
+  };
+})();
+</script>
 {% endblock %}

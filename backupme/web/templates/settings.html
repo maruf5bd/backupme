@@ -1,55 +1,590 @@
 {% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block breadcrumb %}Settings{% endblock %}
+
 {% block content %}
-<div class="flex-between mb-3">
-  <h1>Settings</h1>
-  <div class="flex gap-2">
-    <button class="btn btn-sm" onclick="fetch('/api/daemon/start',{method:'POST'}).then(()=>location.reload())">Start Daemon</button>
-    <button class="btn btn-sm btn-outline" onclick="fetch('/api/daemon/stop',{method:'POST'}).then(()=>location.reload())">Stop Daemon</button>
+<div class="page-header">
+  <h1><i data-lucide="settings" style="width:28px;height:28px;"></i> Settings</h1>
+  <div class="page-header-actions">
+    <div class="flex items-center gap-2">
+      <span class="dot dot-green dot-pulse" id="daemon-dot"></span>
+      <span class="text-xs text-muted" id="daemon-label">Daemon</span>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="startDaemon(this)">
+      <i data-lucide="play" style="width:14px;height:14px;"></i> Start Daemon
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick="stopDaemon(this)">
+      <i data-lucide="square" style="width:14px;height:14px;"></i> Stop
+    </button>
   </div>
 </div>
 
-<div class="card">
-  <h2>Configuration</h2>
-  <table>
-    <thead><tr><th>Section</th><th>Key</th><th>Value</th></tr></thead>
-    <tbody>
-      {% for section, items in config_items %}
-        {% for key, value in items %}
+<!-- Configuration Accordion -->
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">Configuration</span>
+  </div>
+  <div class="card-body">
+    {% for section, items in config_items %}
+    <div class="accordion-item {% if loop.first %}open{% endif %}">
+      <div class="accordion-header">
+        <div class="flex items-center gap-2">
+          {% if section == 'chunking' %}
+            <i data-lucide="layers" style="width:16px;height:16px;color:var(--accent);"></i>
+          {% elif section == 'compression' %}
+            <i data-lucide="minimize-2" style="width:16px;height:16px;color:var(--cyan);"></i>
+          {% elif section == 'encryption' %}
+            <i data-lucide="lock" style="width:16px;height:16px;color:var(--green);"></i>
+          {% elif section == 'verification' %}
+            <i data-lucide="shield-check" style="width:16px;height:16px;color:var(--purple);"></i>
+          {% elif section == 'retention' %}
+            <i data-lucide="clock" style="width:16px;height:16px;color:var(--orange);"></i>
+          {% elif section == 'database' %}
+            <i data-lucide="database" style="width:16px;height:16px;color:var(--blue);"></i>
+          {% else %}
+            <i data-lucide="settings" style="width:16px;height:16px;color:var(--text-muted);"></i>
+          {% endif %}
+          <h3 style="text-transform: capitalize;">{{ section }}</h3>
+        </div>
+        <i data-lucide="chevron-down" class="chevron" style="width:16px;height:16px;"></i>
+      </div>
+      <div class="accordion-body">
+        <div class="accordion-content">
+          <div class="table-wrapper">
+            <table>
+              <thead><tr><th>Key</th><th>Value</th><th style="width:60px;"></th></tr></thead>
+              <tbody>
+                {% for key, value in items %}
+                <tr>
+                  <td class="font-mono text-sm">{{ key }}</td>
+                  <td>
+                    <input type="text" class="config-input" data-section="{{ section }}" data-key="{{ key }}" value="{{ value }}" style="width:100%;background:var(--bg);border:1px solid var(--border-subtle);border-radius:4px;padding:4px 8px;font-size:0.8rem;color:var(--text);font-family:var(--font-mono);">
+                  </td>
+                  <td>
+                    <button class="btn btn-ghost btn-xs" onclick="saveConfigField('{{ section }}', '{{ key }}', this)" title="Save">
+                      <i data-lucide="check" style="width:12px;height:12px;"></i>
+                    </button>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not config_items %}
+    <div class="empty-state" style="padding: 1.5rem;">
+      <p>No configuration loaded</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Backup Sources -->
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">Backup Sources</span>
+    <button class="btn btn-primary btn-sm" onclick="openAddSourceModal()">
+      <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Source
+    </button>
+  </div>
+  {% if sources %}
+  <div class="table-wrapper">
+    <table>
+      <thead>
         <tr>
-          <td><span class="badge badge-gray">{{ section }}</span></td>
-          <td>{{ key }}</td>
-          <td style="color: var(--text2);">{{ value }}</td>
+          <th>Source Path</th>
+          <th>Mirror</th>
+          <th>Target Backend</th>
+          <th style="width:60px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for src in sources %}
+        <tr>
+          <td>
+            <div class="flex items-center gap-2">
+              <i data-lucide="folder" style="width:16px;height:16px;color:var(--text-muted);"></i>
+              <span class="font-mono text-sm">{{ src.source }}</span>
+            </div>
+          </td>
+          <td>
+            {% if src.redundancy and src.redundancy > 1 %}
+              <span class="badge badge-green">Yes</span>
+            {% else %}
+              <span class="badge badge-gray">No</span>
+            {% endif %}
+          </td>
+          <td class="text-secondary text-sm">auto</td>
+          <td style="text-align:right;">
+            <button class="btn btn-ghost btn-xs" onclick="deleteBackupSource('{{ src.source }}')" style="color:var(--red);" title="Remove Source">
+              <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
+            </button>
+          </td>
         </tr>
         {% endfor %}
-      {% endfor %}
-    </tbody>
-  </table>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding: 2rem;">
+    <i data-lucide="folder-open" style="width:48px;height:48px;"></i>
+    <h3>No sources configured</h3>
+    <p>Add backup sources to your configuration to start backing up.</p>
+    <button class="btn btn-primary btn-sm mt-3" onclick="openAddSourceModal()">
+      <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Source
+    </button>
+  </div>
+  {% endif %}
 </div>
 
-<div class="card">
-  <h2>Backup Sources</h2>
-  <table>
-    <thead><tr><th>Source Path</th><th>Mirror</th><th>Target Backend</th></tr></thead>
-    <tbody>
-      {% for src in sources %}
-      <tr>
-        <td>{{ src.source }}</td>
-        <td>{{ 'Yes' if src.mirror else 'No' }}</td>
-        <td>{{ src.backend or 'auto' }}</td>
-      </tr>
-      {% endfor %}
-      {% if not sources %}
-      <tr><td colspan="3" class="empty">No sources configured</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
+<!-- System Ignored Filters (Global Exclusions) -->
+<div class="card mb-4">
+  <div class="card-header" style="background: linear-gradient(135deg, rgba(var(--accent-rgb, 99, 102, 241), 0.02), rgba(var(--accent-rgb, 99, 102, 241), 0.005)); border-bottom: 1px solid var(--border-subtle); display:flex; align-items:center; gap:0.5rem;">
+    <i data-lucide="eye-off" style="width:16px;height:16px;color:var(--orange);"></i>
+    <span class="card-title" style="margin-bottom:0;">System Ignore Filters</span>
+  </div>
+  <div class="card-body">
+    <p class="text-xs text-muted mb-3">These folders, extensions, and system files are ignored globally by the backup engine to prevent backing up corrupt temporary caches, memory dumps, or locked operating system directories.</p>
+    
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+      
+      <!-- Folders Column -->
+      <div style="background:var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0.75rem;">
+        <h4 class="text-xs font-semibold mb-2" style="text-transform:uppercase; letter-spacing:0.05em; color:var(--orange); display:flex; align-items:center; gap:4px;">
+          <i data-lucide="folder-x" style="width:14px;height:14px;"></i> Ignored Folders & Cache Paths
+        </h4>
+        <div style="display:flex; flex-wrap:wrap; gap: 0.25rem;">
+          <span class="badge badge-gray font-mono text-xs" title="Operating System Directory">Windows</span>
+          <span class="badge badge-gray font-mono text-xs" title="Previous System Installation">Windows.old</span>
+          <span class="badge badge-gray font-mono text-xs" title="System Assembly Cache">WinSxS</span>
+          <span class="badge badge-gray font-mono text-xs" title="64-bit System Core">System32</span>
+          <span class="badge badge-gray font-mono text-xs" title="32-bit Compatibility Layer">SysWOW64</span>
+          <span class="badge badge-gray font-mono text-xs" title="Applications Root">Program Files</span>
+          <span class="badge badge-gray font-mono text-xs" title="Shared Application Data">ProgramData</span>
+          <span class="badge badge-gray font-mono text-xs" title="Recycle Bin Catalog">$Recycle.Bin</span>
+          <span class="badge badge-gray font-mono text-xs" title="Temporary System Cache">Temp</span>
+          <span class="badge badge-gray font-mono text-xs" title="Node.js Package Cache">node_modules</span>
+          <span class="badge badge-gray font-mono text-xs" title="Git Version Control System">.git</span>
+          <span class="badge badge-gray font-mono text-xs" title="Python Virtual Environments">venv</span>
+          <span class="badge badge-gray font-mono text-xs" title="Build Target Directory">build</span>
+          <span class="badge badge-gray font-mono text-xs" title="Distribution Target">dist</span>
+          <span class="badge badge-gray font-mono text-xs" title="System/Dev Caches">.cache</span>
+          <span class="badge badge-gray font-mono text-xs" title="VSCode Configuration">.vscode</span>
+        </div>
+      </div>
+      
+      <!-- Files Column -->
+      <div style="background:var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0.75rem;">
+        <h4 class="text-xs font-semibold mb-2" style="text-transform:uppercase; letter-spacing:0.05em; color:var(--accent); display:flex; align-items:center; gap:4px;">
+          <i data-lucide="file-x" style="width:14px;height:14px;"></i> Ignored Files & Extensions
+        </h4>
+        <div style="display:flex; flex-wrap:wrap; gap: 0.25rem;">
+          <span class="badge badge-gray font-mono text-xs" title="Temporary Files">*.tmp</span>
+          <span class="badge badge-gray font-mono text-xs" title="Temporary Caches">*.temp</span>
+          <span class="badge badge-gray font-mono text-xs" title="Activity Logs">*.log</span>
+          <span class="badge badge-gray font-mono text-xs" title="Backup Copy files">*.bak</span>
+          <span class="badge badge-gray font-mono text-xs" title="Deprecated files">*.old</span>
+          <span class="badge badge-gray font-mono text-xs" title="Explorer Thumbnail Cache">Thumbs.db</span>
+          <span class="badge badge-gray font-mono text-xs" title="Folder View Config">desktop.ini</span>
+          <span class="badge badge-gray font-mono text-xs" title="Virtual Memory Pagefile">pagefile.sys</span>
+          <span class="badge badge-gray font-mono text-xs" title="Hibernation state dump">hiberfil.sys</span>
+          <span class="badge badge-gray font-mono text-xs" title="SQLite Write-Ahead Log">*.sqlite-wal</span>
+          <span class="badge badge-gray font-mono text-xs" title="SQLite Shared Memory Index">*.sqlite-shm</span>
+        </div>
+      </div>
+      
+    </div>
+  </div>
 </div>
 
+
+
+<!-- Actions -->
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">Actions</span>
+  </div>
+  <div class="card-body">
+    <div class="flex gap-3" style="flex-wrap: wrap;">
+      <button class="btn btn-primary btn-sm" onclick="triggerBackup(this)">
+        <i data-lucide="play" style="width:14px;height:14px;"></i> Trigger Backup Now
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="initEncryption()">
+        <i data-lucide="key" style="width:14px;height:14px;"></i> Initialize Encryption
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="checkEncryptStatus()">
+        <i data-lucide="shield" style="width:14px;height:14px;"></i> Check Encryption
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="recompressBlobs(this)">
+        <i data-lucide="minimize-2" style="width:14px;height:14px;"></i> Recompress Blobs
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="exportConfig()">
+        <i data-lucide="download" style="width:14px;height:14px;"></i> Export Config
+      </button>
+      <label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;">
+        <i data-lucide="upload" style="width:14px;height:14px;"></i> Import Config
+        <input type="file" accept=".yaml,.yml" onchange="importConfig(this.files[0])" style="display:none;">
+      </label>
+      <button class="btn btn-danger btn-sm" onclick="restartServer()">
+        <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> Restart Server
+      </button>
+    </div>
+    <div id="encrypt-status" class="mt-3" style="display:none;"></div>
+  </div>
+</div>
+
+<!-- Scheduler Config -->
 <div class="card">
-  <h2>Actions</h2>
-  <div class="flex gap-2">
-    <button class="btn" onclick="fetch('/api/backup',{method:'POST'}).then(r=>r.json()).then(d=>alert('Backup triggered: '+d.status))">Trigger Backup Now</button>
-    <button class="btn btn-outline" onclick="fetch('/api/encrypt/init',{method:'POST'}).then(r=>r.json()).then(d=>alert(d.message||d.status))">Initialize Encryption</button>
+  <div class="card-header">
+    <span class="card-title">Scheduler</span>
+  </div>
+  <div class="card-body">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: end;">
+      <div class="input-group">
+        <label>Backup Interval (seconds)</label>
+        <input type="number" id="scheduler-interval" value="3600" min="60">
+      </div>
+      <div class="input-group">
+        <label>Auto-run</label>
+        <div style="padding: 8px 0;">
+          <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.85rem;cursor:pointer;">
+            <input type="checkbox" id="scheduler-enabled"> Enable scheduled backups
+          </label>
+        </div>
+      </div>
+      <div>
+        <button class="btn btn-primary btn-sm" onclick="saveSchedulerConfig(this)">
+          <i data-lucide="check" style="width:14px;height:14px;"></i> Save Schedule
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  App.initAccordions();
+
+  // Check daemon status on load
+  async function checkDaemonStatus() {
+    try {
+      const data = await fetch('/api/daemon/status').then(r => r.json());
+      if (data.running) {
+        document.getElementById('daemon-dot').className = 'dot dot-green dot-pulse';
+        document.getElementById('daemon-label').textContent = 'Running';
+      } else {
+        document.getElementById('daemon-dot').className = 'dot dot-gray';
+        document.getElementById('daemon-label').textContent = 'Stopped';
+      }
+    } catch (e) {}
+  }
+  checkDaemonStatus();
+
+  window.saveConfigField = async function(section, key, btn) {
+    const input = btn.closest('tr').querySelector('.config-input');
+    const raw = input.value;
+    // Try to convert to appropriate type
+    let value;
+    if (raw === 'true') value = true;
+    else if (raw === 'false') value = false;
+    else if (raw !== '' && !isNaN(raw) && raw.trim() !== '') value = Number(raw);
+    else value = raw;
+    try {
+      const data = {};
+      data[section] = {};
+      data[section][key] = value;
+      await App.fetchAPI('/api/config', { method: 'POST', body: data });
+      App.Toast.success('Saved ' + section + '.' + key);
+    } catch (e) {}
+  };
+
+  window.startDaemon = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await App.fetchAPI('/api/daemon/start', { method: 'POST' });
+      App.Toast.success('Daemon started');
+      document.getElementById('daemon-dot').className = 'dot dot-green dot-pulse';
+      document.getElementById('daemon-label').textContent = 'Running';
+    } catch (e) {
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.stopDaemon = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await App.fetchAPI('/api/daemon/stop', { method: 'POST' });
+      App.Toast.success('Daemon stopped');
+      document.getElementById('daemon-dot').className = 'dot dot-gray';
+      document.getElementById('daemon-label').textContent = 'Stopped';
+    } catch (e) {
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.triggerBackup = async function(btn) {
+    App.Modal.confirm(
+      'Trigger Backup',
+      'Run backup for all configured sources now?',
+      async () => {
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Running...';
+        try {
+          const data = await App.fetchAPI('/api/backup', { method: 'POST' });
+          App.Toast.success('Backup completed');
+        } catch (e) {
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = origHtml;
+          App.initIcons();
+        }
+      }
+    );
+  };
+
+  window.initEncryption = function() {
+    App.Modal.confirm(
+      'Initialize Encryption',
+      'This will generate a new AES-256-GCM encryption key and save it to backupme.key. Any existing key will be overwritten. Continue?',
+      async () => {
+        try {
+          const result = await App.fetchAPI('/api/encrypt/init', { method: 'POST' });
+          App.Toast.success(result.message || 'Encryption initialized');
+        } catch (e) {
+        }
+      },
+      'Generate Key',
+      true
+    );
+  };
+
+  window.checkEncryptStatus = async function() {
+    try {
+      const data = await fetch('/api/encrypt/status').then(r => r.json());
+      const el = document.getElementById('encrypt-status');
+      el.style.display = 'block';
+      if (data.key_exists) {
+        el.innerHTML = '<div class="flex items-center gap-2"><span class="badge badge-green">Active</span><span class="text-sm text-secondary">Key at ' + data.key_path + ' (' + App.formatBytes(data.key_size) + ')</span></div>';
+      } else {
+        el.innerHTML = '<div class="flex items-center gap-2"><span class="badge badge-yellow">Not Found</span><span class="text-sm text-secondary">No encryption key found. Initialize one above.</span></div>';
+      }
+    } catch (e) {
+      App.Toast.error('Failed to check encryption status');
+    }
+  };
+
+  window.recompressBlobs = function(btn) {
+    App.Modal.confirm(
+      'Recompress Blobs',
+      'This will recompress non-zstd blobs to zstd format. This may take a while and uses bandwidth. Continue?',
+      async () => {
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Recompressing...';
+        try {
+          const result = await App.fetchAPI('/api/recompress', { method: 'POST' });
+          App.Toast.success('Recompressed ' + (result.converted || 0) + ' blobs');
+        } catch (e) {
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = origHtml;
+          App.initIcons();
+        }
+      }
+    );
+  };
+
+  window.exportConfig = async function() {
+    try {
+      const resp = await fetch('/api/config/export');
+      if (!resp.ok) throw new Error('Export failed');
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'config.yaml';
+      a.click();
+      URL.revokeObjectURL(url);
+      App.Toast.success('Config exported');
+    } catch (e) {
+      App.Toast.error('Export failed: ' + e.message);
+    }
+  };
+
+  window.importConfig = async function(file) {
+    if (!file) return;
+    App.Modal.confirm(
+      'Import Config',
+      'This will overwrite your current config.yaml with <strong>' + file.name + '</strong>. Continue?',
+      async () => {
+        try {
+          const text = await file.text();
+          const resp = await App.fetchAPI('/api/config/import', {
+            method: 'POST',
+            body: text,
+            headers: { 'Content-Type': 'text/yaml' },
+          });
+          App.Toast.success('Config imported');
+          setTimeout(() => location.reload(), 800);
+        } catch (e) {}
+      },
+      'Import',
+      true
+    );
+  };
+
+  // Load scheduler config
+  async function loadSchedulerConfig() {
+    try {
+      const data = await fetch('/api/scheduler/config').then(r => r.json());
+      document.getElementById('scheduler-interval').value = data.interval || 3600;
+      document.getElementById('scheduler-enabled').checked = data.enabled || false;
+    } catch (e) {}
+  }
+  loadSchedulerConfig();
+
+  window.saveSchedulerConfig = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      const data = {
+        interval: parseInt(document.getElementById('scheduler-interval').value) || 3600,
+        enabled: document.getElementById('scheduler-enabled').checked,
+      };
+      await App.fetchAPI('/api/scheduler/config', { method: 'POST', body: data });
+      App.Toast.success('Scheduler config saved');
+    } catch (e) {
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.restartServer = function() {
+    App.Modal.confirm(
+      'Restart Server',
+      'The server will restart to apply config changes. The page will reload automatically after a few seconds. Continue?',
+      async () => {
+        try {
+          App.Toast.info('Server restarting...');
+          await App.fetchAPI('/api/server/restart', { method: 'POST' });
+          // Poll until server is back
+          let attempts = 0;
+          const check = setInterval(async () => {
+            attempts++;
+            try {
+              const r = await fetch('/health');
+              if (r.ok) {
+                clearInterval(check);
+                App.Toast.success('Server restarted');
+                setTimeout(() => location.reload(), 500);
+              }
+            } catch (e) {}
+            if (attempts > 30) {
+              clearInterval(check);
+              location.reload();
+            }
+          }, 1000);
+        } catch (e) {}
+      },
+      'Restart',
+      true
+    );
+  };
+
+  window.openAddSourceModal = function() {
+    document.getElementById('add-source-form').reset();
+    App.Modal.open('add-source-modal');
+  };
+
+  window.saveBackupSource = async function(e) {
+    e.preventDefault();
+    const source = document.getElementById('source-path').value.trim();
+    const mirror = document.getElementById('source-mirror').checked;
+    const excludeRaw = document.getElementById('source-exclude').value.trim();
+    const exclude = excludeRaw ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+    try {
+      await App.fetchAPI('/api/config/sources', {
+        method: 'POST',
+        body: { source, mirror, exclude }
+      });
+      App.Toast.success('Backup source added successfully');
+      App.Modal.close('add-source-modal');
+      setTimeout(() => location.reload(), 500);
+    } catch (e) {}
+  };
+
+  window.deleteBackupSource = function(source) {
+    App.Modal.confirm(
+      'Delete Backup Source',
+      'Are you sure you want to stop backing up <strong>' + App.escapeHtml(source) + '</strong>? This will remove it from configuration (backed-up files remain intact).',
+      async () => {
+        try {
+          await App.fetchAPI('/api/config/sources?source=' + encodeURIComponent(source), {
+            method: 'DELETE'
+          });
+          App.Toast.success('Backup source removed successfully');
+          setTimeout(() => location.reload(), 500);
+        } catch (e) {}
+      },
+      'Delete',
+      true
+    );
+  };
+})();
+</script>
+
+<!-- Add Source Modal -->
+<div id="add-source-modal" class="modal-overlay">
+  <div class="modal" style="max-width: 480px;">
+    <div class="modal-header">
+      <h2>Add Backup Source</h2>
+      <button class="modal-close" onclick="App.Modal.close('add-source-modal')">
+        <i data-lucide="x" style="width:18px;height:18px;"></i>
+      </button>
+    </div>
+    <form id="add-source-form" onsubmit="saveBackupSource(event)">
+      <div class="input-group">
+        <label>Source Path</label>
+        <input type="text" id="source-path" required placeholder="C:\Users\Maruf\Documents or /home/user/data">
+        <div class="text-xs text-muted mt-1">Full path to the directory or file you want to back up</div>
+      </div>
+      <div class="input-group">
+        <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;padding:4px 0;">
+          <input type="checkbox" id="source-mirror"> Enable Redundancy (Mirror / 2 copies)
+        </label>
+      </div>
+      <div class="input-group">
+        <label>Exclude Patterns <span class="text-muted">(comma-separated, optional)</span></label>
+        <input type="text" id="source-exclude" placeholder="*.tmp, *.log, node_modules">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="App.Modal.close('add-source-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">
+          <i data-lucide="check" style="width:14px;height:14px;"></i> Save Source
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+

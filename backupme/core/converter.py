@@ -60,10 +60,11 @@ def _redudancy_met(blob_ids: list[str], min_copies: int = 1) -> bool:
 
 def _manifest_replicated(uuid_str: str, min_copies: int = 1) -> bool:
     path = f"manifests/{uuid_str[:2]}/{uuid_str[2:4]}/{uuid_str}.manifest.json"
+    from backupme.config import load_config
+    config = load_config()
     count = 0
-    for be_name in get_all_backends():
-        bk = get_backend(be_name, {})
-        if bk and bk.exists(path):
+    for be in get_all_backends(config):
+        if be.exists(path):
             count += 1
     return count >= min_copies
 
@@ -75,9 +76,8 @@ def convert_backend(
     delete: bool = False,
     resume: bool = False,
 ):
-    config = {"backends": {}}
-    from backupme.config import get_config
-    config = get_config()
+    from backupme.config import load_config
+    config = load_config()
 
     backend = get_backend(backend_name, config)
     if backend is None:
@@ -142,9 +142,6 @@ def convert_backend(
 
                 if _redudancy_met(blob_ids, min_copies=1):
                     if result.get("chunked"):
-                        file_uuid = execute(
-                            "SELECT relative_path FROM files WHERE id = ?", (result["file_id"],)
-                        ).fetchone()
                         actual_uuid = result.get("file_uuid", file_sha256[:32])
                         import re
                         m = re.match(r'[a-f0-9]{32}', actual_uuid)
@@ -153,7 +150,7 @@ def convert_backend(
                     else:
                         backend.delete(rel_path)
 
-            tmp.unlink()
+            tmp.unlink(missing_ok=True)
             completed += 1
 
             if completed % _CHECKPOINT_INTERVAL == 0:

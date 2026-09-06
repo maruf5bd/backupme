@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -46,27 +47,38 @@ class RcloneBackend(StorageBackend):
         self._connected = False
 
     def upload(self, local_path: str, remote_rel_path: str) -> str:
-        dir_part = remote_rel_path.rsplit("/", 1)[0] if "/" in remote_rel_path else ""
-        dest_dir = self._dest(dir_part)
-        subprocess.run(
-            self._args() + ["copy", local_path, dest_dir],
-            capture_output=True, timeout=120,
+        dest = self._dest(remote_rel_path)
+        result = subprocess.run(
+            self._args() + ["copyto", local_path, dest],
+            capture_output=True, timeout=300,
         )
+        if result.returncode != 0:
+            raise IOError(f"rclone upload failed: {result.stderr.strip()}")
+        sha = hashlib.sha256()
         with open(local_path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                sha.update(chunk)
+        return sha.hexdigest()
 
     def download(self, remote_rel_path: str, local_path: str):
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            self._args() + ["copy", self._dest(remote_rel_path), local_path],
-            capture_output=True, timeout=120,
+        result = subprocess.run(
+            self._args() + ["copyto", self._dest(remote_rel_path), local_path],
+            capture_output=True, timeout=300,
         )
+        if result.returncode != 0:
+            raise IOError(f"rclone download failed: {result.stderr.strip()}")
 
     def delete(self, remote_rel_path: str):
-        subprocess.run(
+        result = subprocess.run(
             self._args() + ["delete", self._dest(remote_rel_path)],
             capture_output=True, timeout=60,
         )
+        if result.returncode != 0:
+            raise IOError(f"rclone delete failed: {result.stderr.strip()}")
 
     def exists(self, remote_rel_path: str) -> bool:
         result = subprocess.run(
@@ -113,7 +125,7 @@ class RcloneBackend(StorageBackend):
             return None
         try:
             data = json.loads(result.stdout)
-            free = data.get("free") or data.get("free", 0)
+            free = data.get("free", 0) or 0
             return int(free)
         except (json.JSONDecodeError, ValueError, TypeError):
             return None
@@ -127,7 +139,7 @@ class RcloneBackend(StorageBackend):
             return None
         try:
             data = json.loads(result.stdout)
-            total = data.get("total") or data.get("total", 0)
+            total = data.get("total", 0) or 0
             return int(total)
         except (json.JSONDecodeError, ValueError, TypeError):
             return None
@@ -163,18 +175,26 @@ class RcloneBackend(StorageBackend):
                     mtime = items[0].get("ModTime", None)
             except json.JSONDecodeError:
                 pass
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
-            tmp_path = tmp.name
+        if size == 0:
+            return {"size": 0, "mtime": mtime, "head_tail_sha256": ""}
+        fd, tmp_path = tempfile.mkstemp(suffix=".tmp")
+        os.close(fd)
         try:
-            subprocess.run(
-                self._args() + ["copy", self._dest(remote_rel_path), tmp_path],
+            result = subprocess.run(
+                self._args() + ["copyto", self._dest(remote_rel_path), tmp_path],
                 capture_output=True, timeout=120,
             )
+            if result.returncode != 0:
+                return {"size": size, "mtime": mtime, "head_tail_sha256": ""}
             p = Path(tmp_path)
             if p.exists():
-                data = p.read_bytes()
-                head = data[:4096]
-                tail = data[-4096:] if len(data) > 4096 else data
+                with open(tmp_path, "rb") as f:
+                    head = f.read(4096)
+                    if size > 4096:
+                        f.seek(-4096, 2)
+                        tail = f.read(4096)
+                    else:
+                        tail = head
                 h = hashlib.sha256(head + tail).hexdigest()
                 return {"size": size, "mtime": mtime, "head_tail_sha256": h}
         finally:

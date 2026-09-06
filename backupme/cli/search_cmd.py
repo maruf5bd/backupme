@@ -1,3 +1,4 @@
+import json
 import click
 
 from .base import cli
@@ -30,8 +31,8 @@ def select_backend(ctx, query):
     cfg = ctx.obj["config"]
     from ..core import selector
     results = selector.fuzzy_find_backend(query, cfg)
-    for r in results:
-        click.echo(f"{r['name']:<20} ({r['type']:<8})  score={r.get('score', 1):.2f}")
+    for btype, name, score in results:
+        click.echo(f"{name:<20} ({btype:<8})  score={score:.2f}")
 
 
 @cli.command()

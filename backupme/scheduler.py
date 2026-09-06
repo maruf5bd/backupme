@@ -7,6 +7,7 @@ from backupme.core.database import initialize, get_generation, bump_generation, 
 from backupme.core import snapshot as snapmod
 from backupme.core import replicator
 from backupme.core import retry as retry_mod
+from backupme.core.skip import should_skip, should_skip_dir
 from backupme.backends import get_all_backends
 
 
@@ -113,19 +114,29 @@ class BackupScheduler:
 
             src_path = Path(source)
             if src_path.is_file():
+                skip, reason2 = should_skip(str(src_path))
+                if skip:
+                    continue
                 files_to_backup = [src_path]
             else:
-                files_to_backup = list(src_path.rglob("*"))
+                files_to_backup = []
+                for dirpath, dirnames, filenames in os.walk(str(src_path)):
+                    dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
+                    for fname in filenames:
+                        files_to_backup.append(Path(dirpath) / fname)
 
             for fp in files_to_backup:
                 if not fp.is_file():
                     continue
-                rel = str(fp.relative_to(src_path.parent))
+                rel = str(fp.relative_to(src_path))
                 if any(fnmatch.fnmatch(rel, pat) for pat in excludes):
+                    continue
+                skip, _ = should_skip(str(fp))
+                if skip:
                     continue
 
                 try:
-                    upload_file(
+                    result = upload_file(
                         source_root=str(src_path),
                         relative_path=rel,
                         local_path=str(fp),
@@ -133,6 +144,11 @@ class BackupScheduler:
                         config=self.config,
                         redundancy=redundancy,
                     )
+                    if entry.get("move", False) and result and "file_id" in result:
+                        try:
+                            os.remove(str(fp))
+                        except OSError:
+                            pass
                 except Exception:
                     import traceback
                     traceback.print_exc()

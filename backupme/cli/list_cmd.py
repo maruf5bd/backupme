@@ -16,7 +16,7 @@ def list_files(ctx, backend, sha256_val, limit, offset):
     else:
         files = index_mod.get_all_files(limit=limit, offset=offset)
     if backend:
-        files = [f for f in files if f.get("backend_name") == backend]
+        files = [f for f in files if f.get("source_root") == backend]
     for f in files:
         click.echo(f"{f['id']:>6}  {f.get('relative_path', f.get('rel_path', '?')):<60}  {f['sha256'][:16]}")
 

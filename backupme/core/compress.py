@@ -28,9 +28,11 @@ _MAGIC_MAP = {
 }
 
 _EXT_SKIP = {
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mkv", ".avi",
-    ".mov", ".mp3", ".flac", ".ogg", ".zip", ".gz", ".bz2", ".xz",
-    ".zst", ".rar", ".7z", ".pdf", ".doc", ".docx", ".ppt", ".pptx",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff",
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
+    ".mp3", ".flac", ".ogg", ".wav", ".aac", ".wma", ".m4a",
+    ".zip", ".gz", ".bz2", ".xz", ".zst", ".rar", ".7z", ".lz4", ".sz",
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
 }
 
 
@@ -44,6 +46,8 @@ def should_skip(data: bytes, ext: str = "") -> bool:
 
 
 def choose_compression_level(file_size: int) -> tuple[str, int]:
+    if not _HAS_ZSTD:
+        return ("gzip", 6)
     if file_size < 64 * 1024:
         return ("zstd", 19)
     elif file_size < 1024 * 1024:
@@ -59,12 +63,9 @@ def compress(data: bytes, algorithm: str = "zstd", level: int = 3) -> bytes:
         return data
     if algorithm == "zstd":
         if not _HAS_ZSTD:
-            return data
-        try:
-            cctx = zstd.ZstdCompressor(level=level)
-            return cctx.compress(data)
-        except Exception:
-            return data
+            return gzip.compress(data, compresslevel=6)
+        cctx = zstd.ZstdCompressor(level=level)
+        return cctx.compress(data)
     elif algorithm == "gzip":
         return gzip.compress(data, compresslevel=level)
     elif algorithm == "bz2":
@@ -80,12 +81,9 @@ def decompress(data: bytes, algorithm: str = "zstd") -> bytes:
         return data
     if algorithm == "zstd":
         if not _HAS_ZSTD:
-            return data
-        try:
-            dctx = zstd.ZstdDecompressor()
-            return dctx.decompress(data)
-        except Exception:
-            return data
+            raise RuntimeError("zstd decompression requested but python-zstandard not installed")
+        dctx = zstd.ZstdDecompressor()
+        return dctx.decompress(data)
     elif algorithm == "gzip":
         return gzip.decompress(data)
     elif algorithm == "bz2":
@@ -106,12 +104,18 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
     import hashlib, tempfile, time
     from pathlib import Path
 
-    rows = execute(
-        "SELECT bs.* FROM blob_storage bs "
-        + ("WHERE bs.backend_name = ?" if backend_name else "")
-        + " AND (bs.compression_algo != ? OR bs.compression_level != ?)",
-        (backend_name, algo, level) if backend_name else (algo, level),
-    ).fetchall()
+    if backend_name:
+        rows = execute(
+            "SELECT bs.* FROM blob_storage bs "
+            "WHERE bs.backend_name = ? AND (bs.compression_algo != ? OR bs.compression_level != ?)",
+            (backend_name, algo, level),
+        ).fetchall()
+    else:
+        rows = execute(
+            "SELECT bs.* FROM blob_storage bs "
+            "WHERE bs.compression_algo != ? OR bs.compression_level != ?",
+            (algo, level),
+        ).fetchall()
 
     recompressed = 0
     for row_s in rows:
@@ -130,11 +134,13 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
 
             if row["encrypted"] and key:
                 from backupme.core import crypto as crypto_mod
-                raw = crypto_mod.decrypt(raw, row["nonce"], row["auth_tag"], key)
+                raw = crypto_mod.decrypt(raw, key)
             if row["compression_algo"] and row["compression_algo"] != "none":
                 raw = decompress(raw, row["compression_algo"])
 
             new_data = compress(raw, algo, level)
+            nonce = None
+            tag = None
             if row["encrypted"] and key:
                 from backupme.core import crypto as crypto_mod
                 new_data, nonce, tag = crypto_mod.encrypt(new_data, key)
@@ -143,22 +149,42 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
             tmp = Path(tempfile.mkdtemp()) / "recompress_new"
             tmp.write_bytes(new_data)
 
-            bk.upload(str(tmp), row["storage_path"])
-            remote_hash = bk.hash(row["storage_path"])
+            # B12: write-new to a NEW path, never overwrite old
+            old_path = row["storage_path"]
+            new_path = old_path + f".recompress_{int(time.time())}"
+            bk.upload(str(tmp), new_path)
+            remote_hash = bk.hash(new_path)
             if remote_hash is None:
                 dl_v = Path(tempfile.mkdtemp()) / "v"
-                bk.download(row["storage_path"], str(dl_v))
+                bk.download(new_path, str(dl_v))
                 remote_hash = hashlib.sha256(dl_v.read_bytes()).hexdigest()
             if remote_hash != new_sha:
+                # Clean up failed new variant
+                try:
+                    bk.delete(new_path)
+                except Exception:
+                    pass
                 continue
 
+            # B12: INSERT new row first, then delete old
             execute(
-                "UPDATE blob_storage SET compression_algo=?, compression_level=?, stored_size=?, stored_sha256=?, "
-                "nonce=?, auth_tag=?, verified_at=datetime('now') WHERE blob_id=? AND backend_name=?",
-                (algo, level, len(new_data), new_sha, nonce if row["encrypted"] else None,
-                 tag if row["encrypted"] else None, blob_id, row["backend_name"]),
+                """INSERT INTO blob_storage
+                   (blob_id, backend_name, storage_path, stored_size, stored_sha256,
+                    compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (blob_id, row["backend_name"], new_path, len(new_data), new_sha,
+                 algo, level, row["encrypted"], nonce, tag),
+            )
+            # Delete old row and old file
+            execute(
+                "DELETE FROM blob_storage WHERE blob_id = ? AND backend_name = ? AND storage_path = ?",
+                (blob_id, row["backend_name"], old_path),
             )
             commit()
+            try:
+                bk.delete(old_path)
+            except Exception:
+                pass
             recompressed += 1
 
         except Exception:

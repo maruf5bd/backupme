@@ -17,13 +17,44 @@ BACKEND_MAP: dict[str, type[StorageBackend]] = {
 _instance_cache: dict[str, StorageBackend] = {}
 
 
-def get_backend(name: str, config: dict | None = None) -> StorageBackend | None:
+def _normalize_config(config) -> dict:
+    # Config dataclass
+    if hasattr(config, "backends"):
+        return _config_to_dict(config.backends)
+    # Dict with "backends" key (full config dict from dataclasses.asdict)
+    if isinstance(config, dict) and "backends" in config:
+        be = config["backends"]
+        if isinstance(be, dict):
+            return _config_to_dict(be)
+        return be
+    # Already a backends dict (keys are backend types)
+    return config
+
+
+def _config_to_dict(be_map) -> dict:
+    result = {}
+    for btype, blist in be_map.items():
+        result[btype] = []
+        for be in blist:
+            if hasattr(be, "__dataclass_fields__"):
+                result[btype].append({k: getattr(be, k) for k in be.__dataclass_fields__})
+            else:
+                result[btype].append(be)
+    return result
+
+
+def get_backend(name: str, config=None) -> StorageBackend | None:
     if name in _instance_cache:
-        return _instance_cache[name]
+        inst = _instance_cache[name]
+        if inst.connected:
+            return inst
+        # Stale instance — remove and re-create
+        _instance_cache.pop(name, None)
     if config is None:
         return None
+    cfg = _normalize_config(config)
     for btype, cls in BACKEND_MAP.items():
-        be = config.get(btype, [])
+        be = cfg.get(btype, [])
         for entry in be:
             if entry.get("name") == name:
                 inst = cls(name, entry)
@@ -33,12 +64,18 @@ def get_backend(name: str, config: dict | None = None) -> StorageBackend | None:
     return None
 
 
-def get_all_backends(config: dict) -> list[StorageBackend]:
+def get_all_backends(config) -> list[StorageBackend]:
+    cfg = _normalize_config(config)
     result = []
     for btype, cls in BACKEND_MAP.items():
-        for entry in config.get(btype, []):
-            inst = cls(entry.get("name", f"{btype}_{len(result)}"), entry)
+        for entry in cfg.get(btype, []):
+            name = entry.get("name", f"{btype}_{len(result)}")
+            if name in _instance_cache:
+                result.append(_instance_cache[name])
+                continue
+            inst = cls(name, entry)
             if inst.connect():
+                _instance_cache[name] = inst
                 result.append(inst)
     return result
 

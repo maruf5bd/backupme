@@ -25,18 +25,59 @@ def _find_chunk_storage(blob_id: str, backend_name: str | None = None) -> list[d
     return [dict(r) for r in rows]
 
 
-def _extract_from_bundle(bk, remote_path: str, offset: int, length: int, reveal_path: str) -> bytes:
-    """Download a specific byte range from a bundled tar on the backend.
-
-    Works with full-download fallback: download the entire bundle, then extract
-    the file at the given offset. For backends that support range requests
-    (local, SSH, rclone), could be optimized to download only the needed bytes.
-    """
-    tmp = Path(tempfile.mkdtemp()) / "bundle_full"
-    bk.download(remote_path, str(tmp))
-    data = tmp.read_bytes()
-    tmp.unlink()
-    return data[offset:offset + length]
+def _extract_from_bundle(bk, remote_path: str, offset: int, length: int, st: dict, config, expected_hash: str | None = None) -> bytes:
+    """Download the full bundle, decrypt it, decompress it, and extract the target bytes."""
+    tmp_dir = Path(tempfile.mkdtemp())
+    tmp = tmp_dir / "bundle_full"
+    dec = tmp_dir / "bundle_dec"
+    try:
+        bk.download(remote_path, str(tmp))
+        
+        work_file = tmp
+        if st.get("encrypted") and st.get("nonce") and st.get("auth_tag"):
+            enc_cfg = getattr(config, "encryption", None)
+            if enc_cfg and getattr(enc_cfg, "enabled", False):
+                key_file = getattr(enc_cfg, "key_file", "")
+                if key_file and Path(key_file).exists():
+                    key = crypto_mod.load_key(key_file)
+                    crypto_mod.decrypt_file(str(work_file), str(dec), key)
+                    work_file = dec
+                else:
+                    raise RuntimeError(f"Encryption key file not found: {key_file}")
+            else:
+                key_file = "backupme.key"
+                if Path(key_file).exists():
+                    key = crypto_mod.load_key(key_file)
+                    crypto_mod.decrypt_file(str(work_file), str(dec), key)
+                    work_file = dec
+                    
+        data = work_file.read_bytes()
+        if st.get("compression_algo"):
+            data = compress_mod.decompress(data, st["compression_algo"])
+            
+        # 1. New seek-based extraction (if offset/length are valid)
+        if offset is not None and length is not None and offset > 0:
+            return data[offset : offset + length]
+            
+        # 2. Backwards-compatible walk-based extraction (fallback for old bundled database entries)
+        if expected_hash:
+            expected_name = ("bndl/" + expected_hash).encode()[:32].ljust(32, b"\0")
+            cur_offset = 0
+            tar_len = len(data)
+            hdr_size = _BUNDLE_HEADER_FMT.size
+            while cur_offset + hdr_size <= tar_len:
+                header = data[cur_offset : cur_offset + hdr_size]
+                name, orig_size, comp_size, flags = _BUNDLE_HEADER_FMT.unpack(header)
+                if name == expected_name:
+                    data_offset = cur_offset + hdr_size
+                    return data[data_offset : data_offset + orig_size]
+                cur_offset += hdr_size + orig_size
+                
+        # 3. Fallback to raw slice if all else fails
+        return data[offset : offset + length] if (offset is not None and length is not None) else data
+    finally:
+        import shutil
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
 def download_file(
@@ -66,70 +107,89 @@ def download_file(
     if not chunks:
         return {"status": "error", "message": "No chunks found"}
 
-    from backupme.backends import get_backend as gb
-    from backupme.config import get_config
-    config = get_config()
+    from backupme.backends import get_all_backends as _get_all_backends
+    from backupme.config import load_config
+    config = load_config()
 
-    reassembled = bytearray()
+    Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+    hasher = hashlib.sha256()
+    total_written = 0
 
-    for chunk in chunks:
-        blob_id = chunk["blob_id"]
-        storage_options = _find_chunk_storage(blob_id, backend_name)
-        if not storage_options:
-            storage_options = _find_chunk_storage(blob_id)
+    with open(dest_path, "wb") as fout:
+        for chunk in chunks:
+            blob_id = chunk["blob_id"]
+            storage_options = _find_chunk_storage(blob_id, backend_name)
+            if not storage_options:
+                storage_options = _find_chunk_storage(blob_id)
 
-        data = None
-        for st in storage_options:
-            bk = None
-            for b in gb.get_all_backends(config):
-                if b.name == st["backend_name"]:
-                    bk = b
-                    break
-            if bk is None:
-                continue
-
-            try:
-                remote_path = st["storage_path"]
-
-                if blob_id.startswith("bundle/") and "@" in remote_path:
-                    bundle_path, range_spec = remote_path.split("@", 1)
-                    offset_str, len_str = range_spec.split(":", 1)
-                    offset = int(offset_str)
-                    length = int(len_str)
-                    data = _extract_from_bundle(bk, bundle_path, offset, length)
-                else:
-                    tmp = Path(tempfile.mkdtemp()) / "chunk_dl"
-                    bk.download(remote_path, str(tmp))
-                    data = tmp.read_bytes()
-                    tmp.unlink()
-
-                if data is not None:
-                    if st["encrypted"] and st["nonce"] and st["auth_tag"]:
-                        enc_cfg = config.get("encryption", {})
-                        key_file = enc_cfg.get("key_file", "")
-                        if key_file:
-                            key = crypto_mod.load_key(key_file)
-                            data = crypto_mod.decrypt(data, key, bytes(st["nonce"]), bytes(st["auth_tag"]))
-                    if st["compression_algo"]:
-                        data = compress_mod.decompress(data, st["compression_algo"])
-                    if hashlib.sha256(data).hexdigest() == blob_id:
+            data = None
+            for st in storage_options:
+                bk = None
+                for b in _get_all_backends(config):
+                    if b.name == st["backend_name"]:
+                        bk = b
                         break
-                    data = None
-            except Exception:
-                continue
+                if bk is None:
+                    continue
 
-        if data is None:
-            raise RuntimeError(f"Failed to download chunk {blob_id}")
+                try:
+                    remote_path = st["storage_path"]
 
-        reassembled.extend(data)
+                    if blob_id.startswith("bundle/") and "@" in remote_path:
+                        bundle_path, range_spec = remote_path.split("@", 1)
+                        offset_str, len_str = range_spec.split(":", 1)
+                        offset = int(offset_str)
+                        length = int(len_str)
+                        expected_hash = blob_id.rsplit("/", 1)[-1]
+                        data = _extract_from_bundle(bk, bundle_path, offset, length, st, config, expected_hash)
+                    elif blob_id.startswith("bundle/"):
+                        # Old-style bundled entry fallback where remote_path has no @offset:length!
+                        expected_hash = blob_id.rsplit("/", 1)[-1]
+                        data = _extract_from_bundle(bk, remote_path, None, None, st, config, expected_hash)
+                    else:
+                        tmp_dir = Path(tempfile.mkdtemp())
+                        tmp = tmp_dir / "chunk_dl"
+                        try:
+                            bk.download(remote_path, str(tmp))
+                            if st["encrypted"] and st["nonce"] and st["auth_tag"]:
+                                enc_cfg = getattr(config, "encryption", None)
+                                if enc_cfg and getattr(enc_cfg, "enabled", False):
+                                    key_file = getattr(enc_cfg, "key_file", "")
+                                    if key_file and Path(key_file).exists():
+                                        key = crypto_mod.load_key(key_file)
+                                        dec_tmp = tmp_dir / "chunk_dec"
+                                        crypto_mod.decrypt_file(str(tmp), str(dec_tmp), key)
+                                        data = dec_tmp.read_bytes()
+                                    else:
+                                        raise RuntimeError(f"Encryption key file not found: {key_file}")
+                            else:
+                                data = tmp.read_bytes()
+                            if data is not None and st["compression_algo"]:
+                                data = compress_mod.decompress(data, st["compression_algo"])
+                        finally:
+                            import shutil
+                            shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
-    final_sha256 = hashlib.sha256(reassembled).hexdigest()
+                    if data is not None:
+                        expected_hash = blob_id.rsplit("/", 1)[-1]
+                        if hashlib.sha256(data).hexdigest() == expected_hash:
+                            break
+                        data = None
+                except Exception:
+                    continue
+
+            if data is None:
+                raise RuntimeError(f"Failed to download chunk {blob_id}")
+
+            fout.write(data)
+            hasher.update(data)
+            total_written += len(data)
+
+    final_sha256 = hasher.hexdigest()
     if final_sha256 != file_row["sha256"]:
         raise RuntimeError(f"Integrity mismatch: expected {file_row['sha256']}, got {final_sha256}")
 
-    Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(dest_path).write_bytes(bytes(reassembled))
-    return {"status": "ok", "path": dest_path, "sha256": final_sha256, "size": len(reassembled)}
+    return {"status": "ok", "path": dest_path, "sha256": final_sha256, "size": total_written}
 
 
 def download_by_sha256(sha256: str, dest_path: str, backend_name: str | None = None) -> dict:

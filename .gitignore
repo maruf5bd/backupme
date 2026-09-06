@@ -37,11 +37,32 @@ tree/
 
 # Keys and secrets
 .key
+*.key
 *.enc
 .env
 
 # HTML docs (already have manual.html, docs.html)
 # Keep them - they're intentionally created
 
-# Config example only, not user config
-# config.yaml - user's own config, don't ignore
+# Local user config (may contain backend credentials; config.yaml.example is the template)
+config.yaml
+
+# Database runtime artifacts
+backupme.db-shm
+backupme.db-wal
+*.db.zst
+pending_wal/
+
+# Local storage and test scratch dirs
+backup_storage/
+test_data/
+test_tmp_backend/
+tmp_be/
+
+# AI tool workspaces
+.commandcode/
+.opencode/
+
+# Editor/session backup files
+*.bak
+*.bak_*

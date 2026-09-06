@@ -26,10 +26,15 @@ def create_snapshot(retention_days: int = 7) -> dict:
     import zstandard as zstd
     compressed = Path(snap_name).with_suffix(".db.zst")
     cctx = zstd.ZstdCompressor(level=3)
-    with open(compressed, "wb") as fout:
-        with cctx.stream_writer(fout) as compressor:
-            compressor.write(Path(snap_name).read_bytes())
-    Path(snap_name).unlink()
+    with open(snap_name, "rb") as fin:
+        with open(compressed, "wb") as fout:
+            with cctx.stream_writer(fout) as compressor:
+                while True:
+                    chunk = fin.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    compressor.write(chunk)
+    Path(snap_name).unlink(missing_ok=True)
 
     return {"snapshot": compressed.name, "generation": gen}
 
@@ -45,7 +50,7 @@ def prune_snapshots(retention_days: int = 7, min_keep: int = 3):
             parts = s.stem.split("-")
             ts = int(parts[2]) if len(parts) > 2 else 0
             if ts < cutoff.timestamp():
-                s.unlink()
+                s.unlink(missing_ok=True)
         except (ValueError, IndexError):
             continue
 
@@ -58,10 +63,17 @@ def auto_backup(config: dict):
         try:
             bk.db_upload_chunk(snap["snapshot"], f"__backupme_db__/snapshots/{snap['snapshot']}")
             sha_path = snap["snapshot"] + ".sha256"
-            Path(sha_path).write_text(hashlib.sha256(Path(snap["snapshot"]).read_bytes()).hexdigest())
+            sha = hashlib.sha256()
+            with open(snap["snapshot"], "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    sha.update(chunk)
+            Path(sha_path).write_text(sha.hexdigest())
             bk.db_upload_chunk(sha_path, f"__backupme_db__/snapshots/{sha_path}")
-            Path(sha_path).unlink()
+            Path(sha_path).unlink(missing_ok=True)
         except Exception:
             import traceback
             traceback.print_exc()
-    Path(snap["snapshot"]).unlink()
+    Path(snap["snapshot"]).unlink(missing_ok=True)

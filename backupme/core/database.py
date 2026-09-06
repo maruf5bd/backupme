@@ -8,6 +8,7 @@ from backupme.core.schema import SQL_WAL_PRAGMAS, apply_migrations
 DB_PATH = Path("backupme.db")
 
 _local = threading.local()
+_write_lock = threading.Lock()
 
 
 def get_connection(db_path: str | None = None) -> sqlite3.Connection:
@@ -23,7 +24,7 @@ def get_connection(db_path: str | None = None) -> sqlite3.Connection:
 
 
 def _create_connection(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=60)
     for pragma in SQL_WAL_PRAGMAS.strip().split(";"):
         p = pragma.strip()
         if p:

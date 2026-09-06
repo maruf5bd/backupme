@@ -26,7 +26,6 @@ def replicate_to_n(blob_id: str, target_backends: list, config: dict) -> int:
 
     tmp = Path(tempfile.mkdtemp()) / "replicate"
     bk.download(source_row["storage_path"], str(tmp))
-    data = tmp.read_bytes()
 
     replicated = 0
     for target in needed:
@@ -45,7 +44,7 @@ def replicate_to_n(blob_id: str, target_backends: list, config: dict) -> int:
             replicated += 1
 
     commit()
-    tmp.unlink()
+    tmp.unlink(missing_ok=True)
     return replicated
 
 

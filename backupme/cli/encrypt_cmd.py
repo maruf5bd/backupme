@@ -37,11 +37,11 @@ def status(ctx):
 def recompress(ctx, algo, level, backend):
     from ..core.compress import recompress_blobs
     cfg = ctx.obj["config"]
-    enc_cfg = cfg.get("encryption", {})
+    enc_cfg = getattr(cfg, "encryption", None)
     key = None
-    if enc_cfg.get("enabled"):
+    if enc_cfg and getattr(enc_cfg, "enabled", False):
         from ..core.crypto import load_key
-        key = load_key(enc_cfg.get("key_file", "~/.backupme/key.enc"))
+        key = load_key(getattr(enc_cfg, "key_file", "~/.backupme/key.enc"))
     result = recompress_blobs(algo=algo, level=level, backend_name=backend, key=key)
     click.echo(f"Recompressed {result['recompressed']} of {result['total_scanned']} blobs")
 

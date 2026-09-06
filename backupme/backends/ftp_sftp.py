@@ -68,25 +68,22 @@ class FTPBackend(StorageBackend):
         dir_part = remote_rel_path.rsplit("/", 1)[0] if "/" in remote_rel_path else ""
         if dir_part:
             self._ensure_dir(dir_part)
+        sha = hashlib.sha256()
         with open(local_path, "rb") as f:
-            data = f.read()
-        buf = io.BytesIO(data)
-        self._ftp.storbinary(f"STOR {remote_rel_path}", buf)
-        return hashlib.sha256(data).hexdigest()
+            self._ftp.storbinary(f"STOR {remote_rel_path}", f, callback=sha.update)
+        return sha.hexdigest()
 
     def download(self, remote_rel_path: str, local_path: str):
         self._reconnect()
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        buf = io.BytesIO()
-        self._ftp.retrbinary(f"RETR {remote_rel_path}", buf.write)
         with open(local_path, "wb") as f:
-            f.write(buf.getvalue())
+            self._ftp.retrbinary(f"RETR {remote_rel_path}", f.write)
 
     def delete(self, remote_rel_path: str):
         self._reconnect()
         try:
             self._ftp.delete(remote_rel_path)
-        except Exception:
+        except FileNotFoundError:
             pass
 
     def exists(self, remote_rel_path: str) -> bool:
@@ -145,10 +142,7 @@ class FTPBackend(StorageBackend):
             size = int(parts[4])
         except ValueError:
             size = 0
-        import time
-        from datetime import datetime
-        mtime = None
-        return {"path": " ".join(parts[8:]), "size": size, "mtime": mtime, "is_dir": is_dir}
+        return {"path": " ".join(parts[8:]), "size": size, "mtime": None, "is_dir": is_dir}
 
     def free_space(self) -> int | None:
         self._reconnect()
@@ -169,9 +163,11 @@ class FTPBackend(StorageBackend):
 
     def hash(self, remote_rel_path: str) -> str:
         self._reconnect()
-        buf = io.BytesIO()
-        self._ftp.retrbinary(f"RETR {remote_rel_path}", buf.write)
-        return hashlib.sha256(buf.getvalue()).hexdigest()
+        sha = hashlib.sha256()
+        def _hash_cb(data):
+            sha.update(data)
+        self._ftp.retrbinary(f"RETR {remote_rel_path}", _hash_cb)
+        return sha.hexdigest()
 
     def health(self) -> bool:
         try:
@@ -188,11 +184,25 @@ class FTPBackend(StorageBackend):
             size = self._ftp.size(remote_rel_path)
         except Exception:
             pass
-        buf = io.BytesIO()
-        self._ftp.retrbinary(f"RETR {remote_rel_path}", buf.write)
-        data = buf.getvalue()
-        head = data[:4096]
-        tail = data[-4096:] if len(data) > 4096 else data
+        head = b""
+        tail_buf = bytearray()
+        total_read = 0
+        _FP_CHUNK = 4096
+
+        def _fp_cb(data):
+            nonlocal head, total_read
+            total_read += len(data)
+            if len(head) < _FP_CHUNK:
+                need = _FP_CHUNK - len(head)
+                head += data[:need]
+                data = data[need:]
+            if data:
+                tail_buf.extend(data)
+                if len(tail_buf) > _FP_CHUNK:
+                    del tail_buf[:len(tail_buf) - _FP_CHUNK]
+
+        self._ftp.retrbinary(f"RETR {remote_rel_path}", _fp_cb)
+        tail = bytes(tail_buf) if tail_buf else head
         h = hashlib.sha256(head + tail).hexdigest()
         return {"size": size, "mtime": None, "head_tail_sha256": h}
 
@@ -262,11 +272,16 @@ class SFTPBackend(StorageBackend):
         dir_part = remote_rel_path.rsplit("/", 1)[0] if "/" in remote_rel_path else ""
         if dir_part:
             self._ensure_dir(dir_part)
-        with open(local_path, "rb") as f:
-            data = f.read()
-        with self._sftp.open(remote_rel_path, "wb") as f:
-            f.write(data)
-        return hashlib.sha256(data).hexdigest()
+        sha = hashlib.sha256()
+        with open(local_path, "rb") as src:
+            with self._sftp.open(remote_rel_path, "wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    sha.update(chunk)
+        return sha.hexdigest()
 
     def download(self, remote_rel_path: str, local_path: str):
         self._reconnect()
@@ -277,7 +292,7 @@ class SFTPBackend(StorageBackend):
         self._reconnect()
         try:
             self._sftp.remove(remote_rel_path)
-        except Exception:
+        except FileNotFoundError:
             pass
 
     def exists(self, remote_rel_path: str) -> bool:
@@ -337,9 +352,14 @@ class SFTPBackend(StorageBackend):
 
     def hash(self, remote_rel_path: str) -> str:
         self._reconnect()
+        sha = hashlib.sha256()
         with self._sftp.open(remote_rel_path, "rb") as f:
-            data = f.read()
-        return hashlib.sha256(data).hexdigest()
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                sha.update(chunk)
+        return sha.hexdigest()
 
     def health(self) -> bool:
         try:
@@ -352,9 +372,14 @@ class SFTPBackend(StorageBackend):
     def fingerprint(self, remote_rel_path: str) -> dict:
         self._reconnect()
         attr = self._sftp.stat(remote_rel_path)
+        head = b""
+        tail = b""
         with self._sftp.open(remote_rel_path, "rb") as f:
-            data = f.read()
-        head = data[:4096]
-        tail = data[-4096:] if len(data) > 4096 else data
+            head = f.read(4096)
+            if attr.st_size > 4096:
+                f.seek(-4096, 2)
+                tail = f.read(4096)
+            else:
+                tail = head
         h = hashlib.sha256(head + tail).hexdigest()
         return {"size": attr.st_size, "mtime": attr.st_mtime, "head_tail_sha256": h}

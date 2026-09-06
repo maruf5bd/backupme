@@ -23,16 +23,27 @@ class LocalBackend(StorageBackend):
     def disconnect(self):
         self._connected = False
 
+    @staticmethod
+    def _sanitize(rel_path: str) -> str:
+        parts = [p for p in rel_path.replace("\\", "/").split("/") if p and p != ".."]
+        return "/".join(parts)
+
     def _resolve(self, rel_path: str) -> Path:
-        return Path(self.base_path) / rel_path.replace("/", os.sep)
+        return Path(self.base_path) / self._sanitize(rel_path).replace("/", os.sep)
 
     def upload(self, local_path: str, remote_rel_path: str) -> str:
         dest = self._resolve(remote_rel_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(local_path, str(dest))
-        with open(local_path, "rb") as f:
-            h = hashlib.sha256(f.read()).hexdigest()
-        return h
+        sha = hashlib.sha256()
+        with open(local_path, "rb") as src, open(str(dest), "wb") as dst:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                sha.update(chunk)
+        shutil.copystat(local_path, str(dest))
+        return sha.hexdigest()
 
     def download(self, remote_rel_path: str, local_path: str):
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
@@ -72,8 +83,14 @@ class LocalBackend(StorageBackend):
         return usage.total
 
     def hash(self, remote_rel_path: str) -> str:
-        data = self._resolve(remote_rel_path).read_bytes()
-        return hashlib.sha256(data).hexdigest()
+        sha = hashlib.sha256()
+        with open(str(self._resolve(remote_rel_path)), "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                sha.update(chunk)
+        return sha.hexdigest()
 
     def health(self) -> bool:
         return Path(self.base_path).exists()
@@ -81,8 +98,14 @@ class LocalBackend(StorageBackend):
     def fingerprint(self, remote_rel_path: str) -> dict:
         path = self._resolve(remote_rel_path)
         s = path.stat()
-        data = path.read_bytes()
-        head = data[:4096]
-        tail = data[-4096:] if len(data) > 4096 else data
+        head = b""
+        tail = b""
+        with open(str(path), "rb") as f:
+            head = f.read(4096)
+            if s.st_size > 4096:
+                f.seek(-4096, 2)
+                tail = f.read(4096)
+            else:
+                tail = head
         h = hashlib.sha256(head + tail).hexdigest()
         return {"size": s.st_size, "mtime": s.st_mtime, "head_tail_sha256": h}

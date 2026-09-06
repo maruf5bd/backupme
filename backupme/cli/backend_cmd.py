@@ -1,0 +1,228 @@
+import os, yaml
+
+import click
+
+from .base import cli
+
+_BACKEND_FIELDS = {
+    "local": [
+        ("name", str, "backend_disk"),
+        ("path", str, "D:\\backupme"),
+        ("priority", int, 100),
+        ("weight", int, 10),
+    ],
+    "ftp": [
+        ("name", str, "ftp_server"),
+        ("host", str, "ftp.example.com"),
+        ("port", int, 21),
+        ("username", str, "user"),
+        ("password", str, ""),
+        ("path", str, "/backups"),
+        ("quota", str, ""),
+        ("priority", int, 10),
+    ],
+    "sftp": [
+        ("name", str, "sftp_server"),
+        ("host", str, "sftp.example.com"),
+        ("port", int, 22),
+        ("username", str, "user"),
+        ("key_file", str, "~/.ssh/id_rsa"),
+        ("path", str, "/mnt/backup"),
+        ("quota", str, ""),
+        ("priority", int, 10),
+    ],
+    "smb": [
+        ("name", str, "nas"),
+        ("host", str, "192.168.1.50"),
+        ("share", str, "backups"),
+        ("username", str, "user"),
+        ("password", str, ""),
+        ("path", str, "backupme"),
+        ("priority", int, 10),
+    ],
+    "ssh": [
+        ("name", str, "linux_box"),
+        ("host", str, "192.168.1.100"),
+        ("port", int, 22),
+        ("username", str, "user"),
+        ("key_file", str, "~/.ssh/id_rsa"),
+        ("path", str, "/mnt/backup"),
+        ("quota", str, ""),
+        ("priority", int, 10),
+    ],
+    "rclone": [
+        ("name", str, "gdrive"),
+        ("remote", str, "gdrive:/backupme"),
+        ("bwlimit", str, ""),
+        ("quota", str, ""),
+        ("priority", int, 50),
+    ],
+}
+
+
+@cli.group()
+def backend():
+    """Manage storage backends interactively"""
+
+
+@backend.command("add")
+@click.argument("type", type=click.Choice(list(_BACKEND_FIELDS)), required=False)
+@click.pass_context
+def backend_add(ctx, backend_type):
+    """Add a storage backend interactively"""
+    if not backend_type:
+        click.echo("Available types:")
+        for t in _BACKEND_FIELDS:
+            click.echo(f"  {t}")
+        backend_type = click.prompt("Backend type", type=click.Choice(list(_BACKEND_FIELDS)))
+
+    fields = _BACKEND_FIELDS[backend_type]
+    entry = {}
+    for name, typ, default in fields:
+        default_str = str(default) if default else ""
+        val = click.prompt(f"  {name}", default=default_str)
+        if not val and typ == int:
+            val = default
+        else:
+            val = typ(val) if val else typ()
+        if name in ("password",) and val and (not isinstance(val, str) or not val.startswith("{{")):
+            env_key = f"{backend_type.upper()}_{val.upper()}"
+            click.echo(f"  Tip: use $env:{env_key} instead of plaintext password")
+            use_env = click.confirm(f"  Use env var {env_key}?", default=True)
+            if use_env:
+                os.environ[env_key] = str(val)
+                val = f"{{{{ {env_key} }}}}"
+            elif click.confirm("  Save plaintext?", default=False):
+                pass
+        if isinstance(val, str) and not val.strip():
+            continue
+        if not val:
+            continue
+        entry[name] = val
+
+    cfg_path = ctx.obj.get("config_path", "config.yaml")
+    if not os.path.exists(cfg_path):
+        click.echo(f"Config not found: {cfg_path}")
+        return
+
+    with open(cfg_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    raw.setdefault("backends", {}).setdefault(backend_type, [])
+
+    existing = [b for b in raw["backends"][backend_type] if b.get("name") == entry.get("name")]
+    if existing:
+        if not click.confirm(f"Backend '{entry['name']}' already exists. Overwrite?", default=False):
+            click.echo("Cancelled.")
+            return
+        raw["backends"][backend_type] = [b for b in raw["backends"][backend_type] if b.get("name") != entry["name"]]
+
+    raw["backends"][backend_type].append(entry)
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    click.echo(f"Backend '{entry['name']}' ({backend_type}) added to {cfg_path}")
+    if click.confirm("Test connection now?", default=True):
+        _test_backend(entry, backend_type)
+
+
+@backend.command("list")
+@click.pass_context
+def backend_list(ctx):
+    """List all configured backends"""
+    cfg = ctx.obj.get("config")
+    if not cfg or not hasattr(cfg, "backends"):
+        click.echo("No backends configured")
+        return
+    for btype, blist in cfg.backends.items():
+        for b in blist:
+            click.echo(f"  {b.name:20s}  {btype:8s}  host={getattr(b, 'host', '-'):20s}  path={getattr(b, 'path', '-'):20s}")
+
+
+@backend.command("remove")
+@click.argument("name")
+@click.pass_context
+def backend_remove(ctx, name):
+    """Remove a backend by name"""
+    cfg_path = ctx.obj.get("config_path", "config.yaml")
+    if not os.path.exists(cfg_path):
+        click.echo("Config not found")
+        return
+    with open(cfg_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    found = False
+    for btype in list(raw.get("backends", {})):
+        raw["backends"][btype] = [b for b in raw["backends"][btype] if b.get("name") != name]
+        if not raw["backends"][btype]:
+            del raw["backends"][btype]
+        else:
+            found = True
+    if not found:
+        click.echo(f"No backend named '{name}'")
+        return
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    click.echo(f"Removed backend '{name}'")
+
+
+@backend.command("test")
+@click.argument("name")
+@click.pass_context
+def backend_test(ctx, name):
+    """Test connectivity to a backend"""
+    from ..backends import get_backend
+    from ..config import load_config
+    cfg_path = ctx.obj.get("config_path", "config.yaml")
+    cfg = load_config(cfg_path)
+
+    raw = {}
+    for btype, blist in cfg.backends.items():
+        raw[btype] = []
+        for b in blist:
+            d = {k: getattr(b, k) for k in ("type", "name", "path", "host", "port", "username",
+                                             "password", "key_file", "share", "remote", "bwlimit",
+                                             "quota", "priority", "weight") if getattr(b, k, None) is not None}
+            d["type"] = btype
+            raw[btype].append(d)
+
+    bk = get_backend(name, raw)
+    if bk is None:
+        click.echo(f"Backend '{name}' not found")
+        return
+    _test_connection(bk, name)
+
+
+def _test_backend(entry: dict, btype: str):
+    from ..backends import get_backend
+    raw = {btype: [entry]}
+    bk = get_backend(entry.get("name", "?"), raw)
+    if bk:
+        _test_connection(bk, entry.get("name", "?"))
+
+
+def _test_connection(bk, name: str):
+    click.echo(f"Connecting to {name}...", nl=False)
+    try:
+        ok = bk.connect()
+        if ok:
+            free = bk.free_space()
+            total = bk.total_space()
+            click.echo(" OK")
+            if total:
+                used = total - (free or 0)
+                pct = used / total * 100 if total else 0
+                click.echo(f"  Space: {_fmt_bytes(used)} / {_fmt_bytes(total)} ({pct:.0f}% used)")
+            bk.disconnect()
+        else:
+            click.echo(" FAILED")
+    except Exception as e:
+        click.echo(f" ERROR: {e}")
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"

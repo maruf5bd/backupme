@@ -56,10 +56,12 @@ def write_manifest(backend, manifest: Manifest) -> str:
     import tempfile
     tmp = Path(tempfile.mkdtemp()) / "manifest.json"
     tmp.write_text(data)
-    remote_path = _manifest_storage_path(manifest)
-    backend.upload(str(tmp), remote_path)
-    tmp.unlink()
-    return remote_path
+    try:
+        remote_path = _manifest_storage_path(manifest)
+        backend.upload(str(tmp), remote_path)
+        return remote_path
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def read_manifest(backend, manifest_path: str) -> Manifest | None:
@@ -119,26 +121,42 @@ def rebuild_database_from_manifests(backends: list) -> dict:
 
     for stmt in SQL_SCHEMA.strip().split(";"):
         s = stmt.strip()
-        if s and not s.startswith("PRAGMA") and not s.startswith("CREATE VIEW"):
-            execute(s + ";")
+        if s and not s.upper().startswith("PRAGMA") and not s.upper().startswith("CREATE VIEW"):
+            try:
+                execute(s + ";")
+            except Exception:
+                pass
     for stmt in SQL_INDEXES.strip().split(";"):
         s = stmt.strip()
         if s:
             execute(s + ";")
 
     for manifest in seen_files.values():
-        execute(
-            """INSERT OR REPLACE INTO files
-               (source_root, relative_path, sha256, size, mtime, chunked, redundancy, version_group, version_seq)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                manifest.source_root, manifest.relative_path,
-                manifest.sha256, manifest.size, manifest.mtime,
-                1 if len(manifest.chunks) > 1 else 0,
-                manifest.redundancy, manifest.version_group, manifest.version_seq,
-            ),
-        )
-        file_id = execute("SELECT last_insert_rowid()").fetchone()[0]
+        existing = execute(
+            "SELECT id FROM files WHERE source_root = ? AND relative_path = ? AND version_seq = ? AND deleted_at IS NULL",
+            (manifest.source_root, manifest.relative_path, manifest.version_seq),
+        ).fetchone()
+        if existing:
+            file_id = existing[0]
+            execute(
+                "UPDATE files SET sha256 = ?, size = ?, mtime = ?, chunked = ?, redundancy = ?, updated_at = datetime('now') WHERE id = ?",
+                (manifest.sha256, manifest.size, manifest.mtime,
+                 1 if len(manifest.chunks) > 1 else 0, manifest.redundancy, file_id),
+            )
+            execute("DELETE FROM file_chunks WHERE file_id = ?", (file_id,))
+        else:
+            execute(
+                """INSERT INTO files
+                   (source_root, relative_path, sha256, size, mtime, chunked, redundancy, version_group, version_seq)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    manifest.source_root, manifest.relative_path,
+                    manifest.sha256, manifest.size, manifest.mtime,
+                    1 if len(manifest.chunks) > 1 else 0,
+                    manifest.redundancy, manifest.version_group, manifest.version_seq,
+                ),
+            )
+            file_id = execute("SELECT last_insert_rowid()").fetchone()[0]
 
         for chunk in manifest.chunks:
             execute(

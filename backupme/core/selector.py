@@ -77,9 +77,7 @@ def _parse_size(s: str) -> int:
 def _estimate_used(backend_name: str) -> int:
     from . import database as db
     row = db.execute(
-        "SELECT COALESCE(SUM(dh.size), 0) FROM files f "
-        "JOIN dedup_hashes dh ON f.sha256 = dh.sha256 "
-        "WHERE f.backend_name = ?",
+        "SELECT COALESCE(SUM(bs.stored_size), 0) FROM blob_storage bs WHERE bs.backend_name = ?",
         (backend_name,),
     ).fetchone()
     return row[0] if row else 0
