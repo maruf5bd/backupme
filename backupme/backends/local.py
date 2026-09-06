@@ -16,7 +16,14 @@ class LocalBackend(StorageBackend):
         self.base_path: str = config.get("path", "backup_storage") if config else "backup_storage"
 
     def connect(self) -> bool:
-        Path(self.base_path).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(self.base_path).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "backend %s: base path unusable: %s (%s)", self._name, self.base_path, e)
+            self._connected = False
+            return False
         self._connected = True
         return True
 

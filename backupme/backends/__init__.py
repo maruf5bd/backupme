@@ -58,7 +58,14 @@ def get_backend(name: str, config=None) -> StorageBackend | None:
         for entry in be:
             if entry.get("name") == name:
                 inst = cls(name, entry)
-                if inst.connect():
+                try:
+                    connected = inst.connect()
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "backend %s failed to connect", name, exc_info=True)
+                    connected = False
+                if connected:
                     _instance_cache[name] = inst
                     return inst
     return None
@@ -74,7 +81,14 @@ def get_all_backends(config) -> list[StorageBackend]:
                 result.append(_instance_cache[name])
                 continue
             inst = cls(name, entry)
-            if inst.connect():
+            try:
+                connected = inst.connect()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "backend %s failed to connect; skipping", name, exc_info=True)
+                connected = False
+            if connected:
                 _instance_cache[name] = inst
                 result.append(inst)
     return result
