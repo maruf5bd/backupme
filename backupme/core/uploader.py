@@ -441,9 +441,17 @@ def upload_bundle(
             version_group = file_info.get("version_group")
             version_seq = file_info.get("version_seq", 1)
 
-            file_size = os.path.getsize(src_path)
-            file_sha256 = hasher_mod.sha256_file(src_path)
-            mtime = os.path.getmtime(src_path)
+            st = os.stat(src_path)
+            file_size = st.st_size
+            mtime = st.st_mtime
+
+            # Read small files once and hash the buffer. Chunked files keep a
+            # separate hash pass: dedup must be decided before uploading.
+            data = Path(src_path).read_bytes() if file_size <= _vault_max else None
+            file_sha256 = (
+                hashlib.sha256(data).hexdigest() if data is not None
+                else hasher_mod.sha256_file(src_path)
+            )
 
             # Content dedup: some live file already has this content. Copy the
             # chunk mapping from ONE donor file — multiple donors would
@@ -493,7 +501,7 @@ def upload_bundle(
             manifest.v = 2
 
             if file_size <= _vault_max:
-                data = Path(src_path).read_bytes()
+                # `data` was already read in the prologue above.
                 item_info = {
                     "file_id": None, "sha256": file_sha256, "size": file_size,
                     "local_path": local_path, "source_root": source_root,
