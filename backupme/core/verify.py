@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import random
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -132,12 +133,35 @@ def get_report() -> dict:
         "SELECT backend_name, SUM(stored_size) AS used_bytes, COUNT(*) AS blob_count FROM blob_storage GROUP BY backend_name"
     ).fetchall()
 
+    try:
+        migrated_lossy = execute(
+            "SELECT COUNT(*) FROM files WHERE migrated = 1"
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        migrated_lossy = 0
+
+    unrecoverable_rows = execute(
+        """SELECT fc.file_id, f.relative_path, fc.blob_id
+           FROM file_chunks fc
+           LEFT JOIN blobs b ON b.blob_id = fc.blob_id
+           LEFT JOIN files f ON f.id = fc.file_id
+           WHERE b.blob_id IS NULL"""
+    ).fetchall()
+    unrecoverable_files = [
+        {"file_id": r["file_id"], "file": r["relative_path"], "blob_id": r["blob_id"]}
+        for r in unrecoverable_rows
+    ]
+
     dedup_ratio = (blob_bytes / stored_bytes) if stored_bytes > 0 else 1.0
     compression_ratio = (total_size / blob_bytes) if blob_bytes > 0 else 1.0
 
     recommendations = []
     if last_check and last_check["status"] == "failed":
         recommendations.append("Last integrity check failed — run 'backupme verify'")
+    if unrecoverable_files:
+        recommendations.append(
+            f"{len(unrecoverable_files)} file(s) reference missing blobs — re-backup required"
+        )
 
     return {
         "file_count": file_count,
@@ -150,6 +174,8 @@ def get_report() -> dict:
         "last_integrity_check": dict(last_check) if last_check else None,
         "recent_recovery_events": [dict(r) for r in recovery],
         "backend_stats": [dict(r) for r in backend_stats],
+        "migrated_lossy": migrated_lossy,
+        "unrecoverable_files": unrecoverable_files,
         "recommendations": recommendations,
     }
 

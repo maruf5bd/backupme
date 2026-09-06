@@ -81,6 +81,7 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, move):
     if files_to_backup:
         try:
             results = uploader.upload_bundle(files_to_backup, targets, cfg, redundancy)
+            errors = partials = 0
             for r in results:
                 rel_path = r.get("local_path", "")
                 if rel_path:
@@ -93,12 +94,25 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, move):
                 else:
                     rel_path = r.get("sha256", r.get("file_id", "?"))
 
-                _safe_echo(f"{rel_path}: file_id={r.get('file_id', '?')} dedup={r.get('dedup', False)} bundled={r.get('bundled', False)} inline={r.get('inline', False)}")
-                
+                if r.get("status") == "error" or r.get("error"):
+                    errors += 1
+                    _safe_echo(f"{rel_path}: ERROR {r.get('error', 'upload failed')}")
+                    continue
+                if r.get("status") == "partial":
+                    partials += 1
+                    _safe_echo(f"{rel_path}: file_id={r.get('file_id', '?')} status=partial "
+                               f"failed_backends={','.join(r.get('failed_backends', []))}")
+                    continue
+
+                _safe_echo(f"{rel_path}: file_id={r.get('file_id', '?')} dedup={r.get('dedup', False)} bundled={r.get('bundled', False)}")
+
                 if move and "file_id" in r and r.get("local_path"):
                     try:
                         os.remove(r["local_path"])
                     except OSError:
                         pass
+            if errors or partials:
+                _safe_echo(f"Summary: {errors} failed, {partials} partial "
+                           f"({len(results) - errors - partials} ok)")
         except Exception as e:
             _safe_echo(f"  Error running backup: {e}")
