@@ -11,8 +11,9 @@ def db():
 
 @db.command()
 @click.option("--full", is_flag=True, help="Full integrity check")
+@click.option("--repair", is_flag=True, help="Repair ref-counts and migrate legacy inline files")
 @click.pass_context
-def check(ctx, full):
+def check(ctx, full, repair):
     from ..core import database as dbmod
     errors = dbmod.check_integrity()
     if errors:
@@ -21,6 +22,17 @@ def check(ctx, full):
             click.echo(f"  {e}")
     else:
         click.echo("ok")
+    from ..backends import get_all_backends
+    from ..core import migration
+    result = migration.run_migrations(get_all_backends(ctx.obj["config"]), repair=repair)
+    click.echo(f"refcounts repaired: {result['refcounts_repaired']}")
+    if repair:
+        m = result["inline_migrated"]
+        click.echo(f"inline migrated: {m['migrated']} (lossy: {len(m['lossy'])}, failed: {len(m['failed'])})")
+    else:
+        click.echo(f"inline pending: {result['inline_pending']}")
+    if result["unrecoverable"]:
+        click.echo(f"unrecoverable rows: {len(result['unrecoverable'])} (run 'backupme report integrity')")
 
 
 @db.command()

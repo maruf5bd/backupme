@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS files (
     version_group   TEXT NOT NULL,
     version_seq     INTEGER NOT NULL DEFAULT 1,
     content_text    TEXT,
+    migrated        INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     deleted_at      TEXT,
@@ -144,7 +145,9 @@ PRAGMA wal_autocheckpoint = 1000;
 PRAGMA cache_size = -64000;
 """
 
-MIGRATIONS: dict[int, str] = {}
+MIGRATIONS: dict[int, str] = {
+    2: "ALTER TABLE files ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0",
+}
 
 
 def get_schema_version(db) -> int:
@@ -171,7 +174,10 @@ def apply_migrations(db):
             if s:
                 db.execute(s + ";")
         db.execute("INSERT INTO db_meta (id, generation, instance_id) VALUES (1, 0, ?)", (__import__("uuid").uuid4().hex,))
-        db.execute("INSERT INTO schema_version (version) VALUES (1)")
+        # The fresh schema already includes every migration's effect, so record
+        # all known versions as applied — otherwise MIGRATIONS re-run on it.
+        for v in [1] + sorted(MIGRATIONS):
+            db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (v,))
         db.commit()
         return
     for ver in sorted(MIGRATIONS):
