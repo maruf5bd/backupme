@@ -49,8 +49,11 @@ def should_skip(path: str | Path, user_excludes: list[str] | None = None) -> tup
     p = Path(path)
     name = p.name
 
-    parts = p.resolve().parts
-    full_path = str(p.resolve())
+    # os.walk and the CLI walkers already produce absolute paths — resolving
+    # them is a syscall per file on the hot path.
+    rp = p if p.is_absolute() else p.resolve()
+    parts = rp.parts
+    full_path = str(rp)
     for part in parts:
         if part in _WINDOWS_SYSTEM_DIRS:
             return True, f"Windows system dir: {part}"
@@ -83,7 +86,8 @@ def should_skip_dir(path: str | Path) -> bool:
     """Quick check for directory-level skip (no user excludes)."""
     p = Path(path)
     name = p.name
-    full = str(p.resolve())
+    rp = p if p.is_absolute() else p.resolve()
+    full = str(rp)
     if name in _WINDOWS_SYSTEM_DIRS:
         return True
     for pattern in _SKIP_DIR_PATTERNS:

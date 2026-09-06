@@ -25,9 +25,10 @@ def _safe_echo(msg: str):
 @click.option("--redundancy", "-n", type=int, default=1, help="Number of copies")
 @click.option("--recursive", "-r", is_flag=True, help="Recurse directories")
 @click.option("--no-skip", is_flag=True, help="Disable system/temp file skipping")
+@click.option("--force", is_flag=True, help="Re-offer every file, skipping the unchanged check")
 @click.option("--move", "-m", is_flag=True, help="Move files to backend (deletes source file after successful upload)")
 @click.pass_context
-def backup(ctx, sources, backend, redundancy, recursive, no_skip, move):
+def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move):
     cfg = ctx.obj["config"]
     from ..backends import get_backend, get_all_backends
 
@@ -60,23 +61,16 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, move):
             })
 
         elif os.path.isdir(path) and recursive:
-            for root, dirs, files in os.walk(path):
-                if not no_skip:
-                    dirs[:] = [d for d in dirs if not should_skip_dir(os.path.join(root, d))]
-                for fn in files:
-                    fp = os.path.join(root, fn)
-                    rel = os.path.relpath(fp, path)
-
-                    if not no_skip:
-                        skip, reason = should_skip(fp)
-                        if skip:
-                            continue
-
-                    files_to_backup.append({
-                        "local_path": fp,
-                        "source_root": path,
-                        "relative_path": rel,
-                    })
+            from ..scheduler import collect_changes
+            candidates, skipped = collect_changes(path, [], force=force, no_skip=no_skip)
+            if skipped:
+                _safe_echo(f"{path}: {skipped} unchanged (skipped)")
+            for fp in candidates:
+                files_to_backup.append({
+                    "local_path": str(fp),
+                    "source_root": path,
+                    "relative_path": os.path.relpath(str(fp), path),
+                })
 
     if files_to_backup:
         try:

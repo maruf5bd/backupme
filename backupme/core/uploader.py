@@ -281,6 +281,16 @@ def upload_bundle(
         from dataclasses import asdict
         config = asdict(config)
 
+    chunk_cfg = config.get("chunking", {})
+    raw_chunk = chunk_cfg.get("chunk_size", _chunk_size)
+    if isinstance(raw_chunk, str):
+        import re as _re
+        m = _re.match(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)?\s*$", raw_chunk, _re.IGNORECASE)
+        chunk_size = int(float(m.group(1)) * {"B": 1, "KB": 1024, "MB": 1024**2,
+                                              "GB": 1024**3, "TB": 1024**4}.get((m.group(2) or "B").upper(), 1)) if m else _chunk_size
+    else:
+        chunk_size = int(raw_chunk)
+
     results = []
 
     batch: list[tuple[dict, Manifest, bytes]] = []
@@ -516,8 +526,8 @@ def upload_bundle(
                 pending = []
                 min_copies = redundancy
                 with open(src_path, "rb") as fsrc:
-                    for seq, offset in enumerate(range(0, file_size, _chunk_size)):
-                        chunk_data = fsrc.read(_chunk_size)
+                    for seq, offset in enumerate(range(0, file_size, chunk_size)):
+                        chunk_data = fsrc.read(chunk_size)
                         chunk_sha256 = hashlib.sha256(chunk_data).hexdigest()
                         storage_rows = _upload_single_blob(
                             chunk_data, chunk_sha256, backends, config,
