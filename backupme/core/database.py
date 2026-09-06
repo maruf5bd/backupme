@@ -8,19 +8,23 @@ from backupme.core.schema import SQL_WAL_PRAGMAS, apply_migrations
 DB_PATH = Path("backupme.db")
 
 _local = threading.local()
-_write_lock = threading.Lock()
 
 
 def get_connection(db_path: str | None = None) -> sqlite3.Connection:
-    path = db_path or str(DB_PATH)
-    if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = _create_connection(path)
-    else:
+    path = str(db_path or DB_PATH)
+    conns = getattr(_local, "conns", None)
+    if conns is None:
+        conns = _local.conns = {}
+    conn = conns.get(path)
+    if conn is not None:
         try:
-            _local.conn.execute("SELECT 1")
+            conn.execute("SELECT 1")
         except (sqlite3.ProgrammingError, sqlite3.OperationalError):
-            _local.conn = _create_connection(path)
-    return _local.conn
+            conn = None
+    if conn is None:
+        conn = _create_connection(path)
+        conns[path] = conn
+    return conn
 
 
 def _create_connection(path: str) -> sqlite3.Connection:
@@ -43,10 +47,24 @@ def initialize():
     conn.commit()
 
 
-def close_connection():
-    if hasattr(_local, "conn") and _local.conn:
-        _local.conn.close()
-        _local.conn = None
+def close_connection(db_path: str | None = None) -> None:
+    conns = getattr(_local, "conns", None)
+    if not conns:
+        return
+    if db_path is None:
+        for conn in conns.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        conns.clear()
+    else:
+        conn = conns.pop(str(db_path), None)
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -80,7 +98,10 @@ def get_instance_id() -> str:
 
 
 def check_integrity() -> list[str]:
-    rows = execute("PRAGMA integrity_check").fetchall()
+    try:
+        rows = execute("PRAGMA integrity_check").fetchall()
+    except sqlite3.DatabaseError as e:
+        return [f"corrupt: {e}"]
     return [r[0] for r in rows if r[0] != "ok"]
 
 

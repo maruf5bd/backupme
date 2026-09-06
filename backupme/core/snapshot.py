@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from backupme.core.database import (
-    DB_PATH, get_connection, execute, commit, get_generation, wal_checkpoint,
+    get_connection, execute, commit, get_generation, wal_checkpoint,
 )
 from backupme.core import hasher as hasher_mod
 from backupme.core.downloader import download_file

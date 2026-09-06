@@ -1,11 +1,14 @@
 import hashlib
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
+from backupme.core import database as _dbmod
 from backupme.core.database import (
-    DB_PATH, get_connection, get_generation, get_instance_id,
+    get_connection, get_generation, get_instance_id,
     execute, commit, initialize, check_integrity, wal_checkpoint,
+    close_connection, _create_connection,
 )
 from backupme.core.schema import SQL_SCHEMA, SQL_INDEXES, apply_migrations
 from backupme.backends import get_all_backends
@@ -49,8 +52,11 @@ def recover_database(backends: list) -> dict:
     best = max(candidates, key=lambda c: c["generation"])
     src_path = best["path"]
     if src_path.exists():
-        import shutil
-        shutil.copy2(str(src_path), str(DB_PATH))
+        close_connection()  # drop cached handles before replacing the file
+        # Read DB_PATH through the module: the CLI rebinds it per --db-path,
+        # so a from-import here would restore over a stale location.
+        shutil.copy2(str(src_path), str(_dbmod.DB_PATH))
+        initialize()
         wal_checkpoint()
         execute("INSERT INTO recovery_events (event_type, status, details) VALUES (?, ?, ?)",
                 ("db_restore", "ok", f"Restored from backend {best['backend']} gen={best['generation']}"))
@@ -61,11 +67,10 @@ def recover_database(backends: list) -> dict:
 
 
 def _preserve_corrupt_copy():
-    if DB_PATH.exists():
-        import shutil
+    if _dbmod.DB_PATH.exists():
         from datetime import datetime
-        corrupt_path = DB_PATH.with_suffix(f".db.corrupt.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        shutil.copy2(str(DB_PATH), str(corrupt_path))
+        corrupt_path = _dbmod.DB_PATH.with_suffix(f".db.corrupt.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        shutil.copy2(str(_dbmod.DB_PATH), str(corrupt_path))
 
 
 def _reconstruct_from_backend(bk) -> dict | None:
@@ -92,31 +97,39 @@ def _reconstruct_from_backend(bk) -> dict | None:
                         fout.write(chunk)
 
         wal_paths = sorted(bk.db_list("wal"))
-        db_path = tmp_dir / "backupme.db"
-        import shutil
-        shutil.copy2(str(decompressed), str(db_path))
-
-        for wal_name in wal_paths:
-            wal_local = tmp_dir / wal_name
+        best_db = decompressed
+        best_gen = -1
+        for i, wal_name in enumerate(wal_paths):
+            work = tmp_dir / f"replay_{i}"
+            work.mkdir()
+            shutil.copy2(str(decompressed), str(work / "backupme.db"))
+            wal_local = work / "bundle.zst"
             bk.db_download(wal_name, str(wal_local))
-            wal_dest = Path(str(db_path) + "-wal")
+            wal_dest = work / "backupme.db-wal"
             try:
-                with open(wal_local, "rb") as fin:
-                    with open(wal_dest, "wb") as fout:
-                        with dctx.stream_reader(fin) as reader:
-                            while True:
-                                chunk = reader.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                fout.write(chunk)
+                with open(wal_local, "rb") as fin, open(wal_dest, "wb") as fout:
+                    with dctx.stream_reader(fin) as reader:
+                        while True:
+                            chunk = reader.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            fout.write(chunk)
             except Exception:
-                import shutil
                 shutil.copy2(str(wal_local), str(wal_dest))
+            try:
+                conn = _create_connection(str(work / "backupme.db"))
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                row = conn.execute("SELECT generation FROM db_meta WHERE id = 1").fetchone()
+                gen = row[0] if row else 0
+                conn.close()
+            except Exception:
+                gen = -1
+            if gen >= best_gen:
+                best_gen = gen
+                best_db = work / "backupme.db"
 
-        conn = get_connection(str(db_path))
-        conn.execute("PRAGMA journal_mode = WAL")
+        conn = _create_connection(str(best_db))
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
         row = conn.execute("SELECT generation FROM db_meta WHERE id = 1").fetchone()
         gen = row[0] if row else 0
         conn.close()
@@ -124,7 +137,7 @@ def _reconstruct_from_backend(bk) -> dict | None:
         # Copy DB out of tmp_dir so caller can use it after cleanup
         persist_dir = Path(tempfile.mkdtemp())
         persist_db = persist_dir / "backupme.db"
-        shutil.copy2(str(db_path), str(persist_db))
+        shutil.copy2(str(best_db), str(persist_db))
 
         return {"backend": bk.name, "path": persist_db, "generation": gen}
     except Exception:
@@ -132,7 +145,6 @@ def _reconstruct_from_backend(bk) -> dict | None:
         traceback.print_exc()
         return None
     finally:
-        import shutil
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
