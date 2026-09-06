@@ -30,7 +30,6 @@ def _long_path(p: str) -> str:
 
 _chunk_min_size = 10 * 1024 * 1024
 _chunk_size = 64 * 1024 * 1024
-_inline_max = 1024
 _vault_max = 10 * 1024 * 1024
 _no_compress_max = 256
 _bundle_target_size = 64 * 1024 * 1024
@@ -473,18 +472,6 @@ def upload_bundle(
                 redundancy=redundancy,
             )
 
-            if file_size <= _inline_max:
-                content_text = Path(src_path).read_bytes().decode("utf-8", errors="replace")
-                file_id = index_mod.index_file(
-                    source_root, relative_path, file_sha256, file_size,
-                    mtime=os.path.getmtime(src_path), chunked=False,
-                    redundancy=redundancy, version_seq=version_seq,
-                    version_group=manifest.version_group, content_text=content_text,
-                )
-                dedup_mod.record_blob(file_sha256, file_size)
-                results.append({"file_id": file_id, "sha256": file_sha256, "inline": True, "local_path": local_path})
-                continue
-
             file_id = index_mod.index_file(
                 source_root, relative_path, file_sha256, file_size,
                 mtime=os.path.getmtime(src_path), chunked=(file_size > _chunk_min_size),
@@ -506,7 +493,7 @@ def upload_bundle(
                         for s in storage_rows:
                             mc.storage.append(ChunkStorageEntry(**s))
                         manifest.chunks.append(mc)
-            elif _inline_max < file_size <= _vault_max:
+            elif file_size <= _vault_max:
                 data = Path(src_path).read_bytes()
                 dedup_mod.record_blob(file_sha256, file_size)
                 batch.append(({"file_id": file_id, "sha256": file_sha256, "size": file_size, "local_path": local_path}, manifest, file_id, data))
