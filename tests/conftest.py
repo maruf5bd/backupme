@@ -67,7 +67,7 @@ def _write_config(root: Path, encrypted: bool, key_file: str | None = None):
         "backends:",
         "  local:",
         "  - name: test_local",
-        f"    path: {(root / 'storage').as_posix()}",
+        f"    path: {(root.parent / 'storage').as_posix()}",
         "    priority: 100",
         "encryption:",
         f"  enabled: {'true' if encrypted else 'false'}",

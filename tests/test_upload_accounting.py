@@ -58,7 +58,7 @@ def test_manifest_written_once_per_backend(env, backends):
     backup_bytes(env, "b1.txt", b"b1 " * 50, backends)
     backup_bytes(env, "b2.txt", b"b2 " * 50, backends)
     # One backend, two bundled files -> exactly 2 manifests + 2 pointers on disk
-    storage = env / "storage"
+    storage = env.parent / "storage"
     manifests = [p for p in storage.rglob("*.manifest.json")]
     pointers = [p for p in storage.rglob("*.backupme")]
     assert len(manifests) == 2

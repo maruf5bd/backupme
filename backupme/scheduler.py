@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from backupme.core.database import initialize, get_generation, bump_generation, commit, execute
+from backupme.core import uploader as uploader_mod
 from backupme.core import snapshot as snapmod
 from backupme.core import replicator
 from backupme.core import retry as retry_mod
@@ -27,6 +28,12 @@ def collect_changes(
     from backupme.core.skip import should_skip, should_skip_dir
 
     src_path = Path(source_root)
+    from backupme.core import database as dbmod
+    db_files = {
+        os.path.abspath(str(dbmod.DB_PATH)),
+        os.path.abspath(str(dbmod.DB_PATH)) + "-wal",
+        os.path.abspath(str(dbmod.DB_PATH)) + "-shm",
+    }
     rows = execute(
         """SELECT f.relative_path, f.size, f.mtime,
                   EXISTS(SELECT 1 FROM file_chunks fc WHERE fc.file_id = f.id) AS has_chunks
@@ -45,6 +52,8 @@ def collect_changes(
 
     def consider(fp: Path, rel: str) -> None:
         nonlocal skipped
+        if os.path.abspath(str(fp)) in db_files:
+            return  # never back up our own live database files
         if any(fnmatch.fnmatch(rel, pat) for pat in excludes):
             return
         if not no_skip:
@@ -162,13 +171,10 @@ class BackupScheduler:
             source = entry.get("source", "")
             target = entry.get("target", "")
             redundancy = entry.get("redundancy", 1)
-            excludes = entry.get("exclude", [])
 
             if not source or not os.path.exists(source):
                 continue
 
-            import fnmatch
-            from backupme.core.uploader import upload_file
             from backupme.backends import get_backend
 
             backends = get_all_backends(self.config)
@@ -179,44 +185,50 @@ class BackupScheduler:
 
             src_path = Path(source)
             if src_path.is_file():
-                skip, reason2 = should_skip(str(src_path))
+                skip, _ = should_skip(str(src_path))
                 if skip:
                     continue
-                files_to_backup = [src_path]
+                candidates = [src_path]
+                skipped = 0
             else:
-                files_to_backup = []
-                for dirpath, dirnames, filenames in os.walk(str(src_path)):
-                    dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
-                    for fname in filenames:
-                        files_to_backup.append(Path(dirpath) / fname)
+                candidates, skipped = collect_changes(
+                    str(src_path), entry.get("exclude", []))
 
-            for fp in files_to_backup:
-                if not fp.is_file():
-                    continue
-                rel = str(fp.relative_to(src_path))
-                if any(fnmatch.fnmatch(rel, pat) for pat in excludes):
-                    continue
-                skip, _ = should_skip(str(fp))
-                if skip:
-                    continue
+            if skipped:
+                print(f"{source}: {skipped} unchanged (skipped)")
 
+            batch: list[dict] = []
+            batch_bytes = 0
+
+            def flush() -> None:
+                nonlocal batch, batch_bytes
+                if not batch:
+                    return
                 try:
-                    result = upload_file(
-                        source_root=str(src_path),
-                        relative_path=rel,
-                        local_path=str(fp),
-                        backends=backends,
-                        config=self.config,
-                        redundancy=redundancy,
-                    )
-                    if entry.get("move", False) and result and "file_id" in result:
-                        try:
-                            os.remove(str(fp))
-                        except OSError:
-                            pass
+                    results = uploader_mod.upload_bundle(batch, backends, self.config, redundancy)
+                    for r in results:
+                        if entry.get("move") and r.get("file_id") and r.get("local_path"):
+                            try:
+                                os.remove(r["local_path"])
+                            except OSError:
+                                pass
                 except Exception:
                     import traceback
                     traceback.print_exc()
+                batch.clear()
+                batch_bytes = 0
+
+            for fp in candidates:
+                st = fp.stat()
+                batch.append({
+                    "local_path": str(fp),
+                    "source_root": str(src_path),
+                    "relative_path": os.path.relpath(str(fp), str(src_path)),
+                })
+                batch_bytes += st.st_size
+                if len(batch) >= 200 or batch_bytes >= 64 * 1024 * 1024:
+                    flush()
+            flush()
 
     def _run_retention(self):
         try:

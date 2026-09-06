@@ -27,7 +27,7 @@ def test_manifest_v2_carries_nonce(enc_env):
     from backupme.backends import get_all_backends
     bks = get_all_backends(load_cfg())
     backup_bytes(enc_env, "n.txt", b"nonce check " * 50, bks)
-    storage = enc_env / "storage"
+    storage = enc_env.parent / "storage"
     mpaths = sorted(storage.rglob("*.manifest.json"))
     assert mpaths
     body = mpaths[0].read_text()
@@ -70,7 +70,7 @@ def test_rebuild_reports_v1_encrypted_without_crypto(enc_env, tmp_path):
             }],
         }],
     }
-    blob_dir = enc_env / "storage" / "manifests" / "de" / "ad"
+    blob_dir = enc_env.parent / "storage" / "manifests" / "de" / "ad"
     blob_dir.mkdir(parents=True)
     (blob_dir / ("deadbeef" * 4 + ".manifest.json")).write_text(json.dumps(manifest))
 

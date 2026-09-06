@@ -352,6 +352,7 @@ def upload_bundle(
 
         # One transaction for the whole batch: blob rows, storage rows, chunk
         # mappings, and the file index rows are committed together.
+        seen_members: set[str] = set()
         dedup_mod.ensure_blob(bundle_blob_id, len(tar_data))
         for bk in ok_backends:
             execute(
@@ -373,7 +374,11 @@ def upload_bundle(
             item_info["file_id"] = file_id
             member_id = f"{bundle_blob_id}/{entry['member_sha']}"
             dedup_mod.ensure_blob(member_id, entry["pt_size"])
-            dedup_mod.add_ref(bundle_blob_id)  # member -> parent bundle reference
+            if member_id not in seen_members:
+                # One parent-bundle reference per unique member, regardless of
+                # how many identical files in this batch share it.
+                seen_members.add(member_id)
+                dedup_mod.add_ref(bundle_blob_id)
             for bk in ok_backends:
                 execute(
                     """INSERT OR IGNORE INTO blob_storage
@@ -437,15 +442,21 @@ def upload_bundle(
             file_sha256 = hasher_mod.sha256_file(src_path)
             mtime = os.path.getmtime(src_path)
 
-            # Content dedup: some live file already has this content.
-            prior_chunks = execute(
-                """SELECT fc.seq, fc.blob_id, fc.pt_offset, fc.pt_size
-                   FROM file_chunks fc
-                   JOIN files f2 ON f2.id = fc.file_id
-                   WHERE f2.sha256 = ? AND f2.deleted_at IS NULL
-                   ORDER BY f2.id ASC""",
+            # Content dedup: some live file already has this content. Copy the
+            # chunk mapping from ONE donor file — multiple donors would
+            # multiply refs and duplicate chunk rows.
+            donor = execute(
+                "SELECT id FROM files WHERE sha256 = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT 1",
                 (file_sha256,),
-            ).fetchall()
+            ).fetchone()
+            prior_chunks = (
+                execute(
+                    "SELECT seq, blob_id, pt_offset, pt_size FROM file_chunks WHERE file_id = ? ORDER BY seq",
+                    (donor["id"],),
+                ).fetchall()
+                if donor
+                else []
+            )
             if prior_chunks:
                 file_id = index_mod.index_file(
                     source_root, relative_path, file_sha256, file_size,
