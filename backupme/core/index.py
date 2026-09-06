@@ -12,6 +12,7 @@ def index_file(
     version_group: str | None = None,
     version_seq: int = 1,
     content_text: str | None = None,
+    auto_commit: bool = True,
 ) -> int:
     vg = version_group or sha256[:16]
     row = execute(
@@ -30,7 +31,8 @@ def index_file(
             "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
             (row[0], relative_path, content_text),
         )
-        commit()
+        if auto_commit:
+            commit()
         return row[0]
 
     execute(
@@ -45,7 +47,8 @@ def index_file(
         "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
         (new_id, relative_path, content_text),
     )
-    commit()
+    if auto_commit:
+        commit()
     return new_id
 
 

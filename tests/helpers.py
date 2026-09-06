@@ -32,13 +32,15 @@ def restore_bytes(file_id: int, root: Path, backends=None) -> bytes:
 
 
 def add_backend(root: Path, name: str, path: Path):
-    """Append a second local backend to the scratch config."""
+    """Add a second local backend to the scratch config (inside backends.local)."""
     cfg_path = Path(root) / "config.yaml"
-    text = cfg_path.read_text()
-    text += (
-        f"  - name: {name}\n"
-        f"    path: {path.as_posix()}\n"
-        "    priority: 90\n"
-    )
-    cfg_path.write_text(text)
+    lines = cfg_path.read_text().splitlines(keepends=True)
+    entry = [
+        f"  - name: {name}\n",
+        f"    path: {path.as_posix()}\n",
+        "    priority: 90\n",
+    ]
+    idx = next(i for i, l in enumerate(lines) if l.startswith("encryption:"))
+    lines[idx:idx] = entry
+    cfg_path.write_text("".join(lines))
     invalidate_cache()

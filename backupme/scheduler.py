@@ -12,6 +12,8 @@ from backupme.backends import get_all_backends
 
 
 def apply_retention(config: dict):
+    from backupme.core import dedup as dedup_mod
+
     retention = config.get("retention", {})
     if not retention.get("enabled", True):
         return
@@ -56,8 +58,9 @@ def apply_retention(config: dict):
 
             execute("UPDATE files SET deleted_at = datetime('now') WHERE id = ?", (r["id"],))
             chunks = execute("SELECT blob_id FROM file_chunks WHERE file_id = ?", (r["id"],)).fetchall()
+            execute("DELETE FROM file_chunks WHERE file_id = ?", (r["id"],))
             for (blob_id,) in chunks:
-                execute("UPDATE blobs SET ref_count = ref_count - 1 WHERE blob_id = ?", (blob_id,))
+                dedup_mod.unref_blob(blob_id)
     commit()
 
 

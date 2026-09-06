@@ -19,6 +19,8 @@ class ChunkStorageEntry:
     algo: str | None = None
     level: int | None = None
     encrypted: bool = False
+    nonce: str | None = None
+    auth_tag: str | None = None
 
 
 @dataclass
