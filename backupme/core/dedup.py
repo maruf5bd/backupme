@@ -73,17 +73,30 @@ def unref_blob(blob_id: str) -> int:
 
 
 def reconcile_refcounts() -> int:
-    """Enforce ref_count == (file_chunks references) + (bundle members)."""
-    cur = execute(
-        """UPDATE blobs SET ref_count =
-               (SELECT COUNT(*) FROM file_chunks WHERE file_chunks.blob_id = blobs.blob_id)
-             + (SELECT COUNT(*) FROM blobs m WHERE m.blob_id LIKE blobs.blob_id || '/%')
-           WHERE ref_count !=
-               (SELECT COUNT(*) FROM file_chunks WHERE file_chunks.blob_id = blobs.blob_id)
-             + (SELECT COUNT(*) FROM blobs m WHERE m.blob_id LIKE blobs.blob_id || '/%')"""
-    )
+    """Enforce ref_count == (file_chunks references) + (bundle members).
+
+    Computed in one linear pass (GROUP BY + a Python-side parent tally) — the
+    previous correlated-subquery form was O(blobs^2) and hung on large DBs.
+    """
+    from backupme.core.database import executemany
+
+    counts: dict[str, int] = {}
+    for (bid,) in execute("SELECT blob_id FROM blobs").fetchall():
+        counts[bid] = 0
+    for r in execute("SELECT blob_id, COUNT(*) FROM file_chunks GROUP BY blob_id").fetchall():
+        counts[r[0]] = counts.get(r[0], 0) + r[1]
+    for (bid,) in execute("SELECT blob_id FROM blobs WHERE blob_id LIKE 'bundle/%'").fetchall():
+        parts = bid.split("/")
+        if len(parts) >= 5:  # a member row contributes one reference to its parent bundle
+            parent = bid.rsplit("/", 1)[0]
+            if parent in counts:
+                counts[parent] += 1
+
+    current = {r[0]: r[1] for r in execute("SELECT blob_id, ref_count FROM blobs").fetchall()}
+    updates = [(rc, bid) for bid, rc in counts.items() if current.get(bid) != rc]
+    executemany("UPDATE blobs SET ref_count = ? WHERE blob_id = ?", updates)
     commit()
-    return cur.rowcount
+    return len(updates)
 
 
 def find_unrecoverable() -> list[dict]:
