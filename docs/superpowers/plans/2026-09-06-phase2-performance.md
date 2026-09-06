@@ -26,7 +26,7 @@
 **Interfaces:**
 - Produces: `collect_changes(source_root: str, excludes: list[str], force: bool = False, no_skip: bool = False) -> tuple[list[Path], int]` — (candidate Paths relative to nothing — absolute paths — , skipped count). Used by `_run_backups` (Task 2) and `backup_cmd.py` (Task 5).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 import os
@@ -99,7 +99,7 @@ def test_skip_rules_still_apply(env):
 Run: `python -m pytest tests/test_incremental.py -v`
 Expected: FAIL — `collect_changes` does not exist.
 
-- [ ] **Step 2: Implement in `backupme/scheduler.py`** (add above `apply_retention`)
+- [x] **Step 2: Implement in `backupme/scheduler.py`** (add above `apply_retention`)
 
 ```python
 def collect_changes(
@@ -166,11 +166,11 @@ def collect_changes(
 
 (`os`, `Path`, `execute` are already imported in scheduler.py.)
 
-- [ ] **Step 3: Run tests green + full suite**
+- [x] **Step 3: Run tests green + full suite**
 
 Run: `python -m pytest tests/test_incremental.py -v` → 7 passed. `python -m pytest` → all green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backupme/scheduler.py tests/test_incremental.py
@@ -188,7 +188,7 @@ git commit -m "feat(scheduler): index-based incremental walk (collect_changes)"
 **Interfaces:**
 - `_run_backups` now: per backup entry → `collect_changes` → feeds candidates to `uploader.upload_bundle` in batches (200 files / 64 MB) → handles `move` per result. No per-file `upload_file` calls remain.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 import dataclasses
@@ -254,7 +254,7 @@ def test_run_backups_survives_batch_failure(env, backends, monkeypatch):
 Run: `python -m pytest tests/test_batch_feed.py -v`
 Expected: FAIL — scheduler still calls `upload_file` per file (bundle count ~300, no batch behavior).
 
-- [ ] **Step 2: Replace `_run_backups` in `backupme/scheduler.py`**
+- [x] **Step 2: Replace `_run_backups` in `backupme/scheduler.py`**
 
 ```python
     def _run_backups(self):
@@ -324,11 +324,11 @@ Expected: FAIL — scheduler still calls `upload_file` per file (bundle count ~3
             flush()
 ```
 
-- [ ] **Step 3: Run tests green + full suite**
+- [x] **Step 3: Run tests green + full suite**
 
 Run: `python -m pytest tests/test_batch_feed.py -v` → 3 passed. `python -m pytest` → all green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backupme/scheduler.py tests/test_batch_feed.py
@@ -346,7 +346,7 @@ git commit -m "feat(scheduler): feed batches to the bundler; incremental in the 
 **Interfaces:**
 - `_do_upload(backend, local_path: str, remote_path: str, expected_sha256: str) -> bool` — callers pass the sha256 they already computed for the bytes being uploaded. Manual sleeps are removed (the `ExponentialBackoff` iterator already sleeps between attempts).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 import hashlib
@@ -434,7 +434,7 @@ def test_corrupt_upload_fails_after_retries(tmp_path):
 Run: `python -m pytest tests/test_upload_verify.py -v`
 Expected: FAIL — `_do_upload` takes 3 args and re-computes its own hash (signature TypeError).
 
-- [ ] **Step 2: Replace `_do_upload` in `backupme/core/uploader.py`**
+- [x] **Step 2: Replace `_do_upload` in `backupme/core/uploader.py`**
 
 ```python
 def _do_upload(backend, local_path: str, remote_path: str, expected_sha256: str) -> bool:
@@ -489,11 +489,11 @@ Also update the spec's P2.2 step 4 wording to: "A hash mismatch or unavailable h
 git add docs/superpowers/specs/2026-09-06-phase2-performance-design.md
 ```
 
-- [ ] **Step 3: Run tests green + full suite**
+- [x] **Step 3: Run tests green + full suite**
 
 Run: `python -m pytest tests/test_upload_verify.py -v` → 4 passed. `python -m pytest` → all green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backupme/core/uploader.py tests/test_upload_verify.py docs/superpowers/specs/2026-09-06-phase2-performance-design.md
@@ -508,7 +508,7 @@ git commit -m "perf(uploader): verify uploads via backend hash; download-back on
 - Modify: `backupme/core/uploader.py` (`upload_bundle` main-loop prologue)
 - Test: `tests/test_single_pass.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```python
 import builtins
@@ -543,7 +543,7 @@ def test_small_file_read_once(env, backends, monkeypatch):
 Run: `python -m pytest tests/test_single_pass.py -v`
 Expected: FAIL — currently 2 opens (hash pass + read).
 
-- [ ] **Step 2: Edit the `upload_bundle` main-loop prologue**
+- [x] **Step 2: Edit the `upload_bundle` main-loop prologue**
 
 Replace:
 
@@ -573,11 +573,11 @@ and in the bundle branch, replace `data = Path(src_path).read_bytes()` with `# d
 
 Note: the `elif file_size <= _vault_max:` branch must keep its `data` reference — the code above binds `data` for small files and `None` for large ones; the chunked branch (`else`) does not use `data`.
 
-- [ ] **Step 3: Run green + full suite**
+- [x] **Step 3: Run green + full suite**
 
 Run: `python -m pytest tests/test_single_pass.py -v` → 1 passed; `python -m pytest` → all green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backupme/core/uploader.py tests/test_single_pass.py
@@ -592,7 +592,7 @@ git commit -m "perf(uploader): single read pass for files <= 10MB"
 - Modify: `backupme/core/uploader.py` (chunk_size wiring), `backupme/core/skip.py` (resolve only when needed), `backupme/cli/backup_cmd.py` (`--force` + incremental)
 - Test: `tests/test_chunk_config.py`, `tests/test_skip.py` (add one test)
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 # tests/test_chunk_config.py
@@ -633,7 +633,7 @@ def test_absolute_path_skips_resolve(monkeypatch):
 Run: `python -m pytest tests/test_chunk_config.py tests/test_skip.py -v`
 Expected: chunk test FAILS (3 MB file → 1 chunk, hardcoded 64 MB); resolve test FAILS (`resolve()` is called unconditionally).
 
-- [ ] **Step 2: Wire chunk_size in `backupme/core/uploader.py`**
+- [x] **Step 2: Wire chunk_size in `backupme/core/uploader.py`**
 
 At the top of `upload_bundle`, after the `config = asdict(config)` normalization:
 
@@ -651,7 +651,7 @@ At the top of `upload_bundle`, after the `config = asdict(config)` normalization
 
 and replace the two uses of `_chunk_size` inside the loop (`range(0, file_size, _chunk_size)` and `fsrc.read(_chunk_size)`) with `chunk_size`.
 
-- [ ] **Step 3: `skip.py` — resolve only non-absolute paths**
+- [x] **Step 3: `skip.py` — resolve only non-absolute paths**
 
 In `should_skip`, replace:
 
@@ -673,7 +673,7 @@ with:
 
 Same change in `should_skip_dir` (`full = str(p.resolve())` → conditional).
 
-- [ ] **Step 4: CLI `backup` gains `--force` and incremental (P2.1 applied to the CLI)**
+- [x] **Step 4: CLI `backup` gains `--force` and incremental (P2.1 applied to the CLI)**
 
 In `backup_cmd.py`: add option `@click.option("--force", is_flag=True, help="Re-offer every file, skipping the unchanged check")`, then replace the directory-walk block:
 
@@ -694,11 +694,11 @@ In `backup_cmd.py`: add option `@click.option("--force", is_flag=True, help="Re-
 
 (The old inline walk with per-file `should_skip` is removed — `collect_changes` applies the same rules.)
 
-- [ ] **Step 5: Run green + full suite**
+- [x] **Step 5: Run green + full suite**
 
 Run: `python -m pytest tests/test_chunk_config.py tests/test_skip.py tests/test_incremental.py -v` → all passed; `python -m pytest` → all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backupme/core/uploader.py backupme/core/skip.py backupme/cli/backup_cmd.py tests/test_chunk_config.py tests/test_skip.py
@@ -709,9 +709,9 @@ git commit -m "perf: wire chunk_size config, skip resolve for absolute paths, CL
 
 ### Task 6: Final verification
 
-- [ ] **Step 1: Full suite** — `python -m pytest` → all green.
+- [x] **Step 1: Full suite** — `python -m pytest` → all green.
 
-- [ ] **Step 2: Manual performance smoke with the CLI**
+- [x] **Step 2: Manual performance smoke with the CLI**
 
 ```bash
 python main.py -c test_tmp_backend/roundtrip/config.yaml --db-path test_tmp_backend/roundtrip/rt3.db backup test_data -r -b roundtrip_local
@@ -720,7 +720,7 @@ python main.py -c test_tmp_backend/roundtrip/config.yaml --db-path test_tmp_back
 
 Expected: first run uploads 3 files; second run prints `test_data: 3 unchanged (skipped)` and no upload lines. Then `report verify` on rt3.db reports 0 failed.
 
-- [ ] **Step 3: Commit (if anything pending) and merge-ready report**
+- [x] **Step 3: Commit (if anything pending) and merge-ready report**
 
 ```bash
 git add -A
