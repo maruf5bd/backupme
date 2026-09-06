@@ -11,7 +11,7 @@ _WINDOWS_SYSTEM_DIRS = {
 }
 
 _WINDOWS_TEMP_DIRS = {
-    "Temp", "tmp", "Temporary Internet Files",
+    "Temporary Internet Files",
     "AppData\\Local\\Temp", "AppData\\Local\\Microsoft\\Windows\\INetCache",
     "AppData\\Local\\Microsoft\\Windows\\WER",
     "AppData\\Roaming\\Microsoft\\Windows\\Recent",
@@ -32,11 +32,8 @@ _SKIP_FILE_PATTERNS = [
     "pagefile.sys", "hiberfil.sys", "swapfile.sys",
     "Thumbs.db", ".DS_Store", "desktop.ini",
     "dump.rdb", "*.sqlite-wal", "*.sqlite-shm",
+    "backupme.db", "backupme.db-wal", "backupme.db-shm",
 ]
-
-_ALWAYS_KEEP = {".txt", ".md", ".py", ".js", ".ts", ".rs", ".go", ".java",
-                ".c", ".h", ".cpp", ".hpp", ".yaml", ".yml", ".json", ".xml",
-                ".csv", ".xlsx", ".docx", ".pdf", ".jpg", ".png"}
 
 
 def should_skip(path: str | Path, user_excludes: list[str] | None = None) -> tuple[bool, str]:
@@ -51,15 +48,12 @@ def should_skip(path: str | Path, user_excludes: list[str] | None = None) -> tup
     """
     p = Path(path)
     name = p.name
-    ext = p.suffix.lower()
 
     parts = p.resolve().parts
     full_path = str(p.resolve())
     for part in parts:
         if part in _WINDOWS_SYSTEM_DIRS:
             return True, f"Windows system dir: {part}"
-        if part.lower() in ("temp", "tmp"):
-            return True, f"Temp dir: {part}"
         for pattern in _SKIP_DIR_PATTERNS:
             if fnmatch.fnmatch(part, pattern):
                 return True, f"Excluded pattern dir: {pattern}"
@@ -69,13 +63,17 @@ def should_skip(path: str | Path, user_excludes: list[str] | None = None) -> tup
 
     for pattern in _SKIP_FILE_PATTERNS:
         if fnmatch.fnmatch(name, pattern):
-            if ext in _ALWAYS_KEEP:
-                return False, ""
             return True, f"Excluded pattern file: {pattern}"
 
     if user_excludes:
+        posix_full = full_path.replace("\\", "/")
         for pattern in user_excludes:
-            if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(str(p), pattern):
+            norm = pattern.replace("\\", "/")
+            if (
+                fnmatch.fnmatch(name, norm)
+                or fnmatch.fnmatch(posix_full, norm)
+                or fnmatch.fnmatch(posix_full, "**/" + norm)
+            ):
                 return True, f"User exclude: {pattern}"
 
     return False, ""
@@ -87,8 +85,6 @@ def should_skip_dir(path: str | Path) -> bool:
     name = p.name
     full = str(p.resolve())
     if name in _WINDOWS_SYSTEM_DIRS:
-        return True
-    if name.lower() in ("temp", "tmp"):
         return True
     for pattern in _SKIP_DIR_PATTERNS:
         if fnmatch.fnmatch(name, pattern):
