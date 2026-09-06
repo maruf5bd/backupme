@@ -5,11 +5,11 @@ from tests.helpers import backup_bytes
 def test_report_includes_migration_sections(env, backends):
     backup_bytes(env, "r.txt", b"report " * 50, backends)
     rep = get_report()
-    assert rep["migrated_lossy"] == 0
+    assert rep["migrated_files"] == 0
     assert rep["unrecoverable_files"] == []
 
 
-def test_report_counts_migrated_lossy(env, backends):
+def test_report_counts_migrated_files(env, backends):
     from backupme.core.database import execute, commit
     from backupme.core import migration
     execute(
@@ -20,7 +20,7 @@ def test_report_counts_migrated_lossy(env, backends):
     commit()
     migration.run_migrations(backends, repair=True)
     rep = get_report()
-    assert rep["migrated_lossy"] == 1
+    assert rep["migrated_files"] == 1
 
 
 def test_report_lists_unrecoverable(env, backends):

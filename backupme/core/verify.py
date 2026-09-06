@@ -134,11 +134,11 @@ def get_report() -> dict:
     ).fetchall()
 
     try:
-        migrated_lossy = execute(
+        migrated_files = execute(
             "SELECT COUNT(*) FROM files WHERE migrated = 1"
         ).fetchone()[0]
     except sqlite3.OperationalError:
-        migrated_lossy = 0
+        migrated_files = 0
 
     unrecoverable_rows = execute(
         """SELECT fc.file_id, f.relative_path, fc.blob_id
@@ -174,7 +174,7 @@ def get_report() -> dict:
         "last_integrity_check": dict(last_check) if last_check else None,
         "recent_recovery_events": [dict(r) for r in recovery],
         "backend_stats": [dict(r) for r in backend_stats],
-        "migrated_lossy": migrated_lossy,
+        "migrated_files": migrated_files,
         "unrecoverable_files": unrecoverable_files,
         "recommendations": recommendations,
     }
