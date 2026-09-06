@@ -1,6 +1,8 @@
 import hashlib
 import os
 import random
+import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -39,6 +41,9 @@ def create_snapshot(retention_days: int = 7) -> dict:
     return {"snapshot": compressed.name, "generation": gen}
 
 
+_SNAPSHOT_NAME_RE = re.compile(r"^snapshot-(\d+)-(\d+)\.db\.zst$")
+
+
 def prune_snapshots(retention_days: int = 7, min_keep: int = 3):
     snaps = sorted(Path(".").glob("snapshot-*.db.zst"))
     if len(snaps) <= min_keep:
@@ -46,13 +51,13 @@ def prune_snapshots(retention_days: int = 7, min_keep: int = 3):
     import datetime
     cutoff = datetime.datetime.now() - datetime.timedelta(days=retention_days)
     for s in snaps[:-min_keep]:
-        try:
-            parts = s.stem.split("-")
-            ts = int(parts[2]) if len(parts) > 2 else 0
-            if ts < cutoff.timestamp():
-                s.unlink(missing_ok=True)
-        except (ValueError, IndexError):
+        m = _SNAPSHOT_NAME_RE.match(s.name)
+        if not m:
+            print(f"warning: unrecognized snapshot name, not pruning: {s.name}", file=sys.stderr)
             continue
+        ts = int(m.group(2))
+        if ts < cutoff.timestamp():
+            s.unlink(missing_ok=True)
 
 
 def auto_backup(config: dict):
