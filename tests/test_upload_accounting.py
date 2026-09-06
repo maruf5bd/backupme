@@ -13,7 +13,7 @@ def test_failed_uploads_leave_no_trace(env, backends, monkeypatch):
     files_before = execute("SELECT COUNT(*) FROM files").fetchone()[0]
     blobs_before = execute("SELECT COUNT(*) FROM blobs").fetchone()[0]
 
-    monkeypatch.setattr(uploader_mod, "_do_upload", lambda bk, lp, rp: False)
+    monkeypatch.setattr(uploader_mod, "_do_upload", lambda bk, lp, rp, sha: False)
     r = backup_bytes(env, "doomed.txt", b"doomed " * 100, backends)
     assert r["status"] == "error" and "error" in r
     assert execute("SELECT COUNT(*) FROM files").fetchone()[0] == files_before
@@ -31,8 +31,8 @@ def test_partial_redundancy_reported_and_restorable(env, backends, monkeypatch, 
     backends2 = get_all_backends(load_cfg())
     real = uploader_mod._do_upload
 
-    def flaky(bk, lp, rp):
-        return False if bk.name == "second" else real(bk, lp, rp)
+    def flaky(bk, lp, rp, sha):
+        return False if bk.name == "second" else real(bk, lp, rp, sha)
 
     monkeypatch.setattr(uploader_mod, "_do_upload", flaky)
     r = backup_bytes(env, "part.txt", b"partial " * 100, backends2, redundancy=2)

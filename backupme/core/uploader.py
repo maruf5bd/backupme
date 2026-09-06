@@ -68,40 +68,43 @@ def _write_pointer(backend, pointer: dict, manifest: Manifest):
         tmp.unlink(missing_ok=True)
 
 
-def _do_upload(backend, local_path: str, remote_path: str) -> bool:
-    retry = retry_mod.ExponentialBackoff(max_attempts=4)
-    expected = hasher_mod.sha256_file(local_path)
+def _do_upload(backend, local_path: str, remote_path: str, expected_sha256: str) -> bool:
+    retry = retry_mod.ExponentialBackoff()
     for attempt, delay in retry:
         try:
             backend.upload(local_path, remote_path)
 
-            # Strict post-upload download and cross-check verification
-            dl_dir = Path(tempfile.mkdtemp())
-            dl = dl_dir / "verify.tmp"
+            # Prefer the backend's remote hash: no data transfer needed.
+            remote_hash = None
             try:
-                backend.download(remote_path, str(dl))
-                if dl.exists():
-                    downloaded_size = dl.stat().st_size
-                    # Check for 0-byte stub files created by async virtual file systems (like DriveFS)
-                    if downloaded_size == 0 and os.path.getsize(local_path) > 0:
-                        raise RuntimeError("Downloaded file is empty (detected broken virtual stub)")
+                remote_hash = backend.hash(remote_path)
+            except Exception:
+                remote_hash = None
 
-                    remote_hash = hasher_mod.sha256_file(str(dl))
-                else:
+            if remote_hash and remote_hash.lower() == expected_sha256.lower():
+                _circuit_breaker.record_success(backend.name)
+                return True
+
+            # Hash unavailable (or lied) — download-back verification,
+            # including the 0-byte stub check for async virtual filesystems.
+            dl_dir = Path(tempfile.mkdtemp())
+            try:
+                dl = dl_dir / "verify.tmp"
+                backend.download(remote_path, str(dl))
+                if not dl.exists():
                     raise RuntimeError("Downloaded file does not exist after verification download")
+                if dl.stat().st_size == 0 and os.path.getsize(local_path) > 0:
+                    raise RuntimeError("Downloaded file is empty (detected broken virtual stub)")
+                remote_hash = hasher_mod.sha256_file(str(dl))
             finally:
                 import shutil
                 shutil.rmtree(str(dl_dir), ignore_errors=True)
 
-            if remote_hash == expected:
+            if remote_hash.lower() == expected_sha256.lower():
                 _circuit_breaker.record_success(backend.name)
                 return True
-            else:
-                raise RuntimeError(f"Hash mismatch: expected {expected}, got {remote_hash}")
-        except Exception as e:
-            if attempt < 4:
-                time.sleep(delay)
-            continue
+        except Exception:
+            pass
     _circuit_breaker.record_failure(backend.name)
     return False
 
@@ -126,7 +129,7 @@ def _upload_chunk_to_backends(
     for bk in backends:
         if _circuit_breaker.is_tripped(bk.name):
             continue
-        if _do_upload(bk, str(tmp), remote_path):
+        if _do_upload(bk, str(tmp), remote_path, stored_sha256):
             storage_rows.append({
                 "backend": bk.name,
                 "path": remote_path,
@@ -233,7 +236,7 @@ def _upload_single_blob(
             for bk in backends:
                 if _circuit_breaker.is_tripped(bk.name):
                     continue
-                if _do_upload(bk, str(enc_file), remote_path):
+                if _do_upload(bk, str(enc_file), remote_path, stored_sha256):
                     storage_rows.append({
                         "backend": bk.name,
                         "path": remote_path,
@@ -320,7 +323,7 @@ def upload_bundle(
         ok_backends = []
         failed_backends = []
         for bk in targets:
-            if _do_upload(bk, str(tmp), remote_path):
+            if _do_upload(bk, str(tmp), remote_path, stored_sha256):
                 ok_backends.append(bk)
             else:
                 failed_backends.append(bk.name)
