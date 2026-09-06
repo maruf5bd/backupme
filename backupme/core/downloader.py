@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import struct
 import tempfile
 from pathlib import Path
@@ -9,6 +10,10 @@ from backupme.core import crypto as crypto_mod
 from backupme.core.database import execute, commit
 
 _BUNDLE_HEADER_FMT = struct.Struct(">32sQQI")
+
+
+class UnrecoverableChunkError(RuntimeError):
+    """The chunk cannot be restored from this storage row (bad metadata, missing key)."""
 
 
 def _find_chunk_storage(blob_id: str, backend_name: str | None = None) -> list[dict]:
@@ -25,58 +30,47 @@ def _find_chunk_storage(blob_id: str, backend_name: str | None = None) -> list[d
     return [dict(r) for r in rows]
 
 
-def _extract_from_bundle(bk, remote_path: str, offset: int, length: int, st: dict, config, expected_hash: str | None = None) -> bytes:
-    """Download the full bundle, decrypt it, decompress it, and extract the target bytes."""
+def _decrypt_if_needed(work_file: Path, dec: Path, st: dict, config) -> Path:
+    if not st.get("encrypted"):
+        return work_file
+    if not (st.get("nonce") and st.get("auth_tag")):
+        raise UnrecoverableChunkError(
+            f"Blob {st.get('storage_path')} is marked encrypted but has no nonce/auth_tag "
+            "(legacy manifest rebuild) — re-upload required"
+        )
+    enc_cfg = getattr(config, "encryption", None)
+    key_file = getattr(enc_cfg, "key_file", "") if enc_cfg else ""
+    if not key_file or not Path(key_file).exists():
+        raise UnrecoverableChunkError(
+            f"Encryption required but key file not configured or missing: '{key_file}'"
+        )
+    crypto_mod.decrypt_file(str(work_file), str(dec), crypto_mod.load_key(key_file))
+    return dec
+
+
+def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int | None,
+                         st: dict, config, expected_hash: str | None = None) -> bytes:
+    """Download the full bundle, decrypt/decompress it, and extract the target bytes."""
+    if offset is None or length is None or offset <= 0 or length <= 0:
+        raise UnrecoverableChunkError(
+            f"Bundle storage row for {remote_path} has no valid @offset:length range "
+            "(legacy metadata) — re-backup this file"
+        )
     tmp_dir = Path(tempfile.mkdtemp())
     tmp = tmp_dir / "bundle_full"
     dec = tmp_dir / "bundle_dec"
     try:
         bk.download(remote_path, str(tmp))
-        
-        work_file = tmp
-        if st.get("encrypted") and st.get("nonce") and st.get("auth_tag"):
-            enc_cfg = getattr(config, "encryption", None)
-            if enc_cfg and getattr(enc_cfg, "enabled", False):
-                key_file = getattr(enc_cfg, "key_file", "")
-                if key_file and Path(key_file).exists():
-                    key = crypto_mod.load_key(key_file)
-                    crypto_mod.decrypt_file(str(work_file), str(dec), key)
-                    work_file = dec
-                else:
-                    raise RuntimeError(f"Encryption key file not found: {key_file}")
-            else:
-                key_file = "backupme.key"
-                if Path(key_file).exists():
-                    key = crypto_mod.load_key(key_file)
-                    crypto_mod.decrypt_file(str(work_file), str(dec), key)
-                    work_file = dec
-                    
+        work_file = _decrypt_if_needed(tmp, dec, st, config)
         data = work_file.read_bytes()
         if st.get("compression_algo"):
             data = compress_mod.decompress(data, st["compression_algo"])
-            
-        # 1. New seek-based extraction (if offset/length are valid)
-        if offset is not None and length is not None and offset > 0:
-            return data[offset : offset + length]
-            
-        # 2. Backwards-compatible walk-based extraction (fallback for old bundled database entries)
-        if expected_hash:
-            expected_name = ("bndl/" + expected_hash).encode()[:32].ljust(32, b"\0")
-            cur_offset = 0
-            tar_len = len(data)
-            hdr_size = _BUNDLE_HEADER_FMT.size
-            while cur_offset + hdr_size <= tar_len:
-                header = data[cur_offset : cur_offset + hdr_size]
-                name, orig_size, comp_size, flags = _BUNDLE_HEADER_FMT.unpack(header)
-                if name == expected_name:
-                    data_offset = cur_offset + hdr_size
-                    return data[data_offset : data_offset + orig_size]
-                cur_offset += hdr_size + orig_size
-                
-        # 3. Fallback to raw slice if all else fails
-        return data[offset : offset + length] if (offset is not None and length is not None) else data
+        if offset + length > len(data):
+            raise RuntimeError(
+                f"Bundle {remote_path} truncated: need {offset + length} bytes, have {len(data)}"
+            )
+        return data[offset : offset + length]
     finally:
-        import shutil
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
@@ -151,23 +145,11 @@ def download_file(
                         tmp = tmp_dir / "chunk_dl"
                         try:
                             bk.download(remote_path, str(tmp))
-                            if st["encrypted"] and st["nonce"] and st["auth_tag"]:
-                                enc_cfg = getattr(config, "encryption", None)
-                                if enc_cfg and getattr(enc_cfg, "enabled", False):
-                                    key_file = getattr(enc_cfg, "key_file", "")
-                                    if key_file and Path(key_file).exists():
-                                        key = crypto_mod.load_key(key_file)
-                                        dec_tmp = tmp_dir / "chunk_dec"
-                                        crypto_mod.decrypt_file(str(tmp), str(dec_tmp), key)
-                                        data = dec_tmp.read_bytes()
-                                    else:
-                                        raise RuntimeError(f"Encryption key file not found: {key_file}")
-                            else:
-                                data = tmp.read_bytes()
-                            if data is not None and st["compression_algo"]:
+                            work = _decrypt_if_needed(tmp, tmp_dir / "chunk_dec", st, config)
+                            data = work.read_bytes()
+                            if st["compression_algo"]:
                                 data = compress_mod.decompress(data, st["compression_algo"])
                         finally:
-                            import shutil
                             shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
                     if data is not None:
@@ -175,6 +157,8 @@ def download_file(
                         if hashlib.sha256(data).hexdigest() == expected_hash:
                             break
                         data = None
+                except UnrecoverableChunkError:
+                    raise
                 except Exception:
                     continue
 
