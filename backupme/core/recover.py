@@ -4,6 +4,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from backupme.log import get_logger
+
+log = get_logger("recover")
 from backupme.core import database as _dbmod
 from backupme.core.database import (
     get_connection, get_generation, get_instance_id,
@@ -141,8 +144,7 @@ def _reconstruct_from_backend(bk) -> dict | None:
 
         return {"backend": bk.name, "path": persist_db, "generation": gen}
     except Exception:
-        import traceback
-        traceback.print_exc()
+        log.exception("replica reconstruction from backend failed")
         return None
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)

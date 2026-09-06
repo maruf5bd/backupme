@@ -4,9 +4,12 @@ import click
 @click.group()
 @click.option("--config", "-c", default="config.yaml", help="Config file path")
 @click.option("--db-path", "--db", default="backupme.db", help="Database path")
+@click.option("--verbose", "-V", is_flag=True, help="Verbose (debug) logging")
 @click.pass_context
-def cli(ctx, config, db_path):
+def cli(ctx, config, db_path, verbose):
     ctx.ensure_object(dict)
+    from ..log import setup_logging
+    setup_logging(verbose)
     import os
     if config:
         os.environ["BACKUPME_CONFIG"] = config

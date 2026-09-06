@@ -8,6 +8,10 @@ import time
 import uuid
 from pathlib import Path
 
+from backupme.log import get_logger
+
+log = get_logger("uploader")
+
 from backupme.core.database import execute, commit, bump_generation, get_generation
 from backupme.core import hasher as hasher_mod
 from backupme.core import compress as compress_mod
@@ -177,8 +181,8 @@ def _write_manifest_and_pointers(backends: list, manifest: Manifest, redundancy:
             write_manifest(bk2, manifest)
             _write_pointer(bk2, _make_pointer(manifest), manifest)
         except Exception as e:
-            print(f"warning: manifest/pointer write failed on backend {bk2.name} "
-                  f"for {manifest.relative_path}: {e}", file=sys.stderr)
+            log.warning("manifest/pointer write failed on backend %s for %s: %s",
+                        bk2.name, manifest.relative_path, e)
 
 
 def _compress_data(data: bytes, config: dict, ext: str = "") -> tuple[bytes, str | None, int | None]:
@@ -591,7 +595,8 @@ def upload_bundle(
                     "local_path": local_path,
                 })
         except Exception as e:
-            print(f"Error processing {file_info.get('local_path')}: {e}", file=sys.stderr)
+            log.error("processing %s failed: %s", file_info.get("local_path"), e,
+                      exc_info=True)
             results.append({"local_path": file_info.get("local_path"),
                             "status": "error", "error": str(e)})
 

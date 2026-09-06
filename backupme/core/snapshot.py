@@ -2,9 +2,12 @@ import hashlib
 import os
 import random
 import re
-import sys
 import tempfile
 from pathlib import Path
+
+from backupme.log import get_logger
+
+log = get_logger("snapshot")
 
 from backupme.core.database import (
     get_connection, execute, commit, get_generation, wal_checkpoint,
@@ -53,7 +56,7 @@ def prune_snapshots(retention_days: int = 7, min_keep: int = 3):
     for s in snaps[:-min_keep]:
         m = _SNAPSHOT_NAME_RE.match(s.name)
         if not m:
-            print(f"warning: unrecognized snapshot name, not pruning: {s.name}", file=sys.stderr)
+            log.warning("unrecognized snapshot name, not pruning: %s", s.name)
             continue
         ts = int(m.group(2))
         if ts < cutoff.timestamp():

@@ -1,6 +1,8 @@
 import hashlib
-import sys
 
+from backupme.log import get_logger
+
+log = get_logger("migration")
 from backupme.core.database import execute, commit, get_connection
 from backupme.core import dedup as dedup_mod
 
@@ -65,6 +67,6 @@ def migrate_inline_files(backends: list) -> dict:
             lossy.append({"file_id": r["id"], "file": r["relative_path"],
                           "old_sha256": r["sha256"], "new_sha256": new_sha})
     if lossy:
-        print(f"warning: {len(lossy)} inline file(s) migrated lossily (non-UTF-8 original bytes "
-              "cannot be reconstructed); see report", file=sys.stderr)
+        log.warning("%d inline file(s) migrated lossily (non-UTF-8 original bytes "
+                    "cannot be reconstructed); see report", len(lossy))
     return {"migrated": migrated, "lossy": lossy, "failed": failed}

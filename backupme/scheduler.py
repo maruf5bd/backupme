@@ -3,6 +3,9 @@ import threading
 import time
 from pathlib import Path
 
+from backupme.log import get_logger
+
+log = get_logger("scheduler")
 from backupme.core.database import initialize, get_generation, bump_generation, commit, execute
 from backupme.core import uploader as uploader_mod
 from backupme.core import snapshot as snapmod
@@ -196,7 +199,7 @@ class BackupScheduler:
                     str(src_path), entry.get("exclude", []))
 
             if skipped:
-                print(f"{source}: {skipped} unchanged (skipped)")
+                log.info("%s: %d unchanged (skipped)", source, skipped)
 
             batch: list[dict] = []
             batch_bytes = 0
@@ -214,8 +217,7 @@ class BackupScheduler:
                             except OSError:
                                 pass
                 except Exception:
-                    import traceback
-                    traceback.print_exc()
+                    log.exception("batch upload failed")
                 batch.clear()
                 batch_bytes = 0
 
@@ -235,5 +237,4 @@ class BackupScheduler:
         try:
             apply_retention(self.config)
         except Exception:
-            import traceback
-            traceback.print_exc()
+            log.exception("retention pass failed")

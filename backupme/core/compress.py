@@ -2,6 +2,10 @@ import gzip
 import bz2
 import lzma
 
+from backupme.log import get_logger
+
+log = get_logger("compress")
+
 try:
     import zstandard as zstd
     _HAS_ZSTD = True
@@ -137,7 +141,7 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
     Never lose readable data — can crash between steps and recover.
     """
     from backupme.core.database import execute, commit
-    import hashlib, tempfile, time, sys
+    import hashlib, tempfile, time
     from pathlib import Path
 
     if backend_name:
@@ -229,7 +233,7 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
             recompressed += 1
 
         except Exception as e:
-            print(f"recompress failed for {blob_id}: {e}", file=sys.stderr)
+            log.warning("recompress failed for %s: %s", blob_id, e)
             continue
 
     return {"recompressed": recompressed, "total_scanned": len(rows), "skipped_encrypted": skipped}
