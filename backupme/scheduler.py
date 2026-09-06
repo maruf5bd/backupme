@@ -11,6 +11,68 @@ from backupme.core.skip import should_skip, should_skip_dir
 from backupme.backends import get_all_backends
 
 
+def collect_changes(
+    source_root: str,
+    excludes: list[str],
+    force: bool = False,
+    no_skip: bool = False,
+) -> tuple[list, int]:
+    """Walk a source directory and split files into backup candidates vs unchanged.
+
+    A file is skipped only when the index has a live, fully-backed-up row
+    (chunk rows exist) for the same relative path with identical size and mtime.
+    """
+    import fnmatch
+
+    from backupme.core.skip import should_skip, should_skip_dir
+
+    src_path = Path(source_root)
+    rows = execute(
+        """SELECT f.relative_path, f.size, f.mtime,
+                  EXISTS(SELECT 1 FROM file_chunks fc WHERE fc.file_id = f.id) AS has_chunks
+           FROM files f
+           WHERE f.source_root = ? AND f.deleted_at IS NULL
+             AND f.id = (SELECT MAX(g.id) FROM files g
+                         WHERE g.source_root = f.source_root
+                           AND g.relative_path = f.relative_path
+                           AND g.deleted_at IS NULL)""",
+        (str(src_path),),
+    ).fetchall()
+    known = {os.path.normpath(r["relative_path"]): r for r in rows}
+
+    candidates: list[Path] = []
+    skipped = 0
+
+    def consider(fp: Path, rel: str) -> None:
+        nonlocal skipped
+        if any(fnmatch.fnmatch(rel, pat) for pat in excludes):
+            return
+        if not no_skip:
+            skip, _ = should_skip(str(fp))
+            if skip:
+                return
+        if not force:
+            entry = known.get(os.path.normpath(rel))
+            if entry is not None and entry["has_chunks"]:
+                st = fp.stat()
+                if entry["size"] == st.st_size and entry["mtime"] == st.st_mtime:
+                    skipped += 1
+                    return
+        candidates.append(fp)
+
+    if src_path.is_file():
+        consider(src_path, src_path.name)
+        return candidates, skipped
+
+    for dirpath, dirnames, filenames in os.walk(str(src_path)):
+        if not no_skip:
+            dirnames[:] = [d for d in dirnames if not should_skip_dir(os.path.join(dirpath, d))]
+        for fname in filenames:
+            fp = Path(dirpath) / fname
+            consider(fp, os.path.relpath(str(fp), str(src_path)))
+    return candidates, skipped
+
+
 def apply_retention(config: dict):
     from backupme.core import dedup as dedup_mod
 

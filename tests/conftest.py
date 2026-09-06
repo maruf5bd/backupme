@@ -26,7 +26,7 @@ def _isolate_db(tmp_path, monkeypatch):
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     """Scratch environment: isolated config, database, storage backend, and CWD."""
-    root = tmp_path / "env"
+    root = tmp_path / "bkenv"
     root.mkdir()
     _write_config(root, encrypted=False)
     monkeypatch.setenv("BACKUPME_CONFIG", str(root / "config.yaml"))
@@ -44,7 +44,7 @@ def env(tmp_path, monkeypatch):
 @pytest.fixture()
 def enc_env(tmp_path, monkeypatch):
     """Like env, but with AES-GCM encryption enabled and a key file on disk."""
-    root = tmp_path / "encenv"
+    root = tmp_path / "bkenc"
     root.mkdir()
     from backupme.core import crypto as crypto_mod
     key_path = root / "test.key"
