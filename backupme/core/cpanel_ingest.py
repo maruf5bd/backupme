@@ -35,6 +35,25 @@ _CPMOVE_NAME_RE = re.compile(r"^cpmove-(\w+)\.tar\.(?:gz|bz2)$", re.IGNORECASE)
 _ACCOUNT_SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]")
 _CHECKPOINT_EVERY = 25
 
+# Ingest failure notification hooks (Plan 05): failures are always recorded in
+# op_log; registered hooks additionally receive every archive failure (used by
+# the notification config path if a dispatcher is configured).
+_FAILURE_HOOKS: list = []
+
+
+def register_failure_hook(fn) -> None:
+    """Register a callable ``fn(details: dict)`` invoked on archive failures."""
+    if fn not in _FAILURE_HOOKS:
+        _FAILURE_HOOKS.append(fn)
+
+
+def _notify_failure(details: dict) -> None:
+    for fn in list(_FAILURE_HOOKS):
+        try:
+            fn(details)
+        except Exception:
+            log.warning("ingest failure hook raised", exc_info=True)
+
 
 def _sanitize_account(name: str) -> str:
     """Keep [A-Za-z0-9._-]; strip leading/trailing separators; fall back to default."""
@@ -425,6 +444,8 @@ def ingest_archive(
             op_log_mod.mark_failed(op["id"], str(e))
         except Exception:
             log.error("could not mark op failed", exc_info=True)
+        _notify_failure({"archive": archive_path, "account": account,
+                         "error": str(e), "sha256": archive_sha256})
         return {"status": "failed", "error": str(e),
                 "account": account, "archive": archive_path}
 

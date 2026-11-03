@@ -14,6 +14,7 @@ A Python backup system that stores files across **multiple storage backends** (l
 - [Core API Reference](#core-api-reference)
 - [Backend Reference](#backend-reference)
 - [Web Dashboard](#web-dashboard)
+- [cPanel Ingest](#cpanel-ingest)
 - [PLAN_FIXED Compliance](#plan_fixed-compliance)
 
 ---
@@ -613,6 +614,7 @@ Start with `backupme web --port 8080`, then open `http://localhost:8080`.
 | `/` | Dashboard | File count, dedup ratio, compression ratio, per-backend usage chart, DB health, recent files |
 | `/files` | Files | Searchable (FTS-backed) table; per-row download; redundancy column |
 | `/backends` | Backends | Health status, free/total/quota, last seen, circuit-breaker state |
+| `/ingest` | Ingest | cPanel drop-folder queue with live progress, staging/DB health, per-account generations, Parquet history queries |
 | `/logs` | Activity | Filtered op_log + recovery_events |
 | `/database` | DB Health | Integrity status, snapshot/WAL list, generation/instance_id, recovery history |
 | `/report` | Report | Full integrity report with charts and recommendations |
@@ -635,6 +637,94 @@ POST /api/backup
 POST /api/verify
 POST /api/db/replicate
 ```
+
+---
+
+## cPanel Ingest
+
+Stream `cpmove-*.tar.gz` archive members into the dedup vault one at a time — no bulk extraction, no duplicate storage. Approved topology: **SQLite hot store + DuckDB over Zstd Parquet** for history.
+
+### Architecture
+
+```
+cPanel cron (rsync cpmove-*.tar.gz)
+        │
+/srv/drop/<account>/cpmove-*.tar.gz     ← drop root (watched)
+        │  ingest-cpanel / daemon tick
+        ▼
+stream members (tarfile, one at a time) ── staging/<sha12>/ (plaintext, wiped per member)
+        │  upload_bundle (dedup, chunking, compression, encryption)
+        ▼
+SQLite hot store (live versions only, sole writer)
+        │  db cold-export (monthly / manual)
+        ▼
+parquet/files_YYYY-MM.parquet (zstd level 3, dictionary-encoded, ~128MB row groups)
+        │  db purge (daily, after grace)
+        ▼
+SQLite shrinks to retention window + grace; full history stays queryable:
+        backupme db history "SELECT * FROM files WHERE relative_path LIKE '%wp-config%'"
+```
+
+### Configuration (`config.yaml`)
+
+```yaml
+cpanel_ingest:
+  enabled: true
+  drop_root: /srv/drop          # where cPanel rsyncs cpmove archives
+  staging_dir: staging          # plaintext extraction area (wiped per member)
+  staging_budget_gb: 10         # pause ingest when staging exceeds this
+  max_parallel: 2
+  keep_raw: 0                   # keep N generations of raw archives (0 = none)
+  raw_backend: ""               # backend for raw archives ("" = default set)
+  account_pattern: ""           # optional regex; default: first subfolder or cpmove-NAME
+  exclude_members: []           # globs, e.g. ["*/mail/*/cur/*"]
+  max_member_size_gb: 5
+
+db_lifecycle:
+  purge_grace_days: 14          # hard-purge soft-deleted rows after N days...
+  cold_export_after_days: 30    # ...but only once exported to Parquet
+  parquet_dir: parquet
+
+scheduler:
+  ingest_interval: 300          # daemon drop-folder scan cadence (seconds)
+  gc_interval_days: 7
+  verify_interval_days: 1
+```
+
+Optional deps for cold history: `pip install pyarrow duckdb` (features degrade to no-ops with a warning without them).
+
+### cPanel-side setup (cron on the cPanel host)
+
+```bash
+*/15 * * * *  rsync -a --remove-source-files /backup/cpmove-*.tar.gz backupme-server:/srv/drop/\$USER/
+```
+
+### CLI
+
+```bash
+backupme ingest-cpanel /srv/drop --progress     # one-shot ingest
+backupme ingest-cpanel /srv/drop --watch        # re-scan every --interval seconds
+backupme ingest-cpanel /srv/drop --dry-run --json
+backupme restore-cpanel acct 2 --out /tmp/restore          # loose files
+backupme restore-cpanel acct 2 --retar acct.tar.gz         # re-assembled archive
+backupme ingest-status                                      # generations, dedup ratio, SQLite+Parquet sizes
+backupme db cold-export                                     # export new rows to Parquet
+backupme db purge                                           # hard-delete exported, grace-expired rows
+backupme db history "SELECT source_root, COUNT(*) FROM files GROUP BY source_root"
+```
+
+Exit codes: `0` ok/idle, `1` partial/errors, `2` config/usage error.
+
+### Row economics
+
+The hot SQLite stays proportional to retention + grace: ingest writes one `files` row per member version; retention soft-deletes old generations; cold export copies everything past the watermark to monthly Zstd Parquet; purge hard-deletes what is both soft-deleted, grace-expired, **and** below the export watermark. MySQL dumps dedup poorly (daily fulls differ) — they are stored compressed + versioned and bounded by retention.
+
+### Safety notes (honest)
+
+- Staging holds plaintext: keep it on an encrypted volume/tmpfs, mode 0700; files are wiped immediately after upload.
+- gzip CPU ≈ 1 core per 150 MB/s; Zstd export at level 3 is similarly cheap.
+- 9drive-style public writers are covered by the pipeline's AES-256-GCM encryption (blobs + raw archives).
+- Archive member names are sanitized (traversal, absolute paths, drive letters rejected); symlinks/devices are never extracted.
 
 ---
 

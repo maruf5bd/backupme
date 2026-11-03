@@ -495,6 +495,100 @@ Deletions are highly secure: they are executed strictly after a successful datab
 
 ---
 
+## 7b. cPanel Ingest
+
+The ingest pipeline takes cPanel account archives (`cpmove-*.tar.gz`) and streams
+their members into the dedup vault — one file at a time, with per-archive
+checkpoints, idempotency, and optional raw-archive retention. History beyond
+your retention window lives in monthly Zstd-compressed Parquet files that you
+query read-only with DuckDB.
+
+### How it works
+
+1. cPanel (or you) drops `cpmove-*.tar.gz` files into the **drop root**
+   (e.g. `/srv/drop/<account>/`).
+2. `backupme ingest-cpanel /srv/drop` (or the daemon's ingest tick, every
+   `scheduler.ingest_interval` seconds) discovers new archives and streams
+   each member through the standard dedup pipeline: hashing, chunking,
+   compression, encryption, upload.
+3. Plaintext exists only in `staging/<archive-sha>/` for the lifetime of one
+   member upload, then is deleted. Symlinks, devices, and unsafe paths are
+   skipped. After success the archive moves to `<drop_root>/.done/<account>/`.
+4. Re-ingesting the same archive is a no-op (content-hash idempotency); a
+   changed archive ingests as **generation 2** — unchanged members are dedup
+   hits, so the second generation costs near-zero new bytes.
+
+### First-time setup
+
+```yaml
+# config.yaml
+cpanel_ingest:
+  enabled: true
+  drop_root: /srv/drop
+  staging_dir: staging          # keep on encrypted storage if possible
+  staging_budget_gb: 10
+  max_parallel: 2
+  keep_raw: 0                   # set to 1+ to also store raw archives
+  max_member_size_gb: 5
+```
+
+Optional, for cold history queries:
+
+```bash
+pip install pyarrow duckdb
+```
+
+On the cPanel host, push archives automatically:
+
+```bash
+*/15 * * * *  rsync -a --remove-source-files /backup/cpmove-*.tar.gz backupme-server:/srv/drop/\$USER/
+```
+
+### Daily use
+
+```bash
+backupme ingest-cpanel /srv/drop            # one-shot
+backupme ingest-cpanel /srv/drop --watch    # keep re-scanning (Ctrl+C to stop)
+backupme ingest-cpanel /srv/drop --dry-run --json   # what would happen
+backupme ingest-status                      # accounts, generations, dedup ratio, storage sizes
+```
+
+### Restoring
+
+```bash
+# Loose files for generation 2 of account "acme":
+backupme restore-cpanel acme 2 --out /tmp/acme-gen2
+
+# A re-assembled tar.gz (member names preserved):
+backupme restore-cpanel acme 2 --retar acme-gen2.tar.gz
+
+# Just one member (fnmatch pattern):
+backupme restore-cpanel acme 2 --member-filter "homedir/public_html/wp-config.php"
+```
+
+### Cold history (SQLite stays small)
+
+```bash
+backupme db cold-export      # copy new rows to parquet/files_YYYY-MM.parquet
+backupme db purge            # hard-delete rows past grace that are already exported
+backupme db history "SELECT relative_path, version_seq, size FROM files
+                     WHERE source_root = 'cpanel/acme' ORDER BY version_seq DESC LIMIT 20"
+```
+
+The web dashboard's **Ingest** page shows the drop-folder queue with live
+progress, staging usage vs budget, SQLite + Parquet health, per-account
+generation drill-downs, and one-click restore. Settings has a "cPanel Ingest"
+section for editing every knob.
+
+### Safety notes
+
+- Staging holds plaintext briefly — use an encrypted volume or tmpfs, mode 0700.
+- `keep_raw` re-uploads the original archive (it dedups across generations).
+- Ingest failures are recorded in `op_log` and surfaced on the Ingest page;
+  register a failure hook (or check `backupme logs --op cpanel_ingest`) for alerting.
+
+---
+
 ## 8. Maintenance & Monitoring
 
 ### 8.1 Database Health Check
