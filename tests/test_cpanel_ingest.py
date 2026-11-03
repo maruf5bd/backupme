@@ -275,13 +275,21 @@ def test_gen2_changed_archive_dedups_unchanged_members(drop_root, env, backends,
 # ---------------------------------------------------------------------------
 
 def test_checkpoint_type_and_total(drop_root, env, backends, ingest_cfg):
+    """Beyond type/total (pinned in the e2e test): the checkpoint identifies
+    the archive and its last processed member."""
     from backupme.core import state as state_mod
+    archive = drop_root / "acct" / "cpmove-acct.tar.gz"
+    archive_sha = cpanel_ingest.hasher_mod.sha256_file(str(archive))
     cpanel_ingest.ingest_tree(str(drop_root), backends, ingest_cfg)
     ck = state_mod.get_last_checkpoint()
     assert ck["type"] == "cpanel_ingest"
     assert ck["data"]["total"] == 3
-    assert ck["data"]["account"] == "acct"
     assert ck["data"]["done"] == 3
+    assert ck["data"]["account"] == "acct"
+    assert ck["data"]["archive"].endswith("cpmove-acct.tar.gz")
+    assert ck["data"]["sha256"] == archive_sha
+    # The tar's last file member, not the symlink/traversal skips.
+    assert ck["data"]["members"][0]["name"] == "mysql/db.sql"
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +403,100 @@ def test_keep_raw_zero_no_raw_rows(drop_root, env, backends, ingest_cfg):
         "SELECT COUNT(*) FROM files WHERE source_root LIKE 'cpanel-raw/%'",
     ).fetchone()[0]
     assert rows == 0
+
+
+# ---------------------------------------------------------------------------
+# 12. encrypted ingest end-to-end (QA coverage H1)
+# ---------------------------------------------------------------------------
+
+def test_ingest_tree_end_to_end_encrypted(enc_env):
+    """Full path staging -> upload_bundle -> AES-GCM blob -> restore with
+    encryption enabled. Guards the quiet-plaintext failure: _encrypt_data
+    falls back to plaintext when the key file is missing, so a mis-wired
+    config would store readable member content while the operator believes
+    the vault is encrypted."""
+    from backupme.config import load_config
+    from backupme.backends import get_all_backends
+
+    make_cpmove(enc_env)
+    cfg = load_config()
+    cfg.cpanel_ingest.enabled = True
+    cfg.cpanel_ingest.drop_root = str(enc_env / "drop")
+    backends = get_all_backends(cfg)
+
+    out = cpanel_ingest.ingest_tree(str(enc_env / "drop"), backends, cfg)
+    assert out["status"] == "ok"
+    assert all(r["status"] == "ok" for r in out["results"])
+
+    # Every storage row is recorded as encrypted.
+    n_enc = execute("SELECT COUNT(*) FROM blob_storage WHERE encrypted = 1").fetchone()[0]
+    n_all = execute("SELECT COUNT(*) FROM blob_storage").fetchone()[0]
+    assert n_all >= 1
+    assert n_enc == n_all
+
+    # Nothing on disk under the storage root carries the plaintext marker.
+    marker = b"<?php echo 1;"
+    storage_root = enc_env.parent / "storage"
+    leaked = [
+        f for f in storage_root.rglob("*")
+        if f.is_file() and f.suffix != ".json"
+        and marker in f.read_bytes()
+    ]
+    assert leaked == [], f"plaintext member content stored at: {leaked}"
+
+    # Restore roundtrip decrypts: plaintext comes back byte-for-byte.
+    r = cpanel_ingest.restore_cpanel("acct", 1, out=str(enc_env / "restore_out"),
+                                     backends=backends, config=cfg)
+    assert r["status"] == "ok"
+    assert r["members"] == 3
+    base = enc_env / "restore_out" / "acct"
+    assert (base / "homedir" / "index.php").read_bytes() == b"<?php echo 1;"
+    assert (base / "mysql" / "db.sql").read_bytes() == b"INSERT INTO x VALUES (1);"
+
+
+# ---------------------------------------------------------------------------
+# 13. skip counters: max_member_size_gb + exclude_members (QA coverage H2/M2)
+# ---------------------------------------------------------------------------
+
+def test_max_member_size_skips_large_member_and_reports_it(env, backends, ingest_cfg):
+    """A member over max_member_size_gb is skipped, counted in the result
+    payload AND the generation manifest — never silently missing."""
+    ingest_cfg.cpanel_ingest.max_member_size_gb = 0.0000005   # ~0.5 KB
+    make_cpmove(env, "acct", override_content={"homedir/config.php": b"x" * 4096})
+    out = cpanel_ingest.ingest_tree(str(env / "drop"), backends, ingest_cfg)
+    assert out["status"] == "ok"
+    r = out["results"][0]
+    assert r["status"] == "ok"
+    assert r["members"] == 2            # config.php skipped
+    assert r["skipped_oversize"] == 1
+    assert r["excluded"] == 0
+
+    # The skipped member is not in the vault.
+    assert not execute(
+        "SELECT 1 FROM files WHERE source_root='cpanel/acct' "
+        "AND relative_path='homedir/config.php'"
+    ).fetchone()
+
+    # Manifest carries the counters.
+    manifests = list((env / "manifest").glob("*.json"))
+    mdata = json.loads(manifests[0].read_text())
+    assert mdata["skipped_oversize"] == 1
+    assert mdata["excluded"] == 0
+    assert mdata["indexed"] == 2 and mdata["estimated"] == 3
+
+
+def test_exclude_members_globs_skip_matching_members(env, backends, ingest_cfg):
+    make_cpmove(env)
+    ingest_cfg.cpanel_ingest.exclude_members = ["mysql/*", "*/config.php"]
+    out = cpanel_ingest.ingest_tree(str(env / "drop"), backends, ingest_cfg)
+    assert out["status"] == "ok"
+    r = out["results"][0]
+    assert r["members"] == 1            # only homedir/index.php survives
+    assert r["excluded"] == 2
+    assert r["skipped_oversize"] == 0
+    n = execute(
+        "SELECT COUNT(*) FROM files WHERE source_root='cpanel/acct'").fetchone()[0]
+    assert n == 1
+    manifests = list((env / "manifest").glob("*.json"))
+    mdata = json.loads(manifests[0].read_text())
+    assert mdata["excluded"] == 2

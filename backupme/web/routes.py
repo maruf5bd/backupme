@@ -2348,6 +2348,10 @@ def register_routes(app, config: cfgmod.Config):
                         _ingest_state["results"].append({
                             "archive": item["path"], "status": "deferred",
                             "reason": "paused"})
+                        # Deferred archives count as handled so the queue
+                        # counters reconcile (done == total when a pause
+                        # deferred the tail of the queue).
+                        _ingest_state["archives_done"] += 1
                     continue
                 with _ingest_lock:
                     _ingest_state["current_archive"] = item["path"]
@@ -2443,7 +2447,12 @@ def register_routes(app, config: cfgmod.Config):
         with _ingest_lock:
             if _ingest_state["running"]:
                 return JSONResponse({"error": "an ingest scan is already running"}, status_code=409)
-        _ingest_paused.clear()
+        if _ingest_paused.is_set():
+            # A pause is explicit operator consent to NOT ingest; a scan must
+            # not silently clear it (bandwidth/egress protection control).
+            return JSONResponse(
+                {"error": "ingest is paused — POST /api/ingest/resume to allow scans"},
+                status_code=409)
         _reset_ingest()
         threading.Thread(target=_ingest_worker, args=(drop_root,), daemon=True).start()
         return JSONResponse({"status": "started", "drop_root": drop_root})

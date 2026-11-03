@@ -343,6 +343,7 @@ def ingest_archive(
 
     done_members: list[dict] = []
     excluded = 0
+    oversize_skipped = 0
     error_count = 0
     dupe_count = 0
     total = 0
@@ -370,6 +371,7 @@ def ingest_archive(
                 if max_gb > 0 and member.size > max_gb * (1024 ** 3):
                     log.warning("skipping oversize member %s (%d bytes)",
                                 sanitized, member.size)
+                    oversize_skipped += 1
                     continue
 
                 staging_path = None
@@ -422,8 +424,10 @@ def ingest_archive(
 
         if len(done_members) != est["members"]:
             log.warning(
-                "archive %s: indexed %d members, estimated %d (excluded %d)",
-                archive_path, len(done_members), est["members"], excluded)
+                "archive %s: indexed %d members, estimated %d "
+                "(excluded %d, oversize skipped %d)",
+                archive_path, len(done_members), est["members"], excluded,
+                oversize_skipped)
 
         payload = {
             "account": account,
@@ -432,6 +436,8 @@ def ingest_archive(
             "members": done_members,
             "indexed": len(done_members),
             "estimated": est["members"],
+            "excluded": excluded,
+            "skipped_oversize": oversize_skipped,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }
         _write_generation_manifest(cwd, archive_sha256, payload)
@@ -525,6 +531,8 @@ def ingest_archive(
         "bytes": est["bytes"],
         "dupe": dupe_count,
         "errors": error_count,
+        "excluded": excluded,
+        "skipped_oversize": oversize_skipped,
         "disposition_errors": disposition_errors,
     }
 

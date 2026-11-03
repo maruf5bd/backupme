@@ -3,6 +3,7 @@ import os
 import tarfile
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from backupme.cli.base import cli
@@ -48,49 +49,66 @@ def test_ingest_cpanel_json_empty(env, backends):
     assert data["archives"] == 0
 
 
-def test_ingest_cpanel_real_archive(env, backends):
+@pytest.mark.parametrize("as_json", [False, True])
+def test_ingest_cpanel_real_archive(env, backends, as_json):
     drop = env / "drop"
     _make_cpmove(drop)
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel",
-                                 str(drop)])
+    args = ["--db", str(env / "test.db"), "ingest-cpanel", str(drop)]
+    if as_json:
+        args.append("--json")
+    result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
-    assert "indexed" in result.output.lower() or "ok" in result.output.lower()
 
     from backupme.core.database import execute
     rows = execute("SELECT COUNT(*) FROM files WHERE source_root='cpanel/acct'").fetchone()
     assert rows[0] == 3
 
-
-def test_ingest_cpanel_json_real(env, backends):
-    drop = env / "drop"
-    _make_cpmove(drop)
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel",
-                                 str(drop), "--json"])
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
-    assert data["status"] == "ok"
-    assert data["archives"] == 1
-    assert "archives" in data
+    if as_json:
+        data = json.loads(result.output)
+        assert data["status"] == "ok"
+        assert data["archives"] == 1
+        assert "archives" in data
+    else:
+        assert "indexed" in result.output.lower() or "ok" in result.output.lower()
 
 
 def test_ingest_cpanel_redundancy_flag(env, backends):
     drop = env / "drop"
     _make_cpmove(drop)
+    # Redundancy needs somewhere to replicate TO: a single backend can never
+    # satisfy --redundancy 2.
+    from tests.helpers import add_backend
+    add_backend(env, "second", env.parent / "storage2")
     runner = CliRunner()
     result = runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel",
                                  str(drop), "--redundancy", "2"])
     assert result.exit_code == 0, result.output
+    # The redundancy flag must produce real replica rows, not just exit 0.
+    from backupme.core.database import execute
+    blob_ids = [r[0] for r in execute(
+        "SELECT DISTINCT blob_id FROM file_chunks fc "
+        "JOIN files f ON f.id = fc.file_id WHERE f.source_root='cpanel/acct'")]
+    assert blob_ids
+    for bid in blob_ids:
+        # Member blobs are byte ranges inside their parent bundle; the parent
+        # carries the redundancy.
+        target = bid
+        if bid.startswith("bundle/") and bid.count("/") >= 4:
+            target = bid.rsplit("/", 1)[0]
+        n = execute(
+            "SELECT COUNT(*) FROM blob_storage WHERE blob_id = ?", (target,)).fetchone()[0]
+        assert n >= 2, f"blob {target} has {n} replicas, expected >= 2"
 
 
 def test_restore_cpanel_missing(env, backends):
+    """Pins today's contract: an unknown account/generation restores 0 members
+    and exits 0 (weak signal — see QA M5 product follow-up)."""
     runner = CliRunner()
     result = runner.invoke(cli, ["--db", str(env / "test.db"), "restore-cpanel",
                                  "nope", "1"])
-    # either nonzero or ok with 0 members; must not crash with traceback
     assert "Traceback" not in result.output
-    assert result.exit_code in (0, 1)
+    assert result.exit_code == 0
+    assert "members restored: 0" in result.output
 
 
 def test_ingest_status(env, backends):
@@ -104,6 +122,32 @@ def test_ingest_cpanel_invalid_drop_root(env, backends):
     result = runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel",
                                  str(env / "does-not-exist")])
     assert result.exit_code == 2
+
+
+def test_ingest_cpanel_watch_loops_until_interrupt(env, backends, monkeypatch):
+    """--watch re-scans on the interval and exits 0 with 'stopped' on Ctrl+C."""
+    from backupme.core import cpanel_ingest as ci_mod
+
+    drop = env / "drop"
+    drop.mkdir(parents=True, exist_ok=True)
+    calls = {"n": 0}
+
+    def fake_tree(*a, **kw):
+        calls["n"] += 1
+        return {"status": "ok", "archives": 0, "results": [], "files_ignored": 0}
+
+    monkeypatch.setattr(ci_mod, "ingest_tree", fake_tree)
+
+    def boom(_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("backupme.cli.ingest_cmd.time.sleep", boom)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel",
+                                 str(drop), "--watch", "--interval", "1"])
+    assert result.exit_code == 0, result.output
+    assert "stopped" in result.output
+    assert calls["n"] == 1  # one pass ran, then the interrupt ended the loop
 
 
 def test_list_json(env, backends):

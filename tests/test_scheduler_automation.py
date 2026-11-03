@@ -1,5 +1,6 @@
 """Tests for Plan 03 daemon automation: cadence ticks, single-flight guards,
 staging budget gate, and scheduler config parsing."""
+import datetime
 import tarfile
 import time
 from pathlib import Path
@@ -209,3 +210,158 @@ def test_scheduler_config_yaml(env):
     assert cfg.scheduler.ingest_interval == 45
     assert cfg.scheduler.gc_interval_days == 2
     assert cfg.scheduler.verify_interval_days == 3
+
+
+# ---------------------------------------------------------------------------
+# apply_retention math (QA coverage H4)
+# ---------------------------------------------------------------------------
+
+def _fmt(d: datetime.datetime) -> str:
+    return d.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _non_monday(d: datetime.datetime) -> datetime.datetime:
+    while d.weekday() == 0:  # Monday
+        d -= datetime.timedelta(days=1)
+    return d
+
+
+def _past_non_monday_over_day7(now: datetime.datetime, start_days: int,
+                               max_days: int) -> datetime.datetime:
+    """A deterministic date `start_days`..`max_days` ago that is not a Monday
+    and has day-of-month > 7 (so no retention branch protects it)."""
+    for extra in range(0, max_days - start_days + 1, 7):
+        d = _non_monday(now - datetime.timedelta(days=start_days + extra))
+        if d.day > 7:
+            return d
+    raise AssertionError("no deterministic candidate date found")
+
+
+def _seed_file(vg: str, seq: int, created: datetime.datetime,
+               blob_id: str | None = None) -> int:
+    """Insert one alive files row; optionally attach one chunk on blob_id."""
+    stamp = _fmt(created)
+    execute(
+        "INSERT INTO files (source_root, relative_path, sha256, size, "
+        "version_group, version_seq, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (f"seed/{vg}", f"f{seq}.txt", f"sha-{vg}-{seq}", 10 + seq, vg, seq,
+         stamp, stamp),
+    )
+    fid = execute("SELECT id FROM files WHERE version_group=? AND version_seq=?",
+                  (vg, seq)).fetchone()[0]
+    if blob_id:
+        execute(
+            "INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) "
+            "VALUES (?, 0, ?, 0, ?)", (fid, blob_id, 10 + seq))
+    return fid
+
+
+def _seed_blob(blob_id: str, ref_count: int):
+    execute("INSERT INTO blobs (blob_id, pt_size, ref_count) VALUES (?, ?, ?)",
+            (blob_id, 100, ref_count))
+    execute(
+        "INSERT INTO blob_storage (blob_id, backend_name, storage_path, "
+        "stored_size, stored_sha256) VALUES (?, 'test_local', ?, 100, ?)",
+        (blob_id, f"{blob_id}.bin", f"sha-{blob_id}"))
+
+
+def test_apply_retention_keeps_policy_versions_soft_deletes_rest(env):
+    from backupme.scheduler import apply_retention
+    now = datetime.datetime.now()
+
+    # Deterministic seed dates (blind `now - timedelta(N)` breaks when
+    # now.day <= N+7: the monthly branch would then keep those rows).
+    old_delete = _past_non_monday_over_day7(now, 40, 360)     # beyond weekly, day>7
+    monthly_keep = None                                        # prev month, day<=7
+    first_this = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    prev_last = first_this - datetime.timedelta(days=1)
+    for day in (7, 6, 5, 4, 3, 2, 1):
+        d = prev_last.replace(day=day)
+        if d.weekday() != 0:
+            monthly_keep = d
+            break
+    weekly_delete = _past_non_monday_over_day7(now, 14, 28)   # weekly window, not Monday
+    weekly_keep = now - datetime.timedelta(days=now.weekday() + 7)  # last week's Monday
+    daily_keep_a = now - datetime.timedelta(days=3)
+    daily_keep_b = now - datetime.timedelta(days=1)
+    keep_a = now - datetime.timedelta(hours=2)
+    keep_b = now
+
+    _seed_blob("blob-v1", 1)        # owned by the deleted v1 only
+    _seed_blob("blob-shared", 2)    # v1 + v3, both deleted -> purged
+    _seed_blob("blob-shared-keep", 2)  # v1 deleted, v8 kept -> survives at 1
+
+    _seed_file("vg1", 1, old_delete, "blob-v1")
+    execute("INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) "
+            "SELECT id, 1, 'blob-shared', 0, 10 FROM files WHERE version_group='vg1' AND version_seq=1")
+    execute("INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) "
+            "SELECT id, 2, 'blob-shared-keep', 0, 10 FROM files WHERE version_group='vg1' AND version_seq=1")
+    _seed_file("vg1", 2, monthly_keep)
+    _seed_file("vg1", 3, weekly_delete)
+    execute("INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) "
+            "SELECT id, 0, 'blob-shared', 0, 13 FROM files WHERE version_group='vg1' AND version_seq=3")
+    _seed_file("vg1", 4, weekly_keep)
+    _seed_file("vg1", 5, daily_keep_a)
+    _seed_file("vg1", 6, daily_keep_b)
+    _seed_file("vg1", 7, keep_a)
+    _seed_file("vg1", 8, keep_b, "blob-shared-keep")
+
+    # A group within the version budget must be left entirely alone.
+    _seed_file("vg2", 1, old_delete)
+    _seed_file("vg2", 2, now)
+
+    apply_retention({"retention": {"enabled": True, "versions": 2,
+                                   "daily": 7, "weekly": 4, "monthly": 12}})
+
+    alive = {r[0] for r in execute(
+        "SELECT version_seq FROM files WHERE version_group='vg1' "
+        "AND deleted_at IS NULL").fetchall()}
+    # newest 2 (keep set) + daily-window pair + Monday snapshot + early-month
+    # snapshot; the two unprotected old rows are soft-deleted.
+    assert alive == {2, 4, 5, 6, 7, 8}, alive
+    dead = {r[0] for r in execute(
+        "SELECT version_seq FROM files WHERE version_group='vg1' "
+        "AND deleted_at IS NOT NULL").fetchall()}
+    assert dead == {1, 3}
+
+    # Chunks of deleted versions are gone; chunks of kept versions remain.
+    dead_ids = [r[0] for r in execute(
+        "SELECT id FROM files WHERE version_group='vg1' AND version_seq IN (1,3)")]
+    assert dead_ids and execute(
+        "SELECT COUNT(*) FROM file_chunks WHERE file_id IN (%s)"
+        % ",".join("?" * len(dead_ids)), dead_ids).fetchone()[0] == 0
+    kept_ids = [r[0] for r in execute(
+        "SELECT id FROM files WHERE version_group='vg1' AND deleted_at IS NULL")]
+    assert execute(
+        "SELECT COUNT(*) FROM file_chunks WHERE file_id IN (%s)"
+        % ",".join("?" * len(kept_ids)), kept_ids).fetchone()[0] > 0
+
+    # unref_blob ran: sole-owner blob purged, shared blob of two dead
+    # versions purged, blob shared with a kept version survives at ref 1.
+    assert not execute("SELECT 1 FROM blobs WHERE blob_id='blob-v1'").fetchone()
+    assert not execute("SELECT 1 FROM blob_storage WHERE blob_id='blob-v1'").fetchone()
+    assert not execute("SELECT 1 FROM blobs WHERE blob_id='blob-shared'").fetchone()
+    row = execute("SELECT ref_count FROM blobs WHERE blob_id='blob-shared-keep'").fetchone()
+    assert row and row[0] == 1
+
+    # The under-budget group is untouched.
+    assert execute(
+        "SELECT COUNT(*) FROM files WHERE version_group='vg2' "
+        "AND deleted_at IS NULL").fetchone()[0] == 2
+
+
+def test_apply_retention_disabled_noop(env):
+    from backupme.scheduler import apply_retention
+    now = datetime.datetime.now()
+    _seed_blob("blob-x", 1)
+    _seed_file("vgx", 1, now - datetime.timedelta(days=400), "blob-x")
+    _seed_file("vgx", 2, now)
+    _seed_file("vgx", 3, now)
+
+    apply_retention({"retention": {"enabled": False}})
+
+    assert execute(
+        "SELECT COUNT(*) FROM files WHERE version_group='vgx' "
+        "AND deleted_at IS NULL").fetchone()[0] == 3
+    assert execute("SELECT 1 FROM blobs WHERE blob_id='blob-x'").fetchone()

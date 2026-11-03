@@ -97,10 +97,19 @@ def test_rebalance_checkpoint_resume_skips_completed(two_backend_env, monkeypatc
 
 
 def test_rebalance_limit(two_backend_env):
-    _ingest_only_on_first(two_backend_env)
-    out = rb.rebalance_to("second", _first_backends(two_backend_env), _cfg(two_backend_env),
-                          limit=1)
-    assert out["copied"] <= 1
+    env = two_backend_env
+    # Three distinct top-level blobs so "limit respected" is distinguishable
+    # from "nothing to copy".
+    for i, marker in enumerate((b"one " * 50, b"two " * 50, b"three " * 50)):
+        backup_bytes(env, f"rb/lim{i}.txt", marker, _first_backends(env))
+
+    out = rb.rebalance_to("second", _first_backends(env), _cfg(env), limit=1)
+    assert out["copied"] == 1
+    assert rb.plan_rebalance("second")["blobs"] == 2
+
+    out2 = rb.rebalance_to("second", _first_backends(env), _cfg(env))
+    assert out2["copied"] == 2
+    assert rb.plan_rebalance("second")["blobs"] == 0
 
 
 def test_drain_dry_run_reports_without_copying(two_backend_env):
@@ -139,12 +148,23 @@ def test_drain_copies_off_and_reports_gc_eligible(two_backend_env):
     assert only_here == 0
 
 
-def test_drain_unknown_only_backend_errors(two_backend_env):
+def test_drain_unknown_name_with_other_backends_is_noop(two_backend_env):
+    """Unknown name: no storage rows -> nothing to copy, no error."""
+    _ingest_only_on_first(two_backend_env)
     out = rb.drain_backend("does_not_exist", _first_backends(two_backend_env),
                            _cfg(two_backend_env))
-    # No storage rows for it → nothing to do but targets exist; returns ok with 0.
-    # If the backend is the ONLY one, targets empty → error path.
-    assert out["status"] in ("ok", "error")
+    assert out["status"] == "ok"
+    assert out["copied"] == 0
+    assert out["remaining_only_here_blobs"] == 0
+
+
+def test_drain_sole_backend_errors(two_backend_env):
+    """The only backend cannot be drained: there is nowhere to receive data."""
+    out = rb.drain_backend("test_local", [b for b in _first_backends(two_backend_env)
+                                          if b.name == "test_local"],
+                           _cfg(two_backend_env))
+    assert out["status"] == "error"
+    assert "no other healthy backend" in out["error"]
 
 
 def test_backend_usage_rows(two_backend_env):
