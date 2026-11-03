@@ -129,3 +129,18 @@ database:
 notifications:
   on_failure: true
   desktop: true
+
+# --- cPanel Ingest ---
+# Stream cpmove-*.tar.gz archives member-by-member into the dedup vault.
+cpanel_ingest:
+  enabled: false
+  drop_root: /srv/drop          # where cPanel rsyncs cpmove archives
+  staging_dir: staging          # plaintext extraction area (0700, wiped per member)
+  staging_budget_gb: 10         # pause ingest when staging exceeds this
+  max_parallel: 2               # archives processed concurrently
+  bandwidth_limit_mbps: 0       # 0 = unlimited (pacing hook)
+  keep_raw: 0                   # keep N generations of raw archives (0 = delete after ingest)
+  raw_backend: ""               # backend for raw archives ("" = default backend set)
+  account_pattern: ""           # optional regex; default derives account from folder/cpmove-NAME
+  exclude_members: []           # glob patterns to skip, e.g. ["*/mail/*/cur/*"]
+  max_member_size_gb: 5         # skip members larger than this

@@ -87,6 +87,20 @@ class NotificationsConfig:
     desktop: bool = True
 
 @dataclass
+class IngestConfig:
+    enabled: bool = False
+    drop_root: str = ""                  # directory holding cpmove-*.tar.gz
+    staging_dir: str = "staging"         # plaintext extraction area
+    staging_budget_gb: float = 10.0
+    max_parallel: int = 2
+    bandwidth_limit_mbps: float = 0.0    # 0 = unlimited (Phase 3 pacing hook)
+    keep_raw: int = 0                    # generations of raw archive to keep (0 = none)
+    raw_backend: str = ""                # backend name for raw archives ("" = default set)
+    account_pattern: str = ""            # optional regex override for account detection
+    exclude_members: list[str] = field(default_factory=list)  # fnmatch globs
+    max_member_size_gb: float = 5.0      # skip members larger than this
+
+@dataclass
 class BackendDef:
     type: str = ""
     name: str = ""
@@ -127,6 +141,7 @@ class Config:
     retention: RetentionConfig = field(default_factory=RetentionConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)
 
 
 def _resolve_env(value: str) -> str:
@@ -225,5 +240,7 @@ def load_config(path: str | None = None) -> Config:
         cfg.database = DatabaseConfig(snapshots=snap, auto_backup=auto)
     if "notifications" in raw:
         cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
+    if "cpanel_ingest" in raw:
+        cfg.cpanel_ingest = IngestConfig(**_filter_fields(IngestConfig, raw["cpanel_ingest"]))
 
     return cfg

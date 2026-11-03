@@ -129,6 +129,36 @@ def file_count_by_source() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def next_version_seq(source_root: str, relative_path: str) -> int:
+    """Next version_seq for a path, over ALL rows (soft-deleted included).
+
+    Deliberately no deleted_at filter: a purged-but-undeleted history must
+    never reuse a seq (files UNIQUE(source_root, relative_path, version_seq)).
+    """
+    row = execute(
+        "SELECT MAX(version_seq) FROM files WHERE source_root = ? AND relative_path = ?",
+        (source_root, relative_path),
+    ).fetchone()
+    if row and row[0] is not None:
+        return row[0] + 1
+    return 1
+
+
+def hard_delete_file(file_id: int):
+    """Hard-delete a file row and its chunk mappings, unreferencing blobs."""
+    from backupme.core import dedup as dedup_mod
+
+    blob_rows = execute(
+        "SELECT blob_id FROM file_chunks WHERE file_id = ?", (file_id,)
+    ).fetchall()
+    execute("DELETE FROM file_chunks WHERE file_id = ?", (file_id,))
+    execute("DELETE FROM files_fts WHERE rowid = ?", (file_id,))
+    execute("DELETE FROM files WHERE id = ?", (file_id,))
+    for r in blob_rows:
+        dedup_mod.unref_blob(r[0])
+    commit()
+
+
 def delete_file(file_id: int):
     fts_id = execute("SELECT id FROM files WHERE id = ?", (file_id,)).fetchone()
     if fts_id:
