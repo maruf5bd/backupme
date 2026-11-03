@@ -1,0 +1,424 @@
+diff --git a/.superpowers/sdd/progress.md b/.superpowers/sdd/progress.md
+new file mode 100644
+index 0000000..0a295a6
+--- /dev/null
++++ b/.superpowers/sdd/progress.md
+@@ -0,0 +1,3 @@
++# SDD Progress — Plan 01 cPanel Ingest (started 2026-11-03)
++Baseline: 100 tests pass @ 0bf804c (tree: ninedrive committed first)
++Model shortcut: python = /c/Python313/python.exe; shell has broken _lc aliases — use 'command git', write pytest output to file
+diff --git a/.superpowers/sdd/task-1-2-brief.md b/.superpowers/sdd/task-1-2-brief.md
+new file mode 100644
+index 0000000..e998c0a
+--- /dev/null
++++ b/.superpowers/sdd/task-1-2-brief.md
+@@ -0,0 +1,87 @@
++# Task 1+2 Brief — index.py helpers + IngestConfig
++
++You are implementing Task 1 and Task 2 of the cPanel Ingest pipeline (Plan 01) for BackupMe, a deduplicating backup tool. These are foundation tasks: later tasks build the ingest engine on these helpers.
++
++## Environment notes
++- Windows, Git Bash. **The shell startup defines broken aliases for `git` and `pytest` — ALWAYS use `command git` and `/c/Python313/python.exe -m pytest` (write output to a file, then read the file, to avoid an intermittent `_lc` alias error).**
++- Run tests: `/c/Python313/python.exe -m pytest tests/test_versioning.py -q > /tmp/pt.txt 2>&1; cat /tmp/pt.txt`
++- Commit with `command git add ... && command git commit ...` (one commit is fine).
++- TDD: write the test first, watch it fail, implement, watch it pass.
++
++## Task 1 — `backupme/core/index.py` additions
++
++Add two functions to the existing module (match its style: plain functions, `execute`/`commit` from `backupme.core.database`):
++
++```python
++def next_version_seq(source_root: str, relative_path: str) -> int:
++    """Next version_seq for a path, over ALL rows (soft-deleted included)."""
++    # MAX(version_seq)+1 over rows matching source_root+relative_path,
++    # deliberately NO deleted_at filter (a purged-but-undeleted history must
++    # never reuse a seq). Return 1 when no rows exist.
++```
++
++```python
++def hard_delete_file(file_id: int):
++    """Hard-delete a file row and its chunk mappings, unreferencing blobs."""
++    # 1. fetch blob_ids from file_chunks for this file
++    # 2. DELETE FROM file_chunks WHERE file_id = ?
++    # 3. DELETE FROM files_fts WHERE rowid = ?
++    # 4. dedup_mod.unref_blob(blob_id) for each blob (import dedup lazily inside the function to avoid a circular import — dedup imports database only, but keep the pattern of other modules)
++    # 5. DELETE FROM files WHERE id = ?
++    # 6. commit() once at the end
++```
++
++Note: `files` has `UNIQUE(source_root, relative_path, version_seq)`; `unref_blob` deletes a blob row + its blob_storage rows when refcount hits 0, and cascades to parent bundle blobs — reuse it, do not reimplement refcount logic.
++
++## Task 2 — `backupme/config.py` IngestConfig + `config.yaml.example` section
++
++Add a dataclass (place after `NotificationsConfig`, before `BackendDef`):
++
++```python
++@dataclass
++class IngestConfig:
++    enabled: bool = False
++    drop_root: str = ""                  # directory holding cpmove-*.tar.gz
++    staging_dir: str = "staging"         # plaintext extraction area
++    staging_budget_gb: float = 10.0
++    max_parallel: int = 2
++    bandwidth_limit_mbps: float = 0.0    # 0 = unlimited (Phase 3 pacing hook)
++    keep_raw: int = 0                    # generations of raw archive to keep (0 = none)
++    raw_backend: str = ""                # backend name for raw archives ("" = default set)
++    account_pattern: str = ""            # optional regex override for account detection
++    exclude_members: list[str] = field(default_factory=list)  # fnmatch globs
++    max_member_size_gb: float = 5.0      # skip members larger than this
++```
++
++Wire it in `load_config`: `if "cpanel_ingest" in raw: cfg.cpanel_ingest = IngestConfig(**_filter_fields(IngestConfig, raw["cpanel_ingest"]))`, and add field `cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)` to `Config`. Add `exclude_members` list handling exactly like the codebase does elsewhere (check how `BackupDef.exclude` is handled via `_filter_fields` — list fields pass through it fine).
++
++Add to `config.yaml.example` at the end (with a comment header matching the file's style):
++
++```yaml
++# --- cPanel Ingest ---
++# Stream cpmove-*.tar.gz archives member-by-member into the dedup vault.
++cpanel_ingest:
++  enabled: false
++  drop_root: /srv/drop          # where cPanel rsyncs cpmove archives
++  staging_dir: staging          # plaintext extraction area (0700, wiped per member)
++  staging_budget_gb: 10         # pause ingest when staging exceeds this
++  max_parallel: 2               # archives processed concurrently
++  bandwidth_limit_mbps: 0       # 0 = unlimited (pacing hook)
++  keep_raw: 0                   # keep N generations of raw archives (0 = delete after ingest)
++  raw_backend: ""               # backend for raw archives ("" = default backend set)
++  account_pattern: ""           # optional regex; default derives account from folder/cpmove-NAME
++  exclude_members: []           # glob patterns to skip, e.g. ["*/mail/*/cur/*"]
++  max_member_size_gb: 5         # skip members larger than this
++```
++
++## Tests — new file `tests/test_versioning.py`
++
++Use the existing `env` fixture (isolated config+db+backend) and `backends` fixture from `tests/conftest.py`. Test:
++1. `next_version_seq` returns 1 for unknown path; 2 after one `index_file`; still counts soft-deleted rows (call `index_file` then `delete_file` then `next_version_seq` → 2).
++2. `hard_delete_file`: upload a small file via `upload_bundle` (see `tests/helpers.py` `backup_bytes`), capture file_id; assert `file_chunks` rows exist; `hard_delete_file`; assert `files` row gone, `file_chunks` gone, blob refcount dropped (and blob row deleted when it hits 0).
++3. Config: write a YAML with a `cpanel_ingest:` section (all fields) to a temp path, `load_config(path)`; assert each field parsed, and that a config without the section yields defaults.
++
++Run the new tests, then the FULL suite (`tests/`) to prove no regression (baseline: 100 pass).
++
++## Report
++Write your full report to `.superpowers/sdd/task-1-2-report.md` (what you did, test evidence incl. full-suite line, deviations). Return: status (DONE/DONE_WITH_CONCERNS/NEEDS_CONTEXT/BLOCKED), commit hash, one-line test summary, concerns.
+diff --git a/.superpowers/sdd/task-1-2-report.md b/.superpowers/sdd/task-1-2-report.md
+new file mode 100644
+index 0000000..f4ec5a9
+--- /dev/null
++++ b/.superpowers/sdd/task-1-2-report.md
+@@ -0,0 +1,74 @@
++# Task 1+2 Report — index version helpers + cpanel_ingest config
++
++Status: DONE
++Commit: dc1ba0865ca4b3bd01e269415976a24ca5c0ee6b
++Plan: cPanel Ingest Plan 01 (Tasks 1+2), brief at `.superpowers/sdd/task-1-2-brief.md`
++
++## What was done
++
++### Task 1 — `backupme/core/index.py`
++Added two functions at the end of the module (before nothing; after `file_count_by_source`, just above the existing `delete_file`):
++
++- `next_version_seq(source_root, relative_path) -> int` — `SELECT MAX(version_seq)` over rows matching `source_root`+`relative_path` with **no** `deleted_at` filter (a purged-but-undeleted history must never reuse a seq, per the `UNIQUE(source_root, relative_path, version_seq)` constraint). Returns 1 when no rows exist (`MAX` returns NULL → row[0] is None).
++- `hard_delete_file(file_id)` — fetches `blob_id`s from `file_chunks`, deletes `file_chunks` rows, deletes the `files_fts` row by `rowid`, deletes the `files` row, then calls `dedup_mod.unref_blob(blob_id)` for each referenced blob (lazy import of `backupme.core.dedup` inside the function to avoid import cycles, matching the pattern used in `reconcile_refcounts`). Single `commit()` at the end. Refcount semantics are entirely delegated to `dedup.unref_blob` (refcount drop, blob+blob_storage deletion at 0, cascade to parent bundle blobs) — not reimplemented.
++
++### Task 2 — `backupme/config.py` + `config.yaml.example`
++- Added `IngestConfig` dataclass with exactly the fields/defaults from the brief (enabled=False, drop_root="", staging_dir="staging", staging_budget_gb=10.0, max_parallel=2, bandwidth_limit_mbps=0.0, keep_raw=0, raw_backend="", account_pattern="", exclude_members=list factory, max_member_size_gb=5.0), placed after `NotificationsConfig` and before `BackendDef`.
++- `Config` gained `cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)`.
++- `load_config` gained `if "cpanel_ingest" in raw: cfg.cpanel_ingest = IngestConfig(**_filter_fields(IngestConfig, raw["cpanel_ingest"]))` — list fields pass through `_filter_fields` unchanged (same as `BackupDef.exclude`), so `exclude_members` needed no special handling.
++- `config.yaml.example` got the `# --- cPanel Ingest ---` section verbatim from the brief, appended after `notifications:`.
++
++### Tests — `tests/test_versioning.py` (new, 7 tests)
++Written FIRST (red), then implementation (green):
++1. `test_next_version_seq_unknown_path_is_1` — 1 for unknown path.
++2. `test_next_version_seq_counts_indexed_rows` — 2 after one `index_file` (via `backup_bytes` → `upload_bundle`).
++3. `test_next_version_seq_counts_soft_deleted_rows` — still 2 after `delete_file` soft-deletes the only row.
++4. `test_hard_delete_file_removes_rows_and_unrefs_blob` — after `hard_delete_file`: `files` row gone, `file_chunks` gone, blob row + `blob_storage` rows deleted (refcount hit 0 via `unref_blob`).
++5. `test_hard_delete_file_only_drops_refcount` — two files sharing content (same bundle member blob); hard-deleting one leaves the blob alive with `ref_count` decremented by 1.
++6. `test_ingest_config_parses_all_fields` — YAML with a full `cpanel_ingest:` section; every field parsed with correct types (bool/int/float/list/str).
++7. `test_ingest_config_defaults_without_section` — config without the section yields all defaults via `cfg.cpanel_ingest`.
++
++Fixtures: `env` + `backends` from `tests/conftest.py`; `backup_bytes` from `tests/helpers.py`; config tests use `tmp_path` directly (matches `load_config(path)` signature; no DB needed).
++
++## TDD evidence
++
++Red phase (before implementation) — all 7 failed with AttributeError:
++```
++FAILED tests/test_versioning.py::test_next_version_seq_unknown_path_is_1 - AttributeError: module 'backupme.core.index' has no attribute 'next_version_seq'
++FAILED tests/test_versioning.py::test_next_version_seq_counts_indexed_rows - ...
++FAILED tests/test_versioning.py::test_next_version_seq_counts_soft_deleted_rows - ...
++FAILED tests/test_versioning.py::test_hard_delete_file_removes_rows_and_unrefs_blob - AttributeError: ... 'hard_delete_file'. Did you mean: 'delete_file'?
++FAILED tests/test_versioning.py::test_hard_delete_file_only_drops_refcount - ...
++FAILED tests/test_versioning.py::test_ingest_config_parses_all_fields - AttributeError: 'Config' object has no attribute 'cpanel_ingest'
++FAILED tests/test_versioning.py::test_ingest_config_defaults_without_section
++7 F  [100%]
++```
++
++Green phase (new file only): `7 passed` (`.......  [100%]`, exit 0).
++
++## Full suite
++
++```
++/c/Python313/python.exe -m pytest tests/   (pytest.ini addopts: -q --basetemp=test_tmp_backend/pytest)
++EXIT=0
++107 passed in 86.32s (0:01:26)
++```
++
++107 = 100 baseline + 7 new. No failures, no regressions.
++
++## Files touched
++
++- `J:\personal@hostraj.com\backupme\backupme\core\index.py` (added next_version_seq, hard_delete_file)
++- `J:\personal@hostraj.com\backupme\backupme\config.py` (IngestConfig dataclass, Config field, load_config wiring)
++- `J:\personal@hostraj.com\backupme\config.yaml.example` (cpanel_ingest section)
++- `J:\personal@hostraj.com\backupme\tests\test_versioning.py` (new, 7 tests)
++
++Nothing else modified.
++
++## Deviations / notes
++
++- None functional. Brief's snippets used verbatim.
++- `next_version_seq` handles the empty-`MAX` case with an explicit `if row and row[0] is not None` branch (MAX() over zero rows returns one row with NULL, not no rows).
++- `hard_delete_file` does NOT delete backend-side data (bundle tarballs / storage objects) — out of scope for Task 1; the ingest plan's GC/generation tasks own that. Blob *refcounting* is fully correct in the DB.
++- The commit also picked up `.superpowers/sdd/progress.md` and the brief file via `git add -A` (untracked planning artifacts); harmless, they belong to this plan's workflow.
++- Note for later tasks: pytest.ini has `-q` in addopts, so appending `-q` on the command line yields `-qq` and suppresses the summary line; run `pytest tests/` with no extra `-q` to see "N passed".
+diff --git a/backupme/config.py b/backupme/config.py
+index ca2ceca..0da8735 100644
+--- a/backupme/config.py
++++ b/backupme/config.py
+@@ -86,6 +86,20 @@ class NotificationsConfig:
+     on_failure: bool = True
+     desktop: bool = True
+ 
++@dataclass
++class IngestConfig:
++    enabled: bool = False
++    drop_root: str = ""                  # directory holding cpmove-*.tar.gz
++    staging_dir: str = "staging"         # plaintext extraction area
++    staging_budget_gb: float = 10.0
++    max_parallel: int = 2
++    bandwidth_limit_mbps: float = 0.0    # 0 = unlimited (Phase 3 pacing hook)
++    keep_raw: int = 0                    # generations of raw archive to keep (0 = none)
++    raw_backend: str = ""                # backend name for raw archives ("" = default set)
++    account_pattern: str = ""            # optional regex override for account detection
++    exclude_members: list[str] = field(default_factory=list)  # fnmatch globs
++    max_member_size_gb: float = 5.0      # skip members larger than this
++
+ @dataclass
+ class BackendDef:
+     type: str = ""
+@@ -127,6 +141,7 @@ class Config:
+     retention: RetentionConfig = field(default_factory=RetentionConfig)
+     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
++    cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)
+ 
+ 
+ def _resolve_env(value: str) -> str:
+@@ -225,5 +240,7 @@ def load_config(path: str | None = None) -> Config:
+         cfg.database = DatabaseConfig(snapshots=snap, auto_backup=auto)
+     if "notifications" in raw:
+         cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
++    if "cpanel_ingest" in raw:
++        cfg.cpanel_ingest = IngestConfig(**_filter_fields(IngestConfig, raw["cpanel_ingest"]))
+ 
+     return cfg
+\ No newline at end of file
+diff --git a/backupme/core/index.py b/backupme/core/index.py
+index 97c0189..fd97e1a 100644
+--- a/backupme/core/index.py
++++ b/backupme/core/index.py
+@@ -129,6 +129,36 @@ def file_count_by_source() -> list[dict]:
+     return [dict(r) for r in rows]
+ 
+ 
++def next_version_seq(source_root: str, relative_path: str) -> int:
++    """Next version_seq for a path, over ALL rows (soft-deleted included).
++
++    Deliberately no deleted_at filter: a purged-but-undeleted history must
++    never reuse a seq (files UNIQUE(source_root, relative_path, version_seq)).
++    """
++    row = execute(
++        "SELECT MAX(version_seq) FROM files WHERE source_root = ? AND relative_path = ?",
++        (source_root, relative_path),
++    ).fetchone()
++    if row and row[0] is not None:
++        return row[0] + 1
++    return 1
++
++
++def hard_delete_file(file_id: int):
++    """Hard-delete a file row and its chunk mappings, unreferencing blobs."""
++    from backupme.core import dedup as dedup_mod
++
++    blob_rows = execute(
++        "SELECT blob_id FROM file_chunks WHERE file_id = ?", (file_id,)
++    ).fetchall()
++    execute("DELETE FROM file_chunks WHERE file_id = ?", (file_id,))
++    execute("DELETE FROM files_fts WHERE rowid = ?", (file_id,))
++    execute("DELETE FROM files WHERE id = ?", (file_id,))
++    for r in blob_rows:
++        dedup_mod.unref_blob(r[0])
++    commit()
++
++
+ def delete_file(file_id: int):
+     fts_id = execute("SELECT id FROM files WHERE id = ?", (file_id,)).fetchone()
+     if fts_id:
+diff --git a/config.yaml.example b/config.yaml.example
+index a4c1d44..d4374ba 100644
+--- a/config.yaml.example
++++ b/config.yaml.example
+@@ -128,4 +128,19 @@ database:
+ 
+ notifications:
+   on_failure: true
+-  desktop: true
+\ No newline at end of file
++  desktop: true
++
++# --- cPanel Ingest ---
++# Stream cpmove-*.tar.gz archives member-by-member into the dedup vault.
++cpanel_ingest:
++  enabled: false
++  drop_root: /srv/drop          # where cPanel rsyncs cpmove archives
++  staging_dir: staging          # plaintext extraction area (0700, wiped per member)
++  staging_budget_gb: 10         # pause ingest when staging exceeds this
++  max_parallel: 2               # archives processed concurrently
++  bandwidth_limit_mbps: 0       # 0 = unlimited (pacing hook)
++  keep_raw: 0                   # keep N generations of raw archives (0 = delete after ingest)
++  raw_backend: ""               # backend for raw archives ("" = default backend set)
++  account_pattern: ""           # optional regex; default derives account from folder/cpmove-NAME
++  exclude_members: []           # glob patterns to skip, e.g. ["*/mail/*/cur/*"]
++  max_member_size_gb: 5         # skip members larger than this
+\ No newline at end of file
+diff --git a/tests/test_versioning.py b/tests/test_versioning.py
+new file mode 100644
+index 0000000..f32bdf0
+--- /dev/null
++++ b/tests/test_versioning.py
+@@ -0,0 +1,116 @@
++from pathlib import Path
++
++import pytest
++import yaml
++
++from backupme.config import load_config
++from backupme.core import dedup
++from backupme.core import index
++from backupme.core.database import execute
++from tests.helpers import backup_bytes
++
++
++def test_next_version_seq_unknown_path_is_1(env):
++    assert index.next_version_seq(str(env), "docs/a.txt") == 1
++
++
++def test_next_version_seq_counts_indexed_rows(env, backends):
++    backup_bytes(env, "docs/a.txt", b"hello", backends)
++    assert index.next_version_seq(str(env), "docs/a.txt") == 2
++
++
++def test_next_version_seq_counts_soft_deleted_rows(env, backends):
++    res = backup_bytes(env, "docs/a.txt", b"hello", backends)
++    index.delete_file(res["file_id"])
++    # The row is soft-deleted but its version_seq must never be reused.
++    assert index.next_version_seq(str(env), "docs/a.txt") == 2
++
++
++def test_hard_delete_file_removes_rows_and_unrefs_blob(env, backends):
++    res = backup_bytes(env, "docs/a.txt", b"hello", backends)
++    file_id = res["file_id"]
++    blob_id = execute(
++        "SELECT blob_id FROM file_chunks WHERE file_id = ?", (file_id,)
++    ).fetchone()[0]
++    assert execute("SELECT COUNT(*) FROM file_chunks WHERE file_id = ?", (file_id,)).fetchone()[0] == 1
++    assert dedup.get_blob(blob_id) is not None
++
++    index.hard_delete_file(file_id)
++
++    assert execute("SELECT COUNT(*) FROM files WHERE id = ?", (file_id,)).fetchone()[0] == 0
++    assert execute("SELECT COUNT(*) FROM file_chunks WHERE file_id = ?", (file_id,)).fetchone()[0] == 0
++    # Sole reference dropped -> blob row (and its storage rows) deleted.
++    assert dedup.get_blob(blob_id) is None
++    assert execute("SELECT COUNT(*) FROM blob_storage WHERE blob_id = ?", (blob_id,)).fetchone()[0] == 0
++
++
++def test_hard_delete_file_only_drops_refcount(env, backends):
++    # Two files share the same content -> same bundle member blob.
++    r1 = backup_bytes(env, "docs/a.txt", b"hello", backends)
++    r2 = backup_bytes(env, "docs/b.txt", b"hello", backends)
++    blob_id = execute(
++        "SELECT blob_id FROM file_chunks WHERE file_id = ?", (r1["file_id"],)
++    ).fetchone()[0]
++    before = dedup.get_blob(blob_id)["ref_count"]
++
++    index.hard_delete_file(r1["file_id"])
++
++    assert execute("SELECT COUNT(*) FROM files WHERE id = ?", (r1["file_id"],)).fetchone()[0] == 0
++    row = dedup.get_blob(blob_id)
++    assert row is not None
++    assert row["ref_count"] == before - 1
++
++
++def _write_ingest_yaml(path: Path):
++    cfg = {
++        "cpanel_ingest": {
++            "enabled": True,
++            "drop_root": "/srv/drop",
++            "staging_dir": "/tmp/stage",
++            "staging_budget_gb": 25,
++            "max_parallel": 4,
++            "bandwidth_limit_mbps": 50,
++            "keep_raw": 3,
++            "raw_backend": "usb_drive",
++            "account_pattern": "^cpmove-(?P<user>[a-z0-9]+)",
++            "exclude_members": ["*/mail/*/cur/*", "*/.trash/*"],
++            "max_member_size_gb": 2,
++        }
++    }
++    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
++
++
++def test_ingest_config_parses_all_fields(tmp_path):
++    p = tmp_path / "ingest.yaml"
++    _write_ingest_yaml(p)
++    cfg = load_config(str(p))
++    ing = cfg.cpanel_ingest
++    assert ing.enabled is True
++    assert ing.drop_root == "/srv/drop"
++    assert ing.staging_dir == "/tmp/stage"
++    assert ing.staging_budget_gb == 25.0
++    assert ing.max_parallel == 4
++    assert ing.bandwidth_limit_mbps == 50.0
++    assert ing.keep_raw == 3
++    assert ing.raw_backend == "usb_drive"
++    assert ing.account_pattern == "^cpmove-(?P<user>[a-z0-9]+)"
++    assert ing.exclude_members == ["*/mail/*/cur/*", "*/.trash/*"]
++    assert ing.max_member_size_gb == 2.0
++
++
++def test_ingest_config_defaults_without_section(tmp_path):
++    p = tmp_path / "plain.yaml"
++    p.write_text("backends:\n  local:\n  - name: l\n    path: /tmp/x\n", encoding="utf-8")
++    cfg = load_config(str(p))
++    ing = cfg.cpanel_ingest
++    assert ing.enabled is False
++    assert ing.drop_root == ""
++    assert ing.staging_dir == "staging"
++    assert ing.staging_budget_gb == 10.0
++    assert ing.max_parallel == 2
++    assert ing.bandwidth_limit_mbps == 0.0
++    assert ing.keep_raw == 0
++    assert ing.raw_backend == ""
++    assert ing.account_pattern == ""
++    assert ing.exclude_members == []
++    assert ing.max_member_size_gb == 5.0
+e566ee1 docs(sdd): task 1+2 report
+dc1ba08 feat(ingest): index version helpers + cpanel_ingest config
+ .superpowers/sdd/progress.md        |   3 +
+ .superpowers/sdd/task-1-2-brief.md  |  87 +++++++++++++++++++++++++++
+ .superpowers/sdd/task-1-2-report.md |  74 +++++++++++++++++++++++
+ backupme/config.py                  |  17 ++++++
+ backupme/core/index.py              |  30 ++++++++++
+ config.yaml.example                 |  17 +++++-
+ tests/test_versioning.py            | 116 ++++++++++++++++++++++++++++++++++++
+ 7 files changed, 343 insertions(+), 1 deletion(-)
