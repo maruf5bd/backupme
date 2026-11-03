@@ -113,6 +113,86 @@ def info(ctx, as_json):
     emit(data, as_json=as_json, human=human)
 
 
+@db.command("cold-export")
+@click.option("--dry-run", is_flag=True, help="Report what would be exported without writing")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def cold_export(ctx, dry_run, as_json):
+    """Export files rows past the watermark to monthly Zstd Parquet partitions."""
+    from ..core import db_lifecycle as lc
+    if dry_run:
+        from ..core.database import execute
+        pdir = lc.parquet_dir_for()
+        watermark = lc.load_watermark(pdir)
+        row = execute("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM files WHERE id > ?",
+                      (watermark,)).fetchone()
+        data = {"status": "dry-run", "watermark": watermark,
+                "eligible_rows": row[0], "max_id": row[1],
+                "parquet_dir": str(pdir)}
+        emit(data, as_json=as_json, human=lambda d: (
+            click.echo(f"parquet_dir: {d['parquet_dir']}"),
+            click.echo(f"watermark: {d['watermark']}"),
+            click.echo(f"eligible rows: {d['eligible_rows']} (max id {d['max_id']})"),
+        ))
+        return
+    result = lc.cold_export_to_parquet()
+    emit(result, as_json=as_json, human=lambda d: (
+        click.echo(f"status: {d.get('status')}"),
+        click.echo(f"partition: {d.get('partition')}") if d.get("partition") else None,
+        click.echo(f"rows exported: {d.get('rows')}"),
+        click.echo(f"watermark: {d.get('watermark')}"),
+        click.echo(f"bytes: {d.get('bytes')}") if d.get("bytes") else None,
+        click.echo(f"reason: {d.get('reason')}") if d.get("reason") else None,
+    ))
+
+
+@db.command("purge")
+@click.option("--grace-days", type=int, default=None, help="Override purge grace days")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def purge(ctx, grace_days, as_json):
+    """Hard-delete soft-deleted rows past grace that are already cold-exported."""
+    from ..core import db_lifecycle as lc
+    result = lc.hard_purge_versions(grace_days)
+    emit(result, as_json=as_json, human=lambda d: click.echo(
+        f"purged: {d['purged']} (skipped {d['skipped']} not exported, watermark {d['watermark']}, grace {d['grace_days']}d)"))
+
+
+@db.command("history")
+@click.argument("sql")
+@click.option("--json", "as_json", is_flag=True, default=True, help="JSON output (default)")
+@click.pass_context
+def history(ctx, sql, as_json):
+    """Run read-only DuckDB SQL over the parquet partitions (view: files)."""
+    from ..core import db_lifecycle as lc
+    rows = lc.query_history_duckdb(sql)
+    emit({"rows": rows, "count": len(rows)}, as_json=as_json,
+         human=lambda d: [click.echo(str(r)) for r in d["rows"]] or click.echo("(no rows)"))
+
+
+@db.command("vacuum")
+@click.pass_context
+def vacuum(ctx):
+    """VACUUM the hot SQLite database."""
+    from ..core import db_lifecycle as lc
+    result = lc.vacuum_if_needed()
+    click.echo("vacuumed" if result.get("vacuumed") else "vacuum failed")
+
+
+@db.command("prune-oplog")
+@click.option("--days", type=int, default=30, help="Archive op_log rows older than N days")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def prune_oplog_cmd(ctx, days, as_json):
+    """Archive terminal op_log rows to JSONL and remove them from the hot DB."""
+    from ..core import db_lifecycle as lc
+    result = lc.prune_oplog(days)
+    emit(result, as_json=as_json, human=lambda d: (
+        click.echo(f"pruned: {d['pruned']}"),
+        click.echo(f"file: {d['file']}") if d.get("file") else None,
+    ))
+
+
 @db.command()
 @click.option("--pending", is_flag=True, help="Show only pending ops")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")

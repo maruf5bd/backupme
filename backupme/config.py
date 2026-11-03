@@ -77,9 +77,18 @@ class DatabaseAutoBackupConfig:
     backends: str = "all"
 
 @dataclass
+class DBLifecycleConfig:
+    purge_grace_days: int = 14
+    cold_export_after_days: int = 30
+    parquet_dir: str = "parquet"
+    parquet_compression: str = "zstd"
+    parquet_compression_level: int = 3
+
+@dataclass
 class DatabaseConfig:
     snapshots: DatabaseSnapshotConfig = field(default_factory=DatabaseSnapshotConfig)
     auto_backup: DatabaseAutoBackupConfig = field(default_factory=DatabaseAutoBackupConfig)
+    lifecycle: DBLifecycleConfig = field(default_factory=DBLifecycleConfig)
 
 @dataclass
 class NotificationsConfig:
@@ -140,6 +149,7 @@ class Config:
     verification: VerificationConfig = field(default_factory=VerificationConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    db_lifecycle: DBLifecycleConfig = field(default_factory=DBLifecycleConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)
 
@@ -238,6 +248,10 @@ def load_config(path: str | None = None) -> Config:
         snap = DatabaseSnapshotConfig(**_filter_fields(DatabaseSnapshotConfig, db.get("snapshots", {})))
         auto = DatabaseAutoBackupConfig(**_filter_fields(DatabaseAutoBackupConfig, db.get("auto_backup", {})))
         cfg.database = DatabaseConfig(snapshots=snap, auto_backup=auto)
+    if "db_lifecycle" in raw:
+        cfg.db_lifecycle = DBLifecycleConfig(**_filter_fields(DBLifecycleConfig, raw["db_lifecycle"]))
+    if "database" in raw and "lifecycle" in raw["database"]:
+        cfg.database.lifecycle = DBLifecycleConfig(**_filter_fields(DBLifecycleConfig, raw["database"]["lifecycle"]))
     if "notifications" in raw:
         cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
     if "cpanel_ingest" in raw:

@@ -130,6 +130,17 @@ notifications:
   on_failure: true
   desktop: true
 
+# --- DB Lifecycle (cold storage) ---
+# Keep the SQLite hot-store proportional to retention + grace; full history in
+# monthly Zstd Parquet partitions queried read-only via DuckDB.
+# Requires optional deps: pip install pyarrow duckdb
+db_lifecycle:
+  purge_grace_days: 14          # soft-deleted rows are hard-purged after this many days...
+  cold_export_after_days: 30    # ...but only once exported to Parquet (id watermark)
+  parquet_dir: parquet          # partitions: parquet/files_YYYY-MM.parquet + _manifest.json
+  parquet_compression: zstd
+  parquet_compression_level: 3
+
 # --- cPanel Ingest ---
 # Stream cpmove-*.tar.gz archives member-by-member into the dedup vault.
 cpanel_ingest:
