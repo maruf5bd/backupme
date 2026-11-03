@@ -57,6 +57,17 @@ _BACKEND_FIELDS = {
         ("quota", str, ""),
         ("priority", int, 50),
     ],
+    "ninedrive": [
+        ("name", str, "ninedrive_main"),
+        ("base_url", str, "https://9drive.example.com"),
+        ("api_key", str, "9d_live_..."),
+        ("email", str, ""),
+        ("password", str, ""),
+        ("refresh_token", str, ""),
+        ("folder", str, "backupme"),
+        ("quota", str, ""),
+        ("priority", int, 50),
+    ],
 }
 
 

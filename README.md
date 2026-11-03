@@ -1,6 +1,6 @@
 # backupme — Distributed Backup System
 
-A Python backup system that stores files across **multiple storage backends** (local, FTP/SFTP, SMB, SSH, rclone) with **content-addressed deduplication**, **N-copy redundancy**, **chunked large-file support**, **upload verification**, and a **dual CLI + web dashboard** interface.
+A Python backup system that stores files across **multiple storage backends** (local, FTP/SFTP, SMB, SSH, rclone, 9drive) with **content-addressed deduplication**, **N-copy redundancy**, **chunked large-file support**, **upload verification**, and a **dual CLI + web dashboard** interface.
 
 ---
 
@@ -572,6 +572,33 @@ All backends implement `StorageBackend`:
 | `smb` | `smb.py` | `smbclient` | Windows SMB shares; space query via SMB info |
 | `ssh` | `ssh.py` | `paramiko` + subprocess | Remote `df` for space, `sha256sum` for hash |
 | `rclone` | `rclone.py` | subprocess CLI | 50+ cloud providers via `rclone about`, `rclone hashsum` |
+| `9drive` | `ninedrive.py` | `httpx` (9drive REST API) | Self-hosted pool of Google Drive + S3 accounts via 9drive |
+
+### 9Drive integration (`type: ninedrive`)
+
+backupme can use a self-hosted [9drive](https://github.com/zenhosta/9drive) instance as a backend, pooling its connected Google Drive accounts and S3 buckets.
+
+```yaml
+backends:
+  ninedrive:
+    - name: pool1
+      type: ninedrive
+      base_url: https://9drive.example.com
+      api_key: "{{ NINEDRIVE_API_KEY }}"   # 9d_live_... (files:upload scope)
+      email: backup@example.com            # JWT login for list/download/delete
+      password: "{{ NINEDRIVE_PASS }}"
+      refresh_token: ""                    # optional: avoids storing the password
+      folder: backupme                     # isolates blobs inside 9drive
+```
+
+Behavior and constraints:
+
+- **Auth split** — uploads go through `POST /api/v1/uploads` with the API key; list/download/delete/quota use a JWT (email+password login or refresh token). API-key-only config runs in upload-only mode.
+- **Path mapping** — blob paths (`objects/…`, `bundle/…`, `manifests/…`, `tree/…`, `__backupme_db__/…`) map 1:1 to 9drive file names inside the configured folder.
+- **Chunking stays under the cap** — 9drive limits single uploads to `MAX_UPLOAD_BYTES` (default 5 GB); backupme's 64 MB chunks and ≤16 MB bundles fit easily.
+- **Public-writer caveat** — 9drive force-shares every Google Drive upload with "anyone with link can edit". Enable `encryption` in backupme so blobs stay unreadable, or point 9drive at S3 accounts only.
+- **Verification** — 9drive exposes no server-side hash API, so upload verification falls back to backupme's standard download-and-hash path (the SHA-256 of bytes sent is cached for same-process recompress).
+- **Deletes are permanent** — trash followed by permanent delete, so `backupme gc` actually reclaims pool quota.
 
 ---
 
@@ -678,7 +705,8 @@ backupme/
 │   ├── ftp_sftp.py
 │   ├── smb.py
 │   ├── ssh.py
-│   └── rclone.py
+│   ├── rclone.py
+│   └── ninedrive.py
 │
 ├── cli/                      # Click command modules
 │   ├── base.py

@@ -4,6 +4,7 @@ from .ftp_sftp import FTPBackend, SFTPBackend
 from .smb import SMBBackend
 from .ssh import SSHBackend
 from .rclone import RcloneBackend
+from .ninedrive import NineDriveBackend
 
 BACKEND_MAP: dict[str, type[StorageBackend]] = {
     "local": LocalBackend,
@@ -12,6 +13,7 @@ BACKEND_MAP: dict[str, type[StorageBackend]] = {
     "smb": SMBBackend,
     "ssh": SSHBackend,
     "rclone": RcloneBackend,
+    "ninedrive": NineDriveBackend,
 }
 
 _instance_cache: dict[str, StorageBackend] = {}

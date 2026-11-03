@@ -61,6 +61,17 @@ backends:
       remote: "dropbox:/backupme"
       quota: 2TB
 
+  ninedrive:
+    - name: ninedrive_pool
+      base_url: https://9drive.example.com    # self-hosted 9drive backend URL
+      api_key: "{{ NINEDRIVE_API_KEY }}"      # 9d_live_... key (uploads)
+      email: backup@example.com               # JWT login for list/download/delete
+      password: "{{ NINEDRIVE_PASS }}"
+      refresh_token: ""                       # optional: avoids storing the password
+      folder: backupme                        # isolates blobs inside 9drive
+      quota: 500GB
+      priority: 60
+
 # --- V2 Features ---
 
 chunking:

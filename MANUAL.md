@@ -357,6 +357,32 @@ backends:
 
 **Supported rclone remotes:** Google Drive, Dropbox, S3, B2, Azure, OneDrive, and 50+ more.
 
+### 6.7 9drive Backend (Google Drive + S3 Pool)
+
+If you self-host [9drive](https://github.com/zenhosta/9drive), its pooled Google Drive accounts and S3 buckets can serve as a backupme backend:
+
+```yaml
+backends:
+  ninedrive:
+    - name: ninedrive_pool
+      type: ninedrive
+      base_url: https://9drive.example.com   # your 9drive backend URL
+      api_key: "{{ NINEDRIVE_API_KEY }}"     # 9d_live_... key (files:upload scope)
+      email: backup@example.com              # JWT login for list/download/delete
+      password: "{{ NINEDRIVE_PASS }}"
+      refresh_token: ""                      # optional: skip password after first login
+      folder: backupme                       # isolates blobs inside 9drive
+      priority: 60
+```
+
+Notes:
+
+- **Auth split:** uploads use the 9drive API key (`POST /api/v1/uploads`); listing, downloads, deletes, and quota queries need a JWT (email/password login or `refresh_token`). An API-key-only config runs in upload-only mode.
+- Blobs land in the `backupme` folder inside your 9drive instance; blob paths map 1:1 to 9drive file names.
+- backupme's 64 MB chunking keeps uploads well under 9drive's per-upload size cap (`MAX_UPLOAD_BYTES`, default 5 GB).
+- 9drive force-shares Google Drive uploads as "anyone with link can edit". Enable backupme encryption so blob contents stay unreadable, or connect only S3 accounts to 9drive.
+- Deletes are permanent (trash + purge) so `backupme gc` actually reclaims pool quota.
+
 ---
 
 ## 7. Advanced Features

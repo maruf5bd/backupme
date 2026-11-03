@@ -30,7 +30,8 @@ from ..backends.base import StorageBackend
 def _be_to_dict(be: cfgmod.BackendDef) -> dict:
     return {k: getattr(be, k) for k in ("type", "name", "path", "host", "port", "username",
                                          "password", "key_file", "share", "remote", "bwlimit",
-                                         "quota", "priority", "weight")}
+                                         "quota", "priority", "weight", "base_url", "api_key",
+                                         "email", "refresh_token", "folder")}
 
 
 def register_routes(app, config: cfgmod.Config):
@@ -69,7 +70,7 @@ def register_routes(app, config: cfgmod.Config):
         connected = _raw_get_all_backends(cfg)
         connected_names = {b.name for b in connected}
         all_backends = list(connected)
-        for btype in ("local", "ftp", "sftp", "smb", "ssh", "rclone"):
+        for btype in ("local", "ftp", "sftp", "smb", "ssh", "rclone", "ninedrive"):
             for entry in cfg.get(btype, []):
                 name = entry.get("name", "")
                 if name and name not in connected_names:

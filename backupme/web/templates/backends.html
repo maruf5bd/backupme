@@ -30,6 +30,8 @@
             <i data-lucide="terminal" style="width:22px;height:22px;"></i>
           {% elif be.type == 'rclone' %}
             <i data-lucide="cloud" style="width:22px;height:22px;"></i>
+          {% elif be.type == 'ninedrive' %}
+            <i data-lucide="layers" style="width:22px;height:22px;"></i>
           {% else %}
             <i data-lucide="server" style="width:22px;height:22px;"></i>
           {% endif %}
@@ -139,6 +141,7 @@
             <option value="smb">SMB</option>
             <option value="ssh">SSH</option>
             <option value="rclone">Rclone</option>
+            <option value="ninedrive">9drive</option>
           </select>
         </div>
       </div>
@@ -241,6 +244,15 @@
     ],
     rclone: [
       { name: 'remote', label: 'Remote', placeholder: 'gdrive:/backupme', required: true },
+    ],
+    ninedrive: [
+      { name: 'base_url', label: '9drive URL', placeholder: 'https://9drive.example.com', required: true },
+      { name: 'api_key', label: 'API key', placeholder: '9d_live_...' },
+      { name: 'email', label: 'Email' },
+      { name: 'password', label: 'Password', type: 'password' },
+      { name: 'refresh_token', label: 'Refresh token' },
+      { name: 'folder', label: 'Folder', placeholder: 'backupme' },
+      { name: 'quota', label: 'Quota', placeholder: '500GB' },
     ],
   };
 

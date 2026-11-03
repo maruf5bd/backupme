@@ -102,6 +102,11 @@ class BackendDef:
     quota: str = ""
     priority: int = 50
     weight: int = 10
+    base_url: str = ""
+    api_key: str = ""
+    email: str = ""
+    refresh_token: str = ""
+    folder: str = ""
 
 @dataclass
 class BackupDef:
