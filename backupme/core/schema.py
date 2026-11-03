@@ -1,7 +1,7 @@
 SQL_SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
-PRAGMA busy_timeout = 5000;
+PRAGMA busy_timeout = 60000;
 PRAGMA foreign_keys = ON;
 PRAGMA wal_autocheckpoint = 1000;
 PRAGMA cache_size = -64000;
@@ -138,7 +138,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
 SQL_WAL_PRAGMAS = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
-PRAGMA busy_timeout = 5000;
+PRAGMA busy_timeout = 60000;
 PRAGMA foreign_keys = ON;
 PRAGMA journal_size_limit = 67108864;
 PRAGMA wal_autocheckpoint = 1000;

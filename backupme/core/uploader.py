@@ -12,7 +12,7 @@ from backupme.log import get_logger
 
 log = get_logger("uploader")
 
-from backupme.core.database import execute, commit, bump_generation, get_generation
+from backupme.core.database import execute, commit, bump_generation, get_generation, write_txn
 from backupme.core import hasher as hasher_mod
 from backupme.core import compress as compress_mod
 from backupme.core import crypto as crypto_mod
@@ -382,67 +382,80 @@ def upload_bundle(
             offset += hdr_len + len(data)
 
         # One transaction for the whole batch: blob rows, storage rows, chunk
-        # mappings, and the file index rows are committed together.
+        # mappings, and the file index rows are committed together — rolled
+        # back entirely if any DB write fails, with every file in the batch
+        # reported as an error instead of leaving partial state behind.
         seen_members: set[str] = set()
-        dedup_mod.ensure_blob(bundle_blob_id, len(tar_data))
-        for bk in ok_backends:
-            execute(
-                """INSERT OR IGNORE INTO blob_storage
-                   (blob_id, backend_name, storage_path, stored_size, stored_sha256,
-                    compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                (bundle_blob_id, bk.name, remote_path, stored_size, stored_sha256,
-                 algo, level, 1 if nonce is not None else 0,
-                 nonce.hex() if nonce else None, auth_tag.hex() if auth_tag else None),
-            )
-        for item_info, manifest, entry in entries:
-            file_id = index_mod.index_file(
-                item_info["source_root"], item_info["relative_path"], item_info["sha256"],
-                item_info["size"], mtime=item_info["mtime"], chunked=False,
-                redundancy=redundancy, version_seq=item_info["version_seq"],
-                version_group=item_info["version_group"], auto_commit=False,
-            )
-            item_info["file_id"] = file_id
-            member_id = f"{bundle_blob_id}/{entry['member_sha']}"
-            dedup_mod.ensure_blob(member_id, entry["pt_size"])
-            if member_id not in seen_members:
-                # One parent-bundle reference per unique member, regardless of
-                # how many identical files in this batch share it.
-                seen_members.add(member_id)
-                dedup_mod.add_ref(bundle_blob_id)
-            for bk in ok_backends:
-                execute(
-                    """INSERT OR IGNORE INTO blob_storage
-                       (blob_id, backend_name, storage_path, stored_size, stored_sha256,
-                        compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                    (member_id, bk.name,
-                     f"{remote_path}@{entry['stored_offset']}:{entry['stored_len']}",
-                     entry["stored_len"], stored_sha256, algo, level,
-                     1 if nonce is not None else 0,
-                     nonce.hex() if nonce else None, auth_tag.hex() if auth_tag else None),
-                )
-            execute(
-                "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
-                (file_id, 0, member_id, 0, entry["pt_size"]),
-            )
-            dedup_mod.add_ref(member_id)
-            manifest.v = 2
-            mc = ManifestChunk(seq=0, blob_id=member_id, pt_offset=0, pt_size=entry["pt_size"])
-            for bk in ok_backends:
-                mc.storage.append(ChunkStorageEntry(
-                    backend=bk.name,
-                    path=f"{remote_path}@{entry['stored_offset']}:{entry['stored_len']}",
-                    stored_size=entry["stored_len"],
-                    stored_sha256=stored_sha256,
-                    algo=algo,
-                    level=level,
-                    encrypted=(nonce is not None),
-                    nonce=nonce.hex() if nonce else None,
-                    auth_tag=auth_tag.hex() if auth_tag else None,
-                ))
-            manifest.chunks.append(mc)
-        commit()
+        try:
+            with write_txn():
+                dedup_mod.ensure_blob(bundle_blob_id, len(tar_data))
+                for bk in ok_backends:
+                    execute(
+                        """INSERT OR IGNORE INTO blob_storage
+                           (blob_id, backend_name, storage_path, stored_size, stored_sha256,
+                            compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (bundle_blob_id, bk.name, remote_path, stored_size, stored_sha256,
+                         algo, level, 1 if nonce is not None else 0,
+                         nonce.hex() if nonce else None, auth_tag.hex() if auth_tag else None),
+                    )
+                for item_info, manifest, entry in entries:
+                    file_id = index_mod.index_file(
+                        item_info["source_root"], item_info["relative_path"], item_info["sha256"],
+                        item_info["size"], mtime=item_info["mtime"], chunked=False,
+                        redundancy=redundancy, version_seq=item_info["version_seq"],
+                        version_group=item_info["version_group"], auto_commit=False,
+                    )
+                    item_info["file_id"] = file_id
+                    member_id = f"{bundle_blob_id}/{entry['member_sha']}"
+                    dedup_mod.ensure_blob(member_id, entry["pt_size"])
+                    if member_id not in seen_members:
+                        # One parent-bundle reference per unique member, regardless of
+                        # how many identical files in this batch share it.
+                        seen_members.add(member_id)
+                        dedup_mod.add_ref(bundle_blob_id)
+                    for bk in ok_backends:
+                        execute(
+                            """INSERT OR IGNORE INTO blob_storage
+                               (blob_id, backend_name, storage_path, stored_size, stored_sha256,
+                                compression_algo, compression_level, encrypted, nonce, auth_tag, verified_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                            (member_id, bk.name,
+                             f"{remote_path}@{entry['stored_offset']}:{entry['stored_len']}",
+                             entry["stored_len"], stored_sha256, algo, level,
+                             1 if nonce is not None else 0,
+                             nonce.hex() if nonce else None, auth_tag.hex() if auth_tag else None),
+                        )
+                    execute(
+                        "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
+                        (file_id, 0, member_id, 0, entry["pt_size"]),
+                    )
+                    dedup_mod.add_ref(member_id)
+                    manifest.v = 2
+                    mc = ManifestChunk(seq=0, blob_id=member_id, pt_offset=0, pt_size=entry["pt_size"])
+                    for bk in ok_backends:
+                        mc.storage.append(ChunkStorageEntry(
+                            backend=bk.name,
+                            path=f"{remote_path}@{entry['stored_offset']}:{entry['stored_len']}",
+                            stored_size=entry["stored_len"],
+                            stored_sha256=stored_sha256,
+                            algo=algo,
+                            level=level,
+                            encrypted=(nonce is not None),
+                            nonce=nonce.hex() if nonce else None,
+                            auth_tag=auth_tag.hex() if auth_tag else None,
+                        ))
+                    manifest.chunks.append(mc)
+        except Exception as e:
+            log.exception("batch DB commit failed — rolled back")
+            for item_info, _, _ in entries:
+                results.append({
+                    "local_path": item_info["local_path"], "status": "error",
+                    "error": str(e),
+                })
+            batch.clear()
+            batch_size = 0
+            return
 
         for _, manifest, _ in entries:
             _write_manifest_and_pointers(backends, manifest, redundancy)
@@ -497,20 +510,20 @@ def upload_bundle(
                 else []
             )
             if prior_chunks:
-                file_id = index_mod.index_file(
-                    source_root, relative_path, file_sha256, file_size,
-                    mtime=mtime, chunked=False, redundancy=redundancy,
-                    version_seq=version_seq,
-                    version_group=version_group or file_sha256[:16],
-                    auto_commit=False,
-                )
-                for c in prior_chunks:
-                    execute(
-                        "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
-                        (file_id, c["seq"], c["blob_id"], c["pt_offset"], c["pt_size"]),
+                with write_txn():
+                    file_id = index_mod.index_file(
+                        source_root, relative_path, file_sha256, file_size,
+                        mtime=mtime, chunked=False, redundancy=redundancy,
+                        version_seq=version_seq,
+                        version_group=version_group or file_sha256[:16],
+                        auto_commit=False,
                     )
-                    dedup_mod.add_ref(c["blob_id"])
-                commit()
+                    for c in prior_chunks:
+                        execute(
+                            "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
+                            (file_id, c["seq"], c["blob_id"], c["pt_offset"], c["pt_size"]),
+                        )
+                        dedup_mod.add_ref(c["blob_id"])
                 results.append({"file_id": file_id, "sha256": file_sha256,
                                 "dedup": True, "status": "ok", "local_path": local_path})
                 continue
@@ -564,16 +577,16 @@ def upload_bundle(
                     })
                     continue
 
-                file_id = index_mod.index_file(
-                    source_root, relative_path, file_sha256, file_size,
-                    mtime=mtime, chunked=True, redundancy=redundancy,
-                    version_seq=version_seq, version_group=manifest.version_group,
-                    auto_commit=False,
-                )
-                for seq, offset, chunk_data, chunk_sha256, storage_rows in pending:
-                    _record_chunk_upload(chunk_sha256, len(chunk_data), storage_rows,
-                                         file_id, seq, offset, len(chunk_data))
-                commit()
+                with write_txn():
+                    file_id = index_mod.index_file(
+                        source_root, relative_path, file_sha256, file_size,
+                        mtime=mtime, chunked=True, redundancy=redundancy,
+                        version_seq=version_seq, version_group=manifest.version_group,
+                        auto_commit=False,
+                    )
+                    for seq, offset, chunk_data, chunk_sha256, storage_rows in pending:
+                        _record_chunk_upload(chunk_sha256, len(chunk_data), storage_rows,
+                                             file_id, seq, offset, len(chunk_data))
 
                 for seq, offset, chunk_data, chunk_sha256, storage_rows in pending:
                     mc = ManifestChunk(seq=seq, blob_id=chunk_sha256, pt_offset=offset,
@@ -601,8 +614,8 @@ def upload_bundle(
                             "status": "error", "error": str(e)})
 
     _flush_batch()
-    bump_generation()
-    commit()
+    with write_txn():
+        bump_generation()
     return results
 
 

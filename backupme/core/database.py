@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from backupme.core.schema import SQL_WAL_PRAGMAS, apply_migrations
@@ -81,6 +82,28 @@ def commit():
 
 def rollback():
     get_connection().rollback()
+
+
+@contextmanager
+def write_txn():
+    """Explicit write transaction: commit on success, rollback on any error.
+
+    SQLite opens a write transaction implicitly on the first INSERT/UPDATE;
+    without explicit control a failure mid-unit leaves the write transaction
+    OPEN on the pooled thread-local connection — blocking other connections
+    until some later trailing commit makes the partial work durable.
+    Units of work in the upload path use this to guarantee all-or-nothing.
+    """
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
 
 
 def get_generation() -> int:
