@@ -143,7 +143,8 @@ def register_routes(app, config: cfgmod.Config):
         })
 
     @app.get("/files", response_class=HTMLResponse)
-    async def files_page(request: Request, q: str = "", backend: str = "", offset: int = 0, limit: int = 50, mode: str = ""):
+    async def files_page(request: Request, q: str = "", backend: str = "", source: str = "",
+                         offset: int = 0, limit: int = 50, mode: str = ""):
         if q:
             if mode == "content":
                 rows = db.execute(
@@ -175,6 +176,11 @@ def register_routes(app, config: cfgmod.Config):
             ).fetchall()
             backend_file_ids = {r["file_id"] for r in rows}
             files = [f for f in files if f.get("id") in backend_file_ids]
+        if source:
+            files = [f for f in files if (f.get("source_root") or "").startswith(source)]
+        sources = [r["source_root"] for r in db.execute(
+            "SELECT DISTINCT source_root FROM files WHERE deleted_at IS NULL "
+            "ORDER BY source_root LIMIT 50").fetchall()]
         total = index_mod.file_count()
         backends = _get_backends()
         be_list = [{"name": b.name} for b in backends]
@@ -182,9 +188,10 @@ def register_routes(app, config: cfgmod.Config):
             "request": request,
             "files": files,
             "total": total,
-            "q": q, "backend": backend, "mode": mode,
+            "q": q, "backend": backend, "source": source, "mode": mode,
             "offset": offset, "limit": limit,
             "backends": be_list,
+            "sources": sources,
         })
 
     @app.get("/backends", response_class=HTMLResponse)
@@ -206,6 +213,21 @@ def register_routes(app, config: cfgmod.Config):
         return templates.TemplateResponse("backends.html", {
             "request": request,
             "backends": be_list,
+        })
+
+    @app.get("/ingest", response_class=HTMLResponse)
+    async def ingest_page(request: Request):
+        ci = getattr(config, "cpanel_ingest", None)
+        ci_dict = {
+            "enabled": getattr(ci, "enabled", False),
+            "drop_root": getattr(ci, "drop_root", ""),
+            "staging_dir": getattr(ci, "staging_dir", "staging"),
+            "staging_budget_gb": getattr(ci, "staging_budget_gb", 10.0),
+            "keep_raw": getattr(ci, "keep_raw", 0),
+        }
+        return templates.TemplateResponse("ingest.html", {
+            "request": request,
+            "ci": ci_dict,
         })
 
     @app.get("/logs", response_class=HTMLResponse)
@@ -279,7 +301,8 @@ def register_routes(app, config: cfgmod.Config):
     async def settings_page(request: Request):
         raw = _get_cfg_dict()
         config_items = []
-        for section in ["chunking", "compression", "encryption", "verification", "retention", "database"]:
+        for section in ["chunking", "compression", "encryption", "verification", "retention", "database",
+                        "db_lifecycle", "scheduler", "cpanel_ingest"]:
             items = []
             sec = raw.get(section, {}) if isinstance(raw, dict) else {}
             if isinstance(sec, dict):
@@ -2246,3 +2269,279 @@ def register_routes(app, config: cfgmod.Config):
     async def api_backup_scan_status():
         with _scan_lock:
             return JSONResponse(_scan_state)
+
+    # ── cPanel Ingest ────────────────────────────────────────────
+
+    _ingest_state = {
+        "running": False,
+        "paused": False,
+        "drop_root": "",
+        "started_at": 0,
+        "current_archive": "",
+        "current_member": "",
+        "members_done": 0,
+        "members_total": 0,
+        "archives_done": 0,
+        "archives_total": 0,
+        "errors": [],
+        "completed": False,
+        "results": [],
+    }
+    _ingest_lock = threading.Lock()
+    _ingest_paused = threading.Event()
+
+    def _reset_ingest():
+        with _ingest_lock:
+            _ingest_state.update({
+                "running": False, "drop_root": "", "started_at": 0,
+                "current_archive": "", "current_member": "",
+                "members_done": 0, "members_total": 0,
+                "archives_done": 0, "archives_total": 0,
+                "errors": [], "completed": False, "results": [],
+            })
+
+    def _ingest_progress_cb(member, done, total):
+        with _ingest_lock:
+            _ingest_state["current_member"] = member
+            _ingest_state["members_done"] = done
+            _ingest_state["members_total"] = total
+
+    def _ingest_worker(drop_root: str):
+        try:
+            from ..core import cpanel_ingest as ci_mod
+            cfg_dict = _config_as_dict()
+            with _ingest_lock:
+                _ingest_state["running"] = True
+                _ingest_state["started_at"] = time.time()
+                _ingest_state["drop_root"] = drop_root
+            backends = _get_backends()
+            discovered = ci_mod.discover(drop_root)
+            archives = [d for d in discovered if d["type"] == "archive"]
+            with _ingest_lock:
+                _ingest_state["archives_total"] = len(archives)
+            results = []
+            for item in archives:
+                if _ingest_paused.is_set():
+                    with _ingest_lock:
+                        _ingest_state["results"].append({
+                            "archive": item["path"], "status": "deferred",
+                            "reason": "paused"})
+                    continue
+                with _ingest_lock:
+                    _ingest_state["current_archive"] = item["path"]
+                try:
+                    est = ci_mod.estimate_archive(item["path"])
+                    with _ingest_lock:
+                        _ingest_state["members_total"] = est["members"]
+                        _ingest_state["members_done"] = 0
+                except Exception:
+                    pass
+                try:
+                    r = ci_mod.ingest_archive(
+                        item["path"], item["account"], backends, cfg_dict,
+                        progress_cb=_ingest_progress_cb,
+                        drop_root=drop_root)
+                except Exception as e:
+                    r = {"status": "failed", "error": str(e),
+                         "archive": item["path"], "account": item["account"]}
+                with _ingest_lock:
+                    _ingest_state["results"].append(r)
+                    _ingest_state["archives_done"] += 1
+                    if r.get("status") == "failed":
+                        _ingest_state["errors"].append(
+                            f"{item['path']}: {r.get('error', 'failed')}")
+        except Exception as e:
+            with _ingest_lock:
+                _ingest_state["errors"].append(str(e))
+        finally:
+            with _ingest_lock:
+                _ingest_state["running"] = False
+                _ingest_state["completed"] = True
+                _ingest_state["current_archive"] = ""
+                _ingest_state["current_member"] = ""
+
+    @app.get("/api/ingest/status")
+    async def api_ingest_status():
+        ci = getattr(config, "cpanel_ingest", None)
+        staging_dir = Path(getattr(ci, "staging_dir", "staging") or "staging")
+        staging_bytes = 0
+        if staging_dir.exists():
+            for dirpath, _dirs, filenames in os.walk(staging_dir):
+                for fn in filenames:
+                    try:
+                        staging_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                    except OSError:
+                        pass
+        db_path = Path(str(db.DB_PATH))
+        db_size = db_path.stat().st_size if db_path.exists() else 0
+
+        from ..core import db_lifecycle as lc
+        pdir = lc.parquet_dir_for(_config_as_dict())
+        partitions = []
+        for p in sorted(pdir.glob("files_*.parquet")):
+            partitions.append({"file": p.name, "bytes": p.stat().st_size})
+        accounts = [dict(r) for r in db.execute(
+            "SELECT source_root, COUNT(*) AS files, SUM(size) AS bytes "
+            "FROM files WHERE source_root LIKE 'cpanel/%' AND deleted_at IS NULL "
+            "GROUP BY source_root ORDER BY source_root").fetchall()]
+        last_cp = state.get_last_checkpoint()
+        with _ingest_lock:
+            ingest_snap = dict(_ingest_state)
+        return JSONResponse({
+            "enabled": getattr(ci, "enabled", False),
+            "drop_root": getattr(ci, "drop_root", ""),
+            "keep_raw": getattr(ci, "keep_raw", 0),
+            "staging": {"dir": str(staging_dir), "bytes": staging_bytes,
+                        "budget_gb": getattr(ci, "staging_budget_gb", 10.0)},
+            "sqlite": {"size": db_size,
+                       "files": db.execute("SELECT COUNT(*) FROM files WHERE deleted_at IS NULL").fetchone()[0],
+                       "chunks": db.execute("SELECT COUNT(*) FROM file_chunks").fetchone()[0]},
+            "parquet": {"dir": str(pdir), "partitions": partitions},
+            "accounts": accounts,
+            "checkpoint": last_cp,
+            "running": ingest_snap["running"],
+            "paused": _ingest_paused.is_set(),
+            "queue": {"archives_total": ingest_snap["archives_total"],
+                      "archives_done": ingest_snap["archives_done"],
+                      "members_done": ingest_snap["members_done"],
+                      "members_total": ingest_snap["members_total"],
+                      "current_archive": ingest_snap["current_archive"],
+                      "current_member": ingest_snap["current_member"]},
+            "errors": ingest_snap["errors"][-10:],
+        })
+
+    @app.post("/api/ingest/scan")
+    async def api_ingest_scan(data: dict = Body(default={})):
+        ci = getattr(config, "cpanel_ingest", None)
+        drop_root = (data.get("drop_root") or getattr(ci, "drop_root", "") or "").strip()
+        if not drop_root:
+            return JSONResponse({"error": "drop_root not configured"}, status_code=400)
+        if not os.path.isdir(drop_root):
+            return JSONResponse({"error": f"drop root not found: {drop_root}"}, status_code=404)
+        with _ingest_lock:
+            if _ingest_state["running"]:
+                return JSONResponse({"error": "an ingest scan is already running"}, status_code=409)
+        _ingest_paused.clear()
+        _reset_ingest()
+        threading.Thread(target=_ingest_worker, args=(drop_root,), daemon=True).start()
+        return JSONResponse({"status": "started", "drop_root": drop_root})
+
+    @app.post("/api/ingest/pause")
+    async def api_ingest_pause():
+        _ingest_paused.set()
+        return JSONResponse({"status": "paused"})
+
+    @app.post("/api/ingest/resume")
+    async def api_ingest_resume():
+        _ingest_paused.clear()
+        return JSONResponse({"status": "resumed"})
+
+    @app.get("/api/ingest/stream")
+    async def api_ingest_stream():
+        async def event_generator():
+            last_snapshot = ""
+            while True:
+                with _ingest_lock:
+                    snapshot = json.dumps(_ingest_state)
+                if snapshot != last_snapshot:
+                    yield f"data: {snapshot}\n\n"
+                    last_snapshot = snapshot
+                with _ingest_lock:
+                    done = _ingest_state["completed"] and not _ingest_state["running"]
+                if done:
+                    yield f"data: {snapshot}\n\n"
+                    break
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/ingest/generations")
+    async def api_ingest_generations(account: str = ""):
+        if not account:
+            return JSONResponse({"error": "account required"}, status_code=400)
+        rows = db.execute(
+            "SELECT version_seq AS generation, COUNT(*) AS members, SUM(size) AS bytes, "
+            "MIN(created_at) AS created, MAX(updated_at) AS updated "
+            "FROM files WHERE source_root = ? AND deleted_at IS NULL "
+            "GROUP BY version_seq ORDER BY version_seq DESC LIMIT 100",
+            (f"cpanel/{account}",),
+        ).fetchall()
+        return JSONResponse({"account": account,
+                             "generations": [dict(r) for r in rows]})
+
+    @app.get("/api/ingest/history")
+    async def api_ingest_history(template: str = "member_history",
+                                 account: str = "", limit: int = 100):
+        from ..core import db_lifecycle as lc
+        limit = max(1, min(int(limit), 500))
+        templates_sql = {
+            "member_history": (
+                "SELECT relative_path, version_seq, size, sha256, created_at, deleted_at "
+                "FROM files WHERE source_root LIKE ? ORDER BY relative_path, version_seq DESC "
+                f"LIMIT {limit}"),
+            "account_bytes": (
+                "SELECT substr(created_at, 1, 7) AS month, source_root, "
+                "COUNT(*) AS files, SUM(size) AS bytes FROM files "
+                "WHERE source_root LIKE ? GROUP BY month, source_root ORDER BY month DESC, source_root "
+                f"LIMIT {limit}"),
+            "recent": (
+                "SELECT source_root, relative_path, version_seq, size, created_at "
+                "FROM files ORDER BY created_at DESC, id DESC "
+                f"LIMIT {limit}"),
+        }
+        sql = templates_sql.get(template)
+        if sql is None:
+            return JSONResponse({"error": f"unknown template: {template}"}, status_code=400)
+        params = []
+        if template == "member_history":
+            params.append(f"cpanel/{account}%" if account else "cpanel/%")
+        elif template == "account_bytes":
+            params.append(f"cpanel/{account}%" if account else "cpanel/%")
+        if params:
+            rows = lc.query_history_duckdb(sql, params)
+        else:
+            rows = lc.query_history_duckdb(sql)
+        if rows and rows[0].get("status") in ("error", "unavailable"):
+            return JSONResponse(rows[0], status_code=503)
+        return JSONResponse({"template": template, "rows": rows, "count": len(rows)})
+
+    @app.get("/api/stats/ingest-trend")
+    async def api_stats_ingest_trend(days: int = 30):
+        try:
+            rows = db.execute(
+                "SELECT DATE(started_at) AS date, COUNT(*) AS archives, "
+                "SUM(CAST(json_extract(target_json, '$.sha256') IS NOT NULL AS INTEGER)) AS archived "
+                "FROM op_log WHERE op_type = 'cpanel_ingest' AND started_at IS NOT NULL "
+                "AND started_at >= datetime('now', ?) "
+                "GROUP BY DATE(started_at) ORDER BY date",
+                (f"-{int(days)} days",),
+            ).fetchall()
+            return JSONResponse([dict(r) for r in rows])
+        except Exception:
+            return JSONResponse([])
+
+    @app.post("/api/ingest/restore-generation")
+    async def api_ingest_restore_generation(data: dict = Body(...)):
+        account = data.get("account", "")
+        try:
+            generation = int(data.get("generation", 0))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "generation must be an integer"}, status_code=400)
+        if not account or generation <= 0:
+            return JSONResponse({"error": "account and generation required"}, status_code=400)
+        out = data.get("out") or f"restore_out/{account}"
+        member_filter = data.get("member_filter") or None
+        retar = data.get("retar") or None
+        try:
+            from ..core import cpanel_ingest as ci_mod
+            result = ci_mod.restore_cpanel(
+                account, generation, member_filter=member_filter, out=out,
+                retar=retar,
+                backends=_get_backends(), config=_config_as_dict())
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)

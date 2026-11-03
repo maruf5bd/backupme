@@ -66,6 +66,14 @@
     </div>
     <div class="stat-sub">last verified: {{ (report.completed_at or report.started_at)[:10] if report else 'never' }}</div>
   </div>
+  <div class="stat-card" style="cursor:pointer;" onclick="window.location='/ingest'" title="Open Ingest page">
+    <div class="stat-icon orange">
+      <i data-lucide="archive" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">cPanel Ingest</div>
+    <div class="stat-value" id="stat-ingest-today">—</div>
+    <div class="stat-sub" id="stat-ingest-queue">queue: —</div>
+  </div>
 </div>
 
 <!-- Quick Actions -->
@@ -94,6 +102,10 @@
   <button class="quick-action-btn" onclick="openVerifyModal()">
     <i data-lucide="shield-check" style="width:16px;height:16px;"></i>
     Verify Backups
+  </button>
+  <button class="quick-action-btn" onclick="window.location='/ingest'">
+    <i data-lucide="archive" style="width:16px;height:16px;"></i>
+    Ingest cPanel
   </button>
 </div>
 
@@ -263,6 +275,16 @@
   </div>
   <div style="height: 240px; position: relative;">
     <canvas id="storageTrendChart"></canvas>
+  </div>
+</div>
+
+<!-- cPanel Ingest Trend -->
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">cPanel Ingest Trend (30 days)</span>
+  </div>
+  <div style="height: 240px; position: relative;">
+    <canvas id="ingestTrendChart"></canvas>
   </div>
 </div>
 
@@ -559,6 +581,41 @@
   loadStorageChart();
   loadActivityChart();
   loadStorageTrendChart();
+
+  // cPanel Ingest stat card + trend chart
+  async function loadIngestTrendChart() {
+    try {
+      const data = await fetch('/api/stats/ingest-trend?days=30').then(r => r.json());
+      Charts.line('ingestTrendChart', data.map(d => d.date), [
+        { label: 'Archives ingested', data: data.map(d => d.archives), color: Charts.COLORS.accent },
+      ], {
+        formatY: v => v.toLocaleString(),
+      });
+    } catch (e) {
+      Charts.line('ingestTrendChart', [], [
+        { label: 'Archives ingested', data: [], color: Charts.COLORS.accent },
+      ]);
+    }
+  }
+  loadIngestTrendChart();
+
+  async function pollIngestCard() {
+    try {
+      const s = await fetch('/api/ingest/status').then(r => r.json());
+      const el = (id) => document.getElementById(id);
+      if (el('stat-ingest-queue')) {
+        el('stat-ingest-queue').textContent =
+          `queue: ${s.queue.archives_done}/${s.queue.archives_total}` +
+          (s.running ? ' (running)' : '');
+      }
+      if (el('stat-ingest-today')) {
+        el('stat-ingest-today').textContent =
+          `${s.sqlite.files} files`;
+      }
+    } catch (e) {}
+  }
+  pollIngestCard();
+  App.Poller.start('/api/ingest/status', pollIngestCard, 15000, { onError: () => {} });
 
   async function loadStorageTrendChart() {
     try {

@@ -259,7 +259,7 @@ def hard_purge_versions(grace_days: int | None = None, config=None) -> dict:
 # DuckDB history queries
 # ---------------------------------------------------------------------------
 
-def query_history_duckdb(sql: str, config=None) -> list:
+def query_history_duckdb(sql: str, params: list | None = None, config=None) -> list:
     """Run read-only DuckDB SQL over the parquet partitions.
 
     A view named ``files`` is registered over ``read_parquet(<glob>)`` so
@@ -293,7 +293,7 @@ def query_history_duckdb(sql: str, config=None) -> list:
                 "NULL::VARCHAR AS created_at, NULL::VARCHAR AS updated_at, "
                 "NULL::VARCHAR AS deleted_at WHERE FALSE"
             )
-        cur = con.execute(sql)
+        cur = con.execute(sql, params or [])
         columns = [d[0] for d in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
     except Exception as e:

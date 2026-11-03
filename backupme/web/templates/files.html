@@ -109,6 +109,13 @@
       <option value="{{ be.name }}" {% if backend == be.name %}selected{% endif %}>{{ be.name }}</option>
       {% endfor %}
     </select>
+    <select id="source-filter" style="min-width: 160px;" onchange="applySourceFilter()">
+      <option value="">All sources</option>
+      <option value="cpanel/" {% if source == 'cpanel/' %}selected{% endif %}>cPanel accounts</option>
+      {% for src in sources %}
+      <option value="{{ src }}" {% if source == src %}selected{% endif %}>{{ src }}</option>
+      {% endfor %}
+    </select>
     <select id="sort-select" style="min-width: 140px;">
       <option value="date_desc">Newest first</option>
       <option value="date_asc">Oldest first</option>
@@ -832,6 +839,12 @@
   });
 
   backendFilter.addEventListener('change', doSearch);
+
+  function applySourceFilter() {
+    const src = encodeURIComponent(document.getElementById('source-filter').value);
+    const q = encodeURIComponent(document.getElementById('file-search').value || '');
+    window.location.href = '/files?q=' + q + '&source=' + src + '&mode=path';
+  }
   searchMode.addEventListener('change', doSearch);
 
   // Client-side sorting
@@ -1047,6 +1060,7 @@
           </td>
           <td>
             ${!v.deleted_at ? '<a href="/api/download/' + v.id + '" class="btn btn-ghost btn-xs"><i data-lucide="download" style="width:12px;height:12px;"></i></a>' : ''}
+            ${(v.source_root || '').startsWith('cpanel/') ? `<button class="btn btn-ghost btn-xs" title="Restore this generation (all members)" onclick="restoreCpanelGeneration('${v.source_root.replace('cpanel/', '')}', ${v.version_seq || 1})"><i data-lucide="archive-restore" style="width:12px;height:12px;"></i></button>` : ''}
           </td>
         </tr>
       `).join('');
@@ -1060,6 +1074,21 @@
         </div>
       `;
       App.initIcons();
+
+      // Global so inline onclick in the rows can reach it.
+      window.restoreCpanelGeneration = async function(account, generation) {
+        const out = prompt(`Restore ${account} generation ${generation} to server path:`, `restore_out/${account}`);
+        if (!out) return;
+        try {
+          const r = await fetch('/api/ingest/restore-generation', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({account, generation, out})
+          });
+          const d = await r.json();
+          if (d.status === 'ok') App.Toast.show(`Restored ${d.members} member(s) to ${d.out}`, 'success');
+          else App.Toast.show(d.message || d.error || 'restore failed', 'error');
+        } catch (e) { App.Toast.show(String(e), 'error'); }
+      }
     } catch (e) {
       body.innerHTML = `<div class="empty-state"><p>Failed to load versions: ${e.message}</p></div>`;
     }

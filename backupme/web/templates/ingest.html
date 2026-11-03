@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Ingest{% endblock %}
+{% block breadcrumb %}Ingest{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>cPanel Ingest</h1>
+    <p class="text-muted">Stream cpmove archives into the dedup vault; SQLite hot store + Parquet history.</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="Ingest.pause()">
+      <i data-lucide="pause"></i> Pause
+    </button>
+    <button class="btn btn-ghost btn-sm" id="btn-resume" onclick="Ingest.resume()">
+      <i data-lucide="play"></i> Resume
+    </button>
+    <button class="btn btn-primary btn-sm" id="btn-scan" onclick="Ingest.scan()">
+      <i data-lucide="scan-line"></i> Scan drop folder
+    </button>
+  </div>
+</div>
+
+<!-- Drop folder + queue card -->
+<div class="card" style="margin-bottom:16px;">
+  <div class="card-header"><h3>Drop Folder</h3></div>
+  <div class="card-body">
+    <div class="stats-row">
+      <div class="stat">
+        <span class="stat-label">Status</span>
+        <span class="stat-value" id="ingest-enabled">{{ 'Enabled' if ci.enabled else 'Disabled' }}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Drop root</span>
+        <span class="stat-value stat-sm" id="drop-root">{{ ci.drop_root or '(not configured)' }}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">keep_raw</span>
+        <span class="stat-value" id="keep-raw">{{ ci.keep_raw }}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Queue</span>
+        <span class="stat-value" id="queue-depth">0 / 0</span>
+      </div>
+    </div>
+    <div id="queue-progress" class="progress" style="display:none; margin-top:12px;">
+      <div class="progress-bar" id="queue-bar" style="width:0%"></div>
+    </div>
+    <p class="text-muted" id="current-item" style="margin-top:8px; min-height:18px;"></p>
+  </div>
+</div>
+
+<!-- Staging + DB health -->
+<div class="grid grid-2" style="margin-bottom:16px;">
+  <div class="card">
+    <div class="card-header"><h3>Staging</h3></div>
+    <div class="card-body">
+      <div class="progress">
+        <div class="progress-bar" id="staging-bar" style="width:0%"></div>
+      </div>
+      <p class="text-muted" style="margin-top:8px;">
+        <span id="staging-used">0 B</span> of <span id="staging-budget">{{ ci.staging_budget_gb }} GB</span>
+        <span id="staging-path" class="stat-sm">({{ ci.staging_dir }})</span>
+      </p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h3>DB Health</h3></div>
+    <div class="card-body">
+      <div class="stats-row">
+        <div class="stat"><span class="stat-label">SQLite</span><span class="stat-value" id="db-size">0 B</span></div>
+        <div class="stat"><span class="stat-label">Live files</span><span class="stat-value" id="db-files">0</span></div>
+        <div class="stat"><span class="stat-label">Chunks</span><span class="stat-value" id="db-chunks">0</span></div>
+        <div class="stat"><span class="stat-label">Parquet</span><span class="stat-value" id="parquet-size">0 B</span></div>
+      </div>
+      <p class="text-muted" id="parquet-partitions" style="margin-top:8px;">No partitions</p>
+    </div>
+  </div>
+</div>
+
+<!-- Accounts -->
+<div class="card" style="margin-bottom:16px;">
+  <div class="card-header"><h3>Accounts</h3></div>
+  <div class="card-body">
+    <table class="table" id="accounts-table">
+      <thead><tr><th>Account</th><th>Files</th><th>Bytes</th><th></th></tr></thead>
+      <tbody id="accounts-body"><tr><td colspan="4" class="text-muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Generations drill-down (hidden until an account is picked) -->
+<div class="card" id="generations-card" style="display:none; margin-bottom:16px;">
+  <div class="card-header"><h3 id="generations-title">Generations</h3></div>
+  <div class="card-body">
+    <table class="table">
+      <thead><tr><th>Generation</th><th>Members</th><th>Bytes</th><th>Created</th><th></th></tr></thead>
+      <tbody id="generations-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- History (DuckDB over Parquet) -->
+<div class="card">
+  <div class="card-header"><h3>History (Parquet via DuckDB)</h3></div>
+  <div class="card-body">
+    <div class="header-actions" style="margin-bottom:10px;">
+      <select id="history-template" class="form-control" style="max-width:220px;">
+        <option value="member_history">Member history</option>
+        <option value="account_bytes">Per-account bytes over time</option>
+        <option value="recent">Recent rows</option>
+      </select>
+      <input id="history-account" class="form-control" placeholder="account (optional)" style="max-width:180px;">
+      <button class="btn btn-sm btn-ghost" onclick="Ingest.history()">Query</button>
+    </div>
+    <pre id="history-output" class="text-muted" style="max-height:260px; overflow:auto;">(no query yet)</pre>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function fmtBytes(n) {
+  if (n === null || n === undefined) return '—';
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(i ? 1 : 0) + ' ' + units[i];
+}
+
+const Ingest = {
+  pollTimer: null,
+
+  async status() {
+    try {
+      const s = await fetch('/api/ingest/status').then(r => r.json());
+      document.getElementById('queue-depth').textContent =
+        `${s.queue.archives_done} / ${s.queue.archives_total}`;
+      const bar = document.getElementById('queue-bar');
+      const wrap = document.getElementById('queue-progress');
+      if (s.queue.archives_total > 0 && (s.running || s.queue.members_done > 0)) {
+        wrap.style.display = 'block';
+        const pct = s.queue.members_total > 0
+          ? Math.round(100 * s.queue.members_done / s.queue.members_total) : 0;
+        bar.style.width = pct + '%';
+      } else {
+        wrap.style.display = 'none';
+      }
+      document.getElementById('current-item').textContent =
+        s.running ? `${s.queue.current_archive || ''} → ${s.queue.current_member || ''}` : '';
+      document.getElementById('staging-used').textContent = fmtBytes(s.staging.bytes);
+      const budgetBytes = (s.staging.budget_gb || 10) * 1024 ** 3;
+      document.getElementById('staging-bar').style.width =
+        Math.min(100, Math.round(100 * s.staging.bytes / budgetBytes)) + '%';
+      document.getElementById('db-size').textContent = fmtBytes(s.sqlite.size);
+      document.getElementById('db-files').textContent = s.sqlite.files;
+      document.getElementById('db-chunks').textContent = s.sqlite.chunks;
+      const pbytes = s.parquet.partitions.reduce((a, p) => a + (p.bytes || 0), 0);
+      document.getElementById('parquet-size').textContent = fmtBytes(pbytes);
+      document.getElementById('parquet-partitions').textContent =
+        s.parquet.partitions.length
+          ? s.parquet.partitions.map(p => `${p.file} (${fmtBytes(p.bytes)})`).join(', ')
+          : 'No partitions';
+      document.getElementById('btn-pause').disabled = s.paused;
+      document.getElementById('btn-resume').disabled = !s.paused;
+      document.getElementById('btn-scan').disabled = s.running;
+
+      const tbody = document.getElementById('accounts-body');
+      if (s.accounts.length) {
+        tbody.innerHTML = s.accounts.map(a => `
+          <tr>
+            <td>${a.source_root.replace('cpanel/', '')}</td>
+            <td>${a.files}</td>
+            <td>${fmtBytes(a.bytes)}</td>
+            <td><button class="btn btn-ghost btn-sm" onclick="Ingest.generations('${a.source_root.replace('cpanel/', '')}')">Generations</button></td>
+          </tr>`).join('');
+      } else {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No cpanel/ accounts ingested yet</td></tr>';
+      }
+    } catch (e) { console.error('status failed', e); }
+  },
+
+  async scan() {
+    const r = await fetch('/api/ingest/scan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const d = await r.json();
+    if (!r.ok) { App.Toast.show(d.error || 'scan failed', 'error'); return; }
+    App.Toast.show('Ingest scan started', 'success');
+    this.status();
+  },
+
+  async pause() { await fetch('/api/ingest/pause', {method:'POST'}); this.status(); },
+  async resume() { await fetch('/api/ingest/resume', {method:'POST'}); this.status(); },
+
+  async generations(account) {
+    document.getElementById('generations-card').style.display = 'block';
+    document.getElementById('generations-title').textContent = `Generations — ${account}`;
+    const d = await fetch(`/api/ingest/generations?account=${encodeURIComponent(account)}`).then(r => r.json());
+    const tbody = document.getElementById('generations-body');
+    tbody.innerHTML = (d.generations || []).map(g => `
+      <tr>
+        <td>gen ${g.generation}</td>
+        <td>${g.members}</td>
+        <td>${fmtBytes(g.bytes)}</td>
+        <td>${g.created || ''}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="Ingest.restore('${account}', ${g.generation})">Restore</button></td>
+      </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No generations</td></tr>';
+  },
+
+  async restore(account, generation) {
+    const out = prompt(`Restore ${account} gen ${generation} to server path:`, `restore_out/${account}`);
+    if (!out) return;
+    const r = await fetch('/api/ingest/restore-generation', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account, generation, out})
+    });
+    const d = await r.json();
+    if (d.status === 'ok') App.Toast.show(`Restored ${d.members} member(s) to ${d.out}`, 'success');
+    else App.Toast.show(d.message || d.error || 'restore failed', 'error');
+  },
+
+  async history() {
+    const t = document.getElementById('history-template').value;
+    const a = document.getElementById('history-account').value.trim();
+    const out = document.getElementById('history-output');
+    out.textContent = 'Querying…';
+    try {
+      const d = await fetch(`/api/ingest/history?template=${t}&account=${encodeURIComponent(a)}&limit=100`).then(r => r.json());
+      if (d.error) { out.textContent = d.error; return; }
+      if (!d.rows || !d.rows.length) { out.textContent = '(no rows)'; return; }
+      out.textContent = JSON.stringify(d.rows, null, 2);
+    } catch (e) { out.textContent = String(e); }
+  },
+};
+
+Ingest.status();
+Ingest.pollTimer = setInterval(() => Ingest.status(), 3000);
+if (window.lucide) lucide.createIcons();
+</script>
+{% endblock %}

@@ -33,6 +33,10 @@
           <i data-lucide="files"></i>
           <span>Files</span>
         </a>
+        <a href="/ingest" class="nav-link {% if request.url.path.startswith('/ingest') %}active{% endif %}">
+          <i data-lucide="archive"></i>
+          <span>Ingest</span>
+        </a>
         <a href="/backends" class="nav-link {% if request.url.path == '/backends' %}active{% endif %}">
           <i data-lucide="database"></i>
           <span>Backends</span>
