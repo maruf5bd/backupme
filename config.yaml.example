@@ -152,6 +152,22 @@ db_lifecycle:
   parquet_compression: zstd
   parquet_compression_level: 3
 
+# --- Multi-backend ingest example ---
+# New ingest writes land on the highest-priority healthy backend immediately;
+# backfill an added backend with:  backupme backend onboard NEW --rebalance
+# Retire an old one with:          backupme backend drain OLD   (then remove + gc --apply)
+# backends:
+#   local:
+#     - name: pool_a
+#       path: E:\vault\
+#       priority: 100          # receives new writes first
+#   ninedrive:
+#     - name: pool_b
+#       base_url: https://9drive.example.com
+#       api_key: "{{ NINEDRIVE_API_KEY }}"
+#       folder: vault
+#       priority: 90           # second copy / rebalance target
+
 # --- cPanel Ingest ---
 # Stream cpmove-*.tar.gz archives member-by-member into the dedup vault.
 cpanel_ingest:

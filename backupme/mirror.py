@@ -29,7 +29,8 @@ def replicate_to_n(blob_id: str, target_backends: list, config: dict) -> int:
 
     replicated = 0
     for target in needed:
-        ok = _do_upload(target, str(tmp), source_row["storage_path"])
+        ok = _do_upload(target, str(tmp), source_row["storage_path"],
+                        source_row["stored_sha256"])
         if ok:
             execute(
                 """INSERT OR IGNORE INTO blob_storage

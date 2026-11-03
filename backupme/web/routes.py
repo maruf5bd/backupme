@@ -1240,6 +1240,28 @@ def register_routes(app, config: cfgmod.Config):
         except Exception:
             return JSONResponse([])
 
+    # NOTE: registered before /api/backends/{name} so "usage" is not captured.
+    @app.get("/api/backends/usage")
+    async def api_backends_usage():
+        from ..core import rebalance as rb
+        usage = {u["backend_name"]: u for u in rb.backend_usage()}
+        out = []
+        for be in _get_backends():
+            free = total = None
+            try:
+                free, total = be.free_space(), be.total_space()
+            except Exception:
+                pass
+            u = usage.get(be.name, {})
+            out.append({
+                "name": be.name, "type": be.type, "connected": be.connected,
+                "stored_bytes": u.get("stored_bytes", 0),
+                "blobs": u.get("blobs", 0),
+                "ingest_24h_bytes": u.get("ingest_24h_bytes", 0),
+                "free_space": free, "total_space": total,
+            })
+        return JSONResponse({"backends": out})
+
     @app.get("/api/backends/{name}")
     async def api_backend_detail(name: str):
         be = _get_backend(name)
@@ -2545,3 +2567,127 @@ def register_routes(app, config: cfgmod.Config):
             return JSONResponse(result)
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+    # ── Backends: onboard / rebalance / drain ────────────────────
+
+    _rebalance_state = {
+        "running": False,
+        "kind": "",          # rebalance | drain
+        "backend": "",
+        "done": 0,
+        "total": 0,
+        "current_blob": "",
+        "errors": [],
+        "completed": False,
+        "result": None,
+    }
+    _rebalance_lock = threading.Lock()
+
+    def _reset_rebalance(kind, backend):
+        with _rebalance_lock:
+            _rebalance_state.update({
+                "running": True, "kind": kind, "backend": backend,
+                "done": 0, "total": 0, "current_blob": "",
+                "errors": [], "completed": False, "result": None,
+            })
+
+    def _rebalance_progress_cb(blob_id, done, total):
+        with _rebalance_lock:
+            _rebalance_state["current_blob"] = blob_id
+            _rebalance_state["done"] = done
+            _rebalance_state["total"] = total
+
+    def _rebalance_worker(kind, backend_name):
+        try:
+            from ..core import rebalance as rb
+            cfg_dict = _config_as_dict()
+            backends = _get_backends()
+            if kind == "drain":
+                result = rb.drain_backend(backend_name, backends, cfg_dict,
+                                          progress_cb=_rebalance_progress_cb)
+            else:
+                result = rb.rebalance_to(backend_name, backends, cfg_dict,
+                                         progress_cb=_rebalance_progress_cb)
+            with _rebalance_lock:
+                _rebalance_state["result"] = result
+                if result.get("status") not in ("ok",):
+                    _rebalance_state["errors"].append(str(result.get("error") or result.get("failed") or "partial"))
+        except Exception as e:
+            with _rebalance_lock:
+                _rebalance_state["errors"].append(str(e))
+        finally:
+            with _rebalance_lock:
+                _rebalance_state["running"] = False
+                _rebalance_state["completed"] = True
+
+    @app.post("/api/backends/onboard")
+    async def api_backends_onboard(data: dict = Body(...)):
+        name = (data.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "backend name required"}, status_code=400)
+        be = _get_backend(name)
+        if be is None:
+            return JSONResponse({"error": f"backend '{name}' not found or not connectable"}, status_code=404)
+        free = total = None
+        try:
+            free, total = be.free_space(), be.total_space()
+        except Exception:
+            pass
+        result = {"name": name, "type": be.type, "connected": be.connected,
+                  "free_space": free, "total_space": total}
+        if not data.get("rebalance"):
+            return JSONResponse({"status": "ok", **result})
+        with _rebalance_lock:
+            if _rebalance_state["running"]:
+                return JSONResponse({"error": "a rebalance operation is already running"}, status_code=409)
+        from ..core import rebalance as rb
+        result["plan"] = rb.plan_rebalance(name)
+        _reset_rebalance("rebalance", name)
+        threading.Thread(target=_rebalance_worker, args=("rebalance", name), daemon=True).start()
+        return JSONResponse({"status": "started", **result})
+
+    @app.post("/api/backends/{name}/rebalance")
+    async def api_backend_rebalance(name: str, data: dict = Body(default={})):
+        if _get_backend(name) is None:
+            return JSONResponse({"error": f"backend '{name}' not found"}, status_code=404)
+        with _rebalance_lock:
+            if _rebalance_state["running"]:
+                return JSONResponse({"error": "a rebalance operation is already running"}, status_code=409)
+        limit = data.get("limit")
+        _reset_rebalance("rebalance", name)
+        threading.Thread(target=_rebalance_worker, args=("rebalance", name), daemon=True).start()
+        return JSONResponse({"status": "started", "backend": name, "limit": limit})
+
+    @app.post("/api/backends/{name}/drain")
+    async def api_backend_drain(name: str):
+        if _get_backend(name) is None:
+            return JSONResponse({"error": f"backend '{name}' not found"}, status_code=404)
+        with _rebalance_lock:
+            if _rebalance_state["running"]:
+                return JSONResponse({"error": "a rebalance operation is already running"}, status_code=409)
+        _reset_rebalance("drain", name)
+        threading.Thread(target=_rebalance_worker, args=("drain", name), daemon=True).start()
+        return JSONResponse({"status": "started", "backend": name})
+
+    @app.get("/api/backends/rebalance/stream")
+    async def api_backends_rebalance_stream():
+        async def event_generator():
+            last_snapshot = ""
+            while True:
+                with _rebalance_lock:
+                    snapshot = json.dumps(_rebalance_state)
+                if snapshot != last_snapshot:
+                    yield f"data: {snapshot}\n\n"
+                    last_snapshot = snapshot
+                with _rebalance_lock:
+                    done = _rebalance_state["completed"] and not _rebalance_state["running"]
+                if done:
+                    yield f"data: {snapshot}\n\n"
+                    break
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )

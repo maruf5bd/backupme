@@ -78,6 +78,14 @@
   </div>
 </div>
 
+<!-- Per-backend ingest share (last 24h) -->
+<div class="card" style="margin-bottom:16px;">
+  <div class="card-header"><h3>Ingest by Backend (last 24h)</h3></div>
+  <div class="card-body">
+    <div id="backend-share-body"><p class="text-muted">Loading…</p></div>
+  </div>
+</div>
+
 <!-- Accounts -->
 <div class="card" style="margin-bottom:16px;">
   <div class="card-header"><h3>Accounts</h3></div>
@@ -233,10 +241,32 @@ const Ingest = {
       out.textContent = JSON.stringify(d.rows, null, 2);
     } catch (e) { out.textContent = String(e); }
   },
+
+  async backendShare() {
+    try {
+      const d = await fetch('/api/backends/usage').then(r => r.json());
+      const body = document.getElementById('backend-share-body');
+      const rows = d.backends.filter(b => (b.ingest_24h_bytes || 0) > 0 || (b.stored_bytes || 0) > 0);
+      if (!rows.length) { body.innerHTML = '<p class="text-muted">No stored data yet</p>'; return; }
+      const total24h = rows.reduce((a, b) => a + (b.ingest_24h_bytes || 0), 0) || 1;
+      body.innerHTML = rows.map(b => `
+        <div style="margin-bottom:8px;">
+          <div class="flex justify-between text-xs text-muted">
+            <span>${b.name} (${b.type})</span>
+            <span>+${fmtBytes(b.ingest_24h_bytes || 0)} / 24h · ${fmtBytes(b.stored_bytes)} stored</span>
+          </div>
+          <div class="progress">
+            <div class="progress-bar" style="width:${Math.round(100 * (b.ingest_24h_bytes || 0) / total24h)}%"></div>
+          </div>
+        </div>`).join('');
+    } catch (e) {}
+  },
 };
 
 Ingest.status();
+Ingest.backendShare();
 Ingest.pollTimer = setInterval(() => Ingest.status(), 3000);
+setInterval(() => Ingest.backendShare(), 15000);
 if (window.lucide) lucide.createIcons();
 </script>
 {% endblock %}

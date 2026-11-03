@@ -7,6 +7,9 @@
   <h1><i data-lucide="database" style="width:28px;height:28px;"></i> Backends</h1>
   <div class="page-header-actions">
     <span class="badge badge-gray" id="backend-count">{{ backends|length }} backend(s)</span>
+    <button class="btn btn-secondary btn-sm" onclick="openOnboardWizard()">
+      <i data-lucide="sparkles" style="width:14px;height:14px;"></i> Onboard
+    </button>
     <button class="btn btn-primary btn-sm" onclick="openAddBackend()">
       <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Backend
     </button>
@@ -84,10 +87,27 @@
     </div>
     {% endif %}
 
+    <!-- Stored vault data on this backend -->
+    <div class="mb-3">
+      <div class="flex justify-between text-xs text-muted mb-1">
+        <span>Stored (vault)</span>
+        <span id="stored-{{ be.name }}">—</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill purple" id="stored-bar-{{ be.name }}" style="width: 0%;"></div>
+      </div>
+    </div>
+
     <!-- Actions -->
     <div class="flex gap-2" style="border-top: 1px solid var(--border-subtle); padding-top: 0.75rem;">
       <button class="btn btn-secondary btn-sm" onclick="testBackend('{{ be.name }}', this)" style="flex:1;">
         <i data-lucide="zap" style="width:14px;height:14px;"></i> Test
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="startRebalance('{{ be.name }}')" title="Backfill missing blobs onto this backend">
+        <i data-lucide="copy-check" style="width:14px;height:14px;"></i> Rebalance
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="startDrain('{{ be.name }}')" title="Copy data off this backend" style="color: var(--orange);">
+        <i data-lucide="log-out" style="width:14px;height:14px;"></i> Drain
       </button>
       <button class="btn btn-ghost btn-sm" onclick="verifyBackend('{{ be.name }}', this)" title="Verify files">
         <i data-lucide="shield-check" style="width:14px;height:14px;"></i>
@@ -211,6 +231,116 @@
 (function() {
   const typeSelect = document.getElementById('backend-type-select');
   const fieldsContainer = document.getElementById('backend-fields');
+
+  // ── Per-backend stored usage bars + Onboard/Rebalance/Drain ──
+  function fmtBytes(n) {
+    if (n === null || n === undefined) return '—';
+    const units = ['B','KB','MB','GB','TB'];
+    let i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(i ? 1 : 0) + ' ' + units[i];
+  }
+
+  async function loadUsage() {
+    try {
+      const d = await fetch('/api/backends/usage').then(r => r.json());
+      const totalStored = d.backends.reduce((a, b) => a + (b.stored_bytes || 0), 0) || 1;
+      d.backends.forEach(b => {
+        const el = document.getElementById('stored-' + b.name);
+        const bar = document.getElementById('stored-bar-' + b.name);
+        if (el) el.textContent = `${fmtBytes(b.stored_bytes)} · ${b.blobs} blob(s) · +${fmtBytes(b.ingest_24h_bytes)} (24h)`;
+        if (bar) bar.style.width = Math.round(100 * (b.stored_bytes || 0) / totalStored) + '%';
+      });
+    } catch (e) {}
+  }
+  loadUsage();
+
+  // ── Rebalance / drain progress modal (SSE) ──
+  function ensureRebalanceModal() {
+    if (document.getElementById('rebalance-modal')) return;
+    const div = document.createElement('div');
+    div.id = 'rebalance-modal';
+    div.className = 'modal-overlay';
+    div.innerHTML = `
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2 id="rebalance-title">Rebalance</h2>
+          <button class="modal-close" onclick="App.Modal.close('rebalance-modal')">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="progress" style="height:8px;background:var(--bg-subtle);border-radius:4px;overflow:hidden;">
+            <div id="rebalance-bar" style="height:100%;width:0%;background:var(--accent);transition:width .3s;"></div>
+          </div>
+          <p class="text-muted text-sm mt-2" id="rebalance-status">Starting…</p>
+          <p class="text-xs font-mono text-muted" id="rebalance-current"></p>
+          <pre id="rebalance-result" class="text-xs" style="max-height:180px;overflow:auto;margin-top:8px;"></pre>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+  }
+
+  function watchRebalanceStream() {
+    ensureRebalanceModal();
+    App.Modal.open('rebalance-modal');
+    const es = new EventSource('/api/backends/rebalance/stream');
+    es.onmessage = (ev) => {
+      const s = JSON.parse(ev.data);
+      const pct = s.total > 0 ? Math.round(100 * s.done / s.total) : 0;
+      document.getElementById('rebalance-bar').style.width = pct + '%';
+      document.getElementById('rebalance-status').textContent =
+        `${s.kind} → ${s.backend}: ${s.done}/${s.total || '?'} (${pct}%)` +
+        (s.running ? '' : ' — done');
+      document.getElementById('rebalance-current').textContent = s.current_blob || '';
+      if (s.completed) {
+        document.getElementById('rebalance-result').textContent =
+          JSON.stringify(s.result, null, 2);
+        if (s.errors && s.errors.length) {
+          document.getElementById('rebalance-result').textContent +=
+            '\nERRORS:\n' + s.errors.join('\n');
+        }
+        es.close();
+        loadUsage();
+      }
+    };
+    es.onerror = () => { es.close(); };
+  }
+
+  window.startRebalance = async function(name) {
+    if (!confirm(`Backfill all missing blobs onto "${name}"? This copies data; nothing is deleted.`)) return;
+    const r = await fetch(`/api/backends/${encodeURIComponent(name)}/rebalance`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+    });
+    const d = await r.json();
+    if (!r.ok) { App.Toast.show(d.error || 'failed to start', 'error'); return; }
+    watchRebalanceStream();
+  };
+
+  window.startDrain = async function(name) {
+    if (!confirm(`Drain "${name}"? All blobs will be copied to the other backends; the backend itself is NOT deleted. Run GC after removal.`)) return;
+    const r = await fetch(`/api/backends/${encodeURIComponent(name)}/drain`, {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) { App.Toast.show(d.error || 'failed to start', 'error'); return; }
+    watchRebalanceStream();
+  };
+
+  window.openOnboardWizard = function() {
+    const name = prompt('Backend name to onboard (must already exist in config.yaml):');
+    if (!name) return;
+    const doRebalance = confirm('Backfill existing vault data onto it after the connection test?');
+    fetch('/api/backends/onboard', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, rebalance: doRebalance})
+    }).then(async r => {
+      const d = await r.json();
+      if (!r.ok) { App.Toast.show(d.error || 'onboard failed', 'error'); return; }
+      if (d.status === 'started') { watchRebalanceStream(); }
+      else {
+        App.Toast.show(`Connected: ${d.name} (${d.type})` +
+          (d.plan ? ` — ${d.plan.blobs} blob(s) to backfill` : ''), 'success');
+        loadUsage();
+      }
+    }).catch(e => App.Toast.show(String(e), 'error'));
+  };
 
   const fieldConfigs = {
     local: [
