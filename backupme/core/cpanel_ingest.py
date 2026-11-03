@@ -561,9 +561,29 @@ def ingest_tree(
     redundancy: int = 1,
     progress_cb=None,
 ) -> dict:
-    """Discover archives under drop_root and ingest them in parallel."""
+    """Discover archives under drop_root and ingest them in parallel.
+
+    Serialized across processes AND components (web worker vs daemon tick)
+    with an exclusive gate file under the staging root — two runners would
+    otherwise ingest the same archive into the same staging dir and race
+    version_seq allocation."""
     config_dict = _as_config_dict(config)
     ingest_cfg = _ingest_cfg(config_dict)
+    staging_root = Path(ingest_cfg.get("staging_dir", "staging") or "staging")
+
+    from backupme.core.flock import path_lock
+    try:
+        with path_lock(staging_root / ".ingest.lock", stale_seconds=3600.0, wait=0.0):
+            return _ingest_tree_locked(drop_root, backends, config, config_dict,
+                                       ingest_cfg, redundancy, progress_cb)
+    except TimeoutError:
+        log.warning("another ingest scan is running — skipping this tick")
+        return {"status": "busy", "reason": "another ingest scan is running",
+                "archives": 0, "results": [], "files_ignored": 0}
+
+
+def _ingest_tree_locked(drop_root, backends, config, config_dict, ingest_cfg,
+                        redundancy, progress_cb) -> dict:
     discovered = discover(str(drop_root))
     archives = [d for d in discovered if d["type"] == "archive"]
     files_ignored = sum(1 for d in discovered if d["type"] == "file")

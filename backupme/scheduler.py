@@ -208,24 +208,28 @@ class BackupScheduler:
     def _periodic_loop(self):
         sc = self._sched()
         while not self._stop.is_set():
-            self._run_backups()
-            self._run_retention()
-            now = time.time()
-            if now - self._last_ingest >= sc["ingest_interval"]:
-                self._last_ingest = now
-                self._run_ingest()
-            if now - self._last_purge >= _DAY_SECONDS:
-                self._last_purge = now
-                self._run_purge()
-            if now - self._last_export >= sc["cold_export_after_days"] * _DAY_SECONDS:
-                self._last_export = now
-                self._run_cold_export()
-            if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
-                self._last_gc = now
-                self._run_scheduled_gc()
-            if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
-                self._last_verify = now
-                self._run_scheduled_verify()
+            try:
+                self._run_backups()
+                self._run_retention()
+                now = time.time()
+                if now - self._last_ingest >= sc["ingest_interval"]:
+                    self._last_ingest = now
+                    self._run_ingest()
+                if now - self._last_purge >= _DAY_SECONDS:
+                    self._last_purge = now
+                    self._run_purge()
+                if now - self._last_export >= sc["cold_export_after_days"] * _DAY_SECONDS:
+                    self._last_export = now
+                    self._run_cold_export()
+                if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
+                    self._last_gc = now
+                    self._run_scheduled_gc()
+                if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
+                    self._last_verify = now
+                    self._run_scheduled_verify()
+            except Exception:
+                # One failed pass must never kill the daemon thread silently.
+                log.exception("scheduler pass crashed — continuing")
             self._stop.wait(sc["interval"])
 
     def _ingest_enabled(self) -> bool:

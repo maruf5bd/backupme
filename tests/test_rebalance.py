@@ -69,8 +69,9 @@ def test_rebalance_copies_all_blobs_and_records_rows(two_backend_env):
     assert again["copied"] == 0
 
     # Checkpoint file written.
-    assert Path("rebalance_checkpoint.json").exists()
-    ck = json.loads(Path("rebalance_checkpoint.json").read_text())
+    # Checkpoint file written, namespaced per target.
+    assert Path("rebalance_checkpoint_second.json").exists()
+    ck = json.loads(Path("rebalance_checkpoint_second.json").read_text())
     assert ck["completed"]
 
 

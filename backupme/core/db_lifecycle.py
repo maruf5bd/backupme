@@ -102,13 +102,20 @@ def _save_manifest(pdir: Path, manifest: dict) -> None:
 def cold_export_to_parquet(config=None) -> dict:
     """Export ``files`` rows past the id watermark to a monthly Zstd Parquet
     partition and advance the watermark. No-op (with warning) when pyarrow
-    is missing."""
+    is missing.
+
+    Serialized across processes with an exclusive lock file — two concurrent
+    exports would otherwise write the same month partition and lose-update the
+    watermark manifest (permanent history loss once rows are purged).
+    """
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
     except ImportError:
         log.warning("pyarrow not installed — cold export skipped")
         return {"status": "skipped", "reason": "pyarrow not installed"}
+
+    from backupme.core.flock import path_lock
 
     lc = _lifecycle_cfg(config)
     compression = getattr(lc, "parquet_compression", "zstd") if not isinstance(lc, dict) \
@@ -118,6 +125,15 @@ def cold_export_to_parquet(config=None) -> dict:
 
     pdir = parquet_dir_for(config)
     pdir.mkdir(parents=True, exist_ok=True)
+    try:
+        with path_lock(pdir / "_export.lock", stale_seconds=3600.0, wait=0.0):
+            return _cold_export_locked(pdir, pa, pq, compression, compression_level)
+    except TimeoutError:
+        log.warning("another cold export is running — skipping this tick")
+        return {"status": "busy", "reason": "another cold export is running"}
+
+
+def _cold_export_locked(pdir, pa, pq, compression, compression_level) -> dict:
     watermark = load_watermark(pdir)
 
     rows = execute(

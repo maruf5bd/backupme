@@ -16,9 +16,15 @@ from backupme.log import get_logger
 log = get_logger("rebalance")
 
 from backupme.core.database import execute, commit
+from backupme.core.flock import path_lock, safe_name
 
-CHECKPOINT_FILE = Path("rebalance_checkpoint.json")
 _CHECKPOINT_EVERY = 100
+
+
+def _checkpoint_file(target_backend: str) -> Path:
+    """Per-target checkpoint — a shared file would make blobs completed for
+    target A be silently skipped when rebalancing to target B."""
+    return Path(f"rebalance_checkpoint_{safe_name(target_backend)}.json")
 
 
 def _top_level_missing(target_backend: str):
@@ -46,11 +52,12 @@ def plan_rebalance(target_backend: str, source_filter: str | None = None) -> dic
     }
 
 
-def _load_checkpoint() -> dict:
-    if not CHECKPOINT_FILE.exists():
+def _load_checkpoint(target: str) -> dict:
+    ck = _checkpoint_file(target)
+    if not ck.exists():
         return {"completed": [], "failed": []}
     try:
-        data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+        data = json.loads(ck.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {"completed": [], "failed": []}
     data.setdefault("completed", [])
@@ -58,10 +65,11 @@ def _load_checkpoint() -> dict:
     return data
 
 
-def _save_checkpoint(data: dict) -> None:
-    tmp = CHECKPOINT_FILE.with_suffix(".tmp")
+def _save_checkpoint(target: str, data: dict) -> None:
+    ck = _checkpoint_file(target)
+    tmp = ck.with_suffix(".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(CHECKPOINT_FILE)
+    tmp.replace(ck)
 
 
 def rebalance_to(target_backend, backends: list, config,
@@ -71,7 +79,9 @@ def rebalance_to(target_backend, backends: list, config,
 
     Oldest first, per-blob try/except (continue on failure), checkpoint every
     100 blobs; resumable — completed blobs are skipped both via the checkpoint
-    and the blob_storage anti-join itself.
+    and the blob_storage anti-join itself. Serialized across processes with a
+    per-target lock file (a web + CLI double-run would otherwise clobber the
+    shared checkpoint).
     """
     from backupme.mirror import replicate_to_n
 
@@ -79,7 +89,21 @@ def rebalance_to(target_backend, backends: list, config,
     if target is None:
         return {"status": "error", "error": f"backend '{target_backend}' not found or not connected"}
 
-    checkpoint = _load_checkpoint() if resume else {"completed": [], "failed": []}
+    ck_file = _checkpoint_file(target_backend)
+    try:
+        with path_lock(ck_file.with_suffix(".lock"), stale_seconds=3600.0, wait=0.0):
+            return _rebalance_locked(target_backend, target, config, backends,
+                                     limit, progress_cb, resume)
+    except TimeoutError:
+        log.warning("another rebalance to %s is running", target_backend)
+        return {"status": "busy", "reason": f"another rebalance to {target_backend} is running"}
+
+
+def _rebalance_locked(target_backend, target, config, backends,
+                      limit, progress_cb, resume) -> dict:
+    from backupme.mirror import replicate_to_n
+
+    checkpoint = _load_checkpoint(target_backend) if resume else {"completed": [], "failed": []}
     completed: list = list(checkpoint["completed"])
     failed: list = []
 
@@ -105,9 +129,9 @@ def rebalance_to(target_backend, backends: list, config,
         if progress_cb is not None:
             progress_cb(blob_id, i + 1, len(rows))
         if (i + 1) % _CHECKPOINT_EVERY == 0:
-            _save_checkpoint({"completed": completed[-1000:], "failed": failed})
+            _save_checkpoint(target_backend, {"completed": completed[-1000:], "failed": failed})
 
-    _save_checkpoint({"completed": completed[-1000:], "failed": failed})
+    _save_checkpoint(target_backend, {"completed": completed[-1000:], "failed": failed})
     remaining = plan_rebalance(target_backend)
     return {
         "status": "ok" if not failed else "partial",
