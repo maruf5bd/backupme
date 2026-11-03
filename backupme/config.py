@@ -77,6 +77,13 @@ class DatabaseAutoBackupConfig:
     backends: str = "all"
 
 @dataclass
+class SchedulerConfig:
+    interval: int = 3600
+    ingest_interval: int = 300
+    gc_interval_days: int = 7
+    verify_interval_days: int = 1
+
+@dataclass
 class DBLifecycleConfig:
     purge_grace_days: int = 14
     cold_export_after_days: int = 30
@@ -150,6 +157,7 @@ class Config:
     retention: RetentionConfig = field(default_factory=RetentionConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     db_lifecycle: DBLifecycleConfig = field(default_factory=DBLifecycleConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)
 
@@ -252,6 +260,8 @@ def load_config(path: str | None = None) -> Config:
         cfg.db_lifecycle = DBLifecycleConfig(**_filter_fields(DBLifecycleConfig, raw["db_lifecycle"]))
     if "database" in raw and "lifecycle" in raw["database"]:
         cfg.database.lifecycle = DBLifecycleConfig(**_filter_fields(DBLifecycleConfig, raw["database"]["lifecycle"]))
+    if "scheduler" in raw:
+        cfg.scheduler = SchedulerConfig(**_filter_fields(SchedulerConfig, raw["scheduler"]))
     if "notifications" in raw:
         cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
     if "cpanel_ingest" in raw:

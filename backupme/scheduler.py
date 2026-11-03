@@ -138,8 +138,14 @@ def apply_retention(config: dict):
     commit()
 
 
+_DAY_SECONDS = 86400
+
+
 class BackupScheduler:
-    def __init__(self, config: dict):
+    def __init__(self, config):
+        import dataclasses
+        if dataclasses.is_dataclass(config) and not isinstance(config, type):
+            config = dataclasses.asdict(config)
         self.config = config
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -147,6 +153,42 @@ class BackupScheduler:
             config,
             interval_snapshot=config.get("database", {}).get("snapshots", {}).get("interval", 3600),
         )
+        # Cadence state: per-task last-run timestamps + single-flight locks.
+        self._last_ingest = 0.0
+        self._last_purge = 0.0
+        self._last_export = 0.0
+        self._last_gc = 0.0
+        self._last_verify = 0.0
+        self._ingest_lock = threading.Lock()
+        self._purge_lock = threading.Lock()
+        self._export_lock = threading.Lock()
+        self._gc_lock = threading.Lock()
+        self._verify_lock = threading.Lock()
+
+    def _sched(self) -> dict:
+        sc = self.config.get("scheduler", {}) or {}
+        def _int(key: str, default: int) -> int:
+            try:
+                return max(1, int(sc.get(key, default)))
+            except (TypeError, ValueError):
+                return default
+        lc = self.config.get("db_lifecycle", {}) or {}
+        try:
+            purge_grace = int(lc.get("purge_grace_days", 14))
+        except (TypeError, ValueError):
+            purge_grace = 14
+        try:
+            export_after = int(lc.get("cold_export_after_days", 30))
+        except (TypeError, ValueError):
+            export_after = 30
+        return {
+            "interval": _int("interval", 3600),
+            "ingest_interval": _int("ingest_interval", 300),
+            "gc_interval_days": _int("gc_interval_days", 7),
+            "verify_interval_days": _int("verify_interval_days", 1),
+            "purge_grace_days": purge_grace,
+            "cold_export_after_days": export_after,
+        }
 
     def start(self):
         initialize()
@@ -164,10 +206,31 @@ class BackupScheduler:
             self._thread.join(timeout=10)
 
     def _periodic_loop(self):
+        sc = self._sched()
         while not self._stop.is_set():
             self._run_backups()
             self._run_retention()
-            self._stop.wait(self.config.get("scheduler", {}).get("interval", 3600))
+            now = time.time()
+            if now - self._last_ingest >= sc["ingest_interval"]:
+                self._last_ingest = now
+                self._run_ingest()
+            if now - self._last_purge >= _DAY_SECONDS:
+                self._last_purge = now
+                self._run_purge()
+            if now - self._last_export >= sc["cold_export_after_days"] * _DAY_SECONDS:
+                self._last_export = now
+                self._run_cold_export()
+            if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
+                self._last_gc = now
+                self._run_scheduled_gc()
+            if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
+                self._last_verify = now
+                self._run_scheduled_verify()
+            self._stop.wait(sc["interval"])
+
+    def _ingest_enabled(self) -> bool:
+        ci = self.config.get("cpanel_ingest", {}) or {}
+        return bool(ci.get("enabled", False))
 
     def _run_backups(self):
         for entry in self.config.get("backups", []):
@@ -238,3 +301,88 @@ class BackupScheduler:
             apply_retention(self.config)
         except Exception:
             log.exception("retention pass failed")
+
+    def _run_ingest(self):
+        """Ingest tick: scan the drop root for new cpmove archives."""
+        if not self._ingest_enabled():
+            return
+        if not self._ingest_lock.acquire(blocking=False):
+            log.info("ingest tick skipped — previous ingest still running")
+            return
+        try:
+            ci = self.config.get("cpanel_ingest", {}) or {}
+            drop_root = ci.get("drop_root", "")
+            if not drop_root or not os.path.isdir(drop_root):
+                return
+            from backupme.core import cpanel_ingest as ci_mod
+            backends = get_all_backends(self.config)
+            result = ci_mod.ingest_tree(drop_root, backends, self.config)
+            log.info("ingest tick: status=%s archives=%s",
+                     result.get("status"), result.get("archives"))
+        except Exception:
+            log.exception("ingest tick failed")
+        finally:
+            self._ingest_lock.release()
+
+    def _run_purge(self):
+        """Purge tick: hard-delete exported, grace-expired rows."""
+        if not self._ingest_enabled():
+            return
+        if not self._purge_lock.acquire(blocking=False):
+            log.info("purge tick skipped — previous purge still running")
+            return
+        try:
+            from backupme.core import db_lifecycle as lc
+            result = lc.hard_purge_versions(config=self.config)
+            log.info("purge tick: purged=%s skipped=%s",
+                     result.get("purged"), result.get("skipped"))
+        except Exception:
+            log.exception("purge tick failed")
+        finally:
+            self._purge_lock.release()
+
+    def _run_cold_export(self):
+        """Cold-export tick: write new files rows to monthly Parquet partitions."""
+        if not self._ingest_enabled():
+            return
+        if not self._export_lock.acquire(blocking=False):
+            log.info("cold-export tick skipped — previous export still running")
+            return
+        try:
+            from backupme.core import db_lifecycle as lc
+            result = lc.cold_export_to_parquet(config=self.config)
+            log.info("cold-export tick: status=%s rows=%s",
+                     result.get("status"), result.get("rows"))
+        except Exception:
+            log.exception("cold-export tick failed")
+        finally:
+            self._export_lock.release()
+
+    def _run_scheduled_gc(self):
+        if not self._gc_lock.acquire(blocking=False):
+            log.info("gc tick skipped — previous gc still running")
+            return
+        try:
+            from backupme.core import gc as gc_mod
+            backends = get_all_backends(self.config)
+            result = gc_mod.run_gc(backends, apply=True)
+            log.info("gc tick: %s", {k: v for k, v in result.items()
+                                     if isinstance(v, (int, str))})
+        except Exception:
+            log.exception("gc tick failed")
+        finally:
+            self._gc_lock.release()
+
+    def _run_scheduled_verify(self):
+        if not self._verify_lock.acquire(blocking=False):
+            log.info("verify tick skipped — previous verify still running")
+            return
+        try:
+            from backupme.core import verify as verify_mod
+            result = verify_mod.run_integrity_check(count=5)
+            log.info("verify tick: status=%s failed=%s",
+                     result.get("status"), result.get("failed_files"))
+        except Exception:
+            log.exception("verify tick failed")
+        finally:
+            self._verify_lock.release()

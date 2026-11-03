@@ -130,6 +130,17 @@ notifications:
   on_failure: true
   desktop: true
 
+# --- Daemon scheduler ---
+# Cadences for the background daemon (backupme daemon / web dashboard start).
+scheduler:
+  interval: 3600                # seconds between full tick cycles (backups+retention)
+  ingest_interval: 300          # seconds between drop-folder ingest scans
+  gc_interval_days: 7           # days between scheduled garbage-collection runs
+  verify_interval_days: 1       # days between scheduled integrity checks
+# Purge/cold-export grace windows live under db_lifecycle (purge_grace_days,
+# cold_export_after_days); purge/export/gc/verify only run when
+# cpanel_ingest.enabled is true.
+
 # --- DB Lifecycle (cold storage) ---
 # Keep the SQLite hot-store proportional to retention + grace; full history in
 # monthly Zstd Parquet partitions queried read-only via DuckDB.

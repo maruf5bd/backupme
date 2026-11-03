@@ -13,6 +13,8 @@ import os
 import re
 import shutil
 import tarfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -163,16 +165,63 @@ def estimate_archive(archive_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Phase-3 stubs (staging budget gate / bandwidth pacing) — filled in later.
+# Staging budget gate / bandwidth pacing (Phase 3)
 # ---------------------------------------------------------------------------
 
+_PACE_LOCK = threading.Lock()
+_PACE_STATE = {"tokens": 0.0, "last": 0.0}  # tokens in bytes
+
+
 def check_staging_budget(config) -> bool:
-    """Phase 3: refuse new archives when plaintext staging exceeds budget."""
-    return True
+    """Refuse new archives when the plaintext staging dir exceeds its budget."""
+    cfg = config if isinstance(config, dict) else dataclasses.asdict(config)
+    ingest_cfg = _ingest_cfg(cfg)
+    budget_gb = float(ingest_cfg.get("staging_budget_gb", 10.0) or 10.0)
+    if budget_gb <= 0:
+        return True
+    staging_root = Path(ingest_cfg.get("staging_dir", "staging") or "staging")
+    if not staging_root.exists():
+        return True
+    used = 0
+    for dirpath, _dirnames, filenames in os.walk(staging_root):
+        for fname in filenames:
+            try:
+                used += os.path.getsize(os.path.join(dirpath, fname))
+            except OSError:
+                continue
+    ok = used < budget_gb * (1024 ** 3)
+    if not ok:
+        log.warning("staging budget exceeded: %d bytes >= %.1f GB — deferring archives",
+                    used, budget_gb)
+    return ok
 
 
 def pace() -> None:
-    """Phase 3: bandwidth pacing hook (no-op until then)."""
+    """Token-bucket bandwidth pacing (bandwidth_limit_mbps; 0 = unlimited)."""
+    cfg = None
+    try:
+        from backupme.config import load_config
+        cfg = load_config()
+    except Exception:
+        return
+    ingest_cfg = getattr(cfg, "cpanel_ingest", None)
+    mbps = float(getattr(ingest_cfg, "bandwidth_limit_mbps", 0.0) or 0.0) if ingest_cfg else 0.0
+    if mbps <= 0:
+        return
+
+    with _PACE_LOCK:
+        now = time.monotonic()
+        last = _PACE_STATE["last"] or now
+        rate = mbps * (1024 * 1024) / 8.0  # bytes per second
+        capacity = max(rate, rate * 1.0)  # 1s burst bucket
+        _PACE_STATE["tokens"] = min(capacity, _PACE_STATE["tokens"] + rate * (now - last))
+        _PACE_STATE["last"] = now
+        if _PACE_STATE["tokens"] < rate:
+            deficit = (rate - _PACE_STATE["tokens"]) / rate
+            wait = min(deficit, 1.0)
+            if wait > 0:
+                time.sleep(wait)
+        _PACE_STATE["tokens"] = max(0.0, _PACE_STATE["tokens"] - rate)
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +537,7 @@ def ingest_tree(
             )] = item
         for fut, item in futures.items():
             try:
+                pace()
                 results.append(fut.result())
             except Exception as e:
                 # ingest_archive catches its own errors; this is a last resort.
