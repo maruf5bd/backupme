@@ -1,5 +1,8 @@
 # Memory
 
+## Language
+- Always write in English: responses, commit messages, code comments, docs, and reports. No other language in any agent output.
+
 ## Project Overview
 See @README.md for project overview and @package.json for available npm/pnpm commands for this project.
 
