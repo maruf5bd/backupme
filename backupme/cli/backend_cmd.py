@@ -139,16 +139,20 @@ def backend_add(ctx, backend_type):
 
 
 @backend.command("list")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
-def backend_list(ctx):
+def backend_list(ctx, as_json):
     """List all configured backends"""
+    from ..cli.output import emit
     cfg = ctx.obj.get("config")
     if not cfg or not hasattr(cfg, "backends"):
-        click.echo("No backends configured")
+        emit({"backends": [], "count": 0}, as_json=as_json, human=lambda d: click.echo("No backends configured"))
         return
+    rows = []
     for btype, blist in cfg.backends.items():
         for b in blist:
-            click.echo(f"  {b.name:20s}  {btype:8s}  host={getattr(b, 'host', '-'):20s}  path={getattr(b, 'path', '-'):20s}")
+            rows.append({"name": b.name, "type": btype, "host": getattr(b, "host", None), "path": getattr(b, "path", None)})
+    emit({"backends": rows, "count": len(rows)}, as_json=as_json, human=lambda d: [click.echo(f"  {r['name']:20s}  {r['type']:8s}  host={r.get('host','-'):20s}  path={r.get('path','-'):20s}") for r in d["backends"]])
 
 
 @backend.command("remove")
@@ -179,11 +183,13 @@ def backend_remove(ctx, name):
 
 @backend.command("test")
 @click.argument("name")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
-def backend_test(ctx, name):
+def backend_test(ctx, name, as_json):
     """Test connectivity to a backend"""
     from ..backends import get_backend
     from ..config import load_config
+    from ..cli.output import emit
     cfg_path = ctx.obj.get("config_path", "config.yaml")
     cfg = load_config(cfg_path)
 
@@ -199,9 +205,20 @@ def backend_test(ctx, name):
 
     bk = get_backend(name, raw)
     if bk is None:
-        click.echo(f"Backend '{name}' not found")
+        emit({"connected": False, "error": f"backend '{name}' not found"}, as_json=as_json,
+             human=lambda d: click.echo(f"Backend '{name}' not found"))
         return
-    _test_connection(bk, name)
+    try:
+        ok = bk.connect()
+        free = bk.free_space() if ok else None
+        total = bk.total_space() if ok else None
+        if ok:
+            bk.disconnect()
+        data = {"name": name, "connected": bool(ok), "free_space": free, "total_space": total}
+        emit(data, as_json=as_json, human=lambda d: (click.echo(f"Connecting to {name}... OK"), click.echo(f"  Space: {free} / {total}") if total else None))
+    except Exception as e:
+        emit({"name": name, "connected": False, "error": str(e)}, as_json=as_json,
+             human=lambda d: click.echo(f"Connecting to {name}... ERROR: {e}"))
 
 
 def _test_backend(entry: dict, btype: str):

@@ -104,3 +104,83 @@ def test_ingest_cpanel_invalid_drop_root(env, backends):
     result = runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel",
                                  str(env / "does-not-exist")])
     assert result.exit_code == 2
+
+
+def test_list_json(env, backends):
+    from click.testing import CliRunner
+    from backupme.cli.base import cli
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "list", "--json"])
+    assert result.exit_code == 0, result.output
+    import json
+    data = json.loads(result.output)
+    assert "files" in data
+    assert "count" in data
+
+
+def test_stats_json(env, backends):
+    from click.testing import CliRunner
+    from backupme.cli.base import cli
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "stats", "--json"])
+    assert result.exit_code == 0, result.output
+    import json
+    data = json.loads(result.output)
+    assert "total_files" in data
+    assert "generation" in data
+    assert "ratio" in data
+
+
+def test_db_check_json(env, backends):
+    from click.testing import CliRunner
+    from backupme.cli.base import cli
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "db", "check", "--json"])
+    assert result.exit_code == 0, result.output
+    import json
+    data = json.loads(result.output)
+    assert "integrity" in data
+
+
+def test_backends_json(env, backends):
+    from click.testing import CliRunner
+    from backupme.cli.base import cli
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "backends", "--json"])
+    assert result.exit_code == 0, result.output
+    import json
+    data = json.loads(result.output)
+    assert "backends" in data
+
+
+def test_backend_list_json(env, backends):
+    from click.testing import CliRunner
+    from backupme.cli.base import cli
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "backend", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    import json
+    data = json.loads(result.output)
+    assert "backends" in data
+
+
+def test_list_source_root_filter(env, backends):
+    from click.testing import CliRunner
+    from backupme.cli.base import cli
+    drop = env / "drop"
+    drop.mkdir()
+    import tarfile, io
+    arch = drop / "acct" / "cpmove-acct.tar.gz"
+    arch.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(arch, "w:gz") as tar:
+        for name, data in [("homedir/index.php", b"<?php echo 1;")]:
+            ti = tarfile.TarInfo(name=name)
+            ti.size = len(data)
+            tar.addfile(ti, io.BytesIO(data))
+    runner = CliRunner()
+    runner.invoke(cli, ["--db", str(env / "test.db"), "ingest-cpanel", str(drop)])
+    result = runner.invoke(cli, ["--db", str(env / "test.db"), "list", "--source-root", "cpanel/acct", "--json"])
+    assert result.exit_code == 0, result.output
+    import json
+    data = json.loads(result.output)
+    assert all(f["source_root"] == "cpanel/acct" for f in data["files"])
