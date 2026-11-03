@@ -129,3 +129,36 @@ def test_ingest_progress_renders(env, backends):
                                  str(env / "drop"), "--progress"])
     assert result.exit_code == 0, result.output
     assert "indexed" in result.output
+
+
+def test_sanitize_account_rejects_windows_reserved_names():
+    assert ci._sanitize_account("CON") == "default"
+    assert ci._sanitize_account("NUL.txt") == "default"
+    assert ci._sanitize_account("com1") == "default"
+    assert ci._sanitize_account("LPT9") == "default"
+    assert ci._sanitize_account("console") == "console"  # not reserved
+    assert ci._sanitize_account("acme") == "acme"
+
+
+def test_disposition_failure_keeps_ok_status(env, backends, monkeypatch):
+    """M2: a .done move failure after commit must not flip status to failed."""
+    _drop(env)
+    cfg = _cfg(env)
+
+    def broken_move(src, dst):
+        raise PermissionError(13, "simulated lock")
+
+    monkeypatch.setattr(ci.shutil, "move", broken_move)
+    out = ci.ingest_tree(str(env / "drop"), backends, cfg)
+    r = out["results"][0]
+    assert r["status"] == "ok"
+    assert r["disposition_errors"] and ".done move" in r["disposition_errors"][0]
+    # op_log still committed; members still indexed.
+    row = execute("SELECT status FROM op_log WHERE op_type='cpanel_ingest'").fetchone()
+    assert row[0] == "committed"
+    n = execute("SELECT COUNT(*) FROM files WHERE source_root='cpanel/acct'").fetchone()[0]
+    assert n == 3
+    # Archive stays in place for manual cleanup (recovery event recorded).
+    assert (env / "drop" / "acct" / "cpmove-acct.tar.gz").exists()
+    ev = execute("SELECT details FROM recovery_events WHERE event_type='ingest_disposition'").fetchone()
+    assert ev is not None and ".done" in ev[0]

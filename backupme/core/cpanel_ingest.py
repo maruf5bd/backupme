@@ -33,6 +33,10 @@ from backupme.core.uploader import upload_bundle, upload_file
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
 _CPMOVE_NAME_RE = re.compile(r"^cpmove-(\w+)\.tar\.(?:gz|bz2)$", re.IGNORECASE)
 _ACCOUNT_SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]")
+# Windows reserved device names are invalid as directory names — an account
+# derived from e.g. "cpmove-CON.tar.gz" would make the .done mkdir fail.
+_WINDOWS_RESERVED_RE = re.compile(
+    r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
 _CHECKPOINT_EVERY = 25
 
 # Ingest failure notification hooks (Plan 05): failures are always recorded in
@@ -56,9 +60,14 @@ def _notify_failure(details: dict) -> None:
 
 
 def _sanitize_account(name: str) -> str:
-    """Keep [A-Za-z0-9._-]; strip leading/trailing separators; fall back to default."""
+    """Keep [A-Za-z0-9._-]; strip leading/trailing separators; fall back to default.
+
+    Windows reserved device names (CON, NUL, COM1, ...) are rejected so a
+    derived account can never be an invalid directory name."""
     cleaned = _ACCOUNT_SANITIZE_RE.sub("_", name).strip("_-. ")
-    return cleaned or "default"
+    if not cleaned or _WINDOWS_RESERVED_RE.match(cleaned):
+        return "default"
+    return cleaned
 
 
 def _account_from_relpath(rel_parts: list[str], filename: str, pattern: str | None) -> str:
@@ -449,7 +458,12 @@ def ingest_archive(
         return {"status": "failed", "error": str(e),
                 "account": account, "archive": archive_path}
 
-    # --- Raw archive retention (only after full success) -------------------
+    # --- Post-commit disposition (raw upload + .done move) -----------------
+    # The op is already committed: a disposition failure must NOT turn the
+    # result into "failed" (that would desync op_log vs worker status and,
+    # via the idempotency skip, strand the archive in the drop root forever).
+    disposition_errors: list[str] = []
+
     keep_raw = int(ingest_cfg.get("keep_raw", 0) or 0)
     if keep_raw > 0:
         try:
@@ -477,15 +491,31 @@ def ingest_archive(
             # Raw copy is best-effort: the ingested generation stays valid.
             log.error("raw archive upload failed for %s: %s",
                       archive_path, e, exc_info=True)
+            disposition_errors.append(f"raw upload: {e}")
 
-    # --- Move to .done ------------------------------------------------------
-    done_base = drop_root or _guess_drop_root(archive_path, account)
-    done_dir = Path(done_base) / ".done" / account
-    done_dir.mkdir(parents=True, exist_ok=True)
-    target = done_dir / Path(archive_path).name
-    if target.exists():
-        target.unlink()
-    shutil.move(archive_path, str(target))
+    try:
+        done_base = drop_root or _guess_drop_root(archive_path, account)
+        done_dir = Path(done_base) / ".done" / account
+        done_dir.mkdir(parents=True, exist_ok=True)
+        target = done_dir / Path(archive_path).name
+        if target.exists():
+            target.unlink()
+        shutil.move(archive_path, str(target))
+    except Exception as e:
+        log.error("could not move %s to .done: %s", archive_path, e,
+                  exc_info=True)
+        from backupme.core.database import execute as _exec, commit as _commit
+        try:
+            _exec(
+                "INSERT INTO recovery_events (event_type, status, details) VALUES (?, ?, ?)",
+                ("ingest_disposition", "failed",
+                 f"archive {archive_path} ingested (op committed) but could not "
+                 f"be moved to .done: {e}"),
+            )
+            _commit()
+        except Exception:
+            log.error("could not record recovery event", exc_info=True)
+        disposition_errors.append(f".done move: {e}")
 
     return {
         "status": "ok",
@@ -495,6 +525,7 @@ def ingest_archive(
         "bytes": est["bytes"],
         "dupe": dupe_count,
         "errors": error_count,
+        "disposition_errors": disposition_errors,
     }
 
 
