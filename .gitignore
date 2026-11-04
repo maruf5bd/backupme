@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 *.so
@@ -48,9 +49,10 @@ tree/
 config.yaml
 
 # Database runtime artifacts
-backupme.db-shm
-backupme.db-wal
+*.db-shm
+*.db-wal
 *.db.zst
+backupme.db.pre-verify-*
 pending_wal/
 
 # Local storage and test scratch dirs
@@ -62,7 +64,36 @@ tmp_be/
 # AI tool workspaces
 .commandcode/
 .opencode/
+.antigravitycli/
 
 # Editor/session backup files
 *.bak
 *.bak_*
+
+# One-off diagnostic scripts and outputs, archived out of the project root
+# (see diagnostics/README.md for what each file was)
+diagnostics/
+
+# Backend password scratch file used by one-off SFTP debug scripts (never commit)
+sb_pw.txt
+
+# Web dashboard runtime files
+dashboard.pid
+
+# Restore/extract scratch output written by the scripts/ tools
+restored_archives/
+restored_local_archives/
+extracted_archives/
+staging/
+
+# Cold-history parquet export output (local-only runtime data, never tracked)
+parquet/
+
+# One-off blob consolidation job artifacts
+consolidate_log.txt
+consolidate_report.txt
+
+# Runtime bundle manifest store. On Windows the MANIFEST line above already
+# matches it via case-insensitive lookup; keep an explicit rule so clones on
+# case-sensitive filesystems stay clean too.
+manifest/
