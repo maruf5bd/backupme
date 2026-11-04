@@ -251,6 +251,8 @@ Backend A    Backend B   Backend C   ...   (disaster-recovery replicas)
 | **Manifest sidecars** | Per-file JSON in `manifests/` — enables full rebuild from backends |
 | **Op-log** | Idempotent, with preconditions and status state machine |
 | **FTS5** | Full-text search on file paths and content |
+| **GC safety** | `backupme gc` only deletes unreferenced objects older than a 1-hour grace — a just-uploaded object looks unreferenced until its DB rows commit, and deleting it would corrupt the in-flight backup |
+| **Atomic restores** | Downloads write to a temp sibling and rename only after the final SHA-256 matches — a failed restore never leaves a partial file at the destination |
 
 ---
 
@@ -607,14 +609,28 @@ Behavior and constraints:
 
 Start with `backupme web --port 8080`, then open `http://localhost:8080`.
 
+**API token (recommended beyond loopback):** by default the dashboard is open
+(loopback-only bind, loud warning otherwise). When exposing the port, set a
+bearer token — every `/api/*` request then requires
+`Authorization: Bearer <token>` (401 otherwise); static pages stay public:
+
+```bash
+backupme web --host 0.0.0.0 --token "$DASHBOARD_TOKEN"
+```
+
+```yaml
+web:
+  token: "{{DASHBOARD_TOKEN}}"    # empty = open dashboard (loopback-only)
+```
+
 ### Pages
 
 | Route | Page | Description |
 |---|---|---|
 | `/` | Dashboard | File count, dedup ratio, compression ratio, per-backend usage chart, DB health, recent files |
 | `/files` | Files | Searchable (FTS-backed) table; per-row download; redundancy column |
-| `/backends` | Backends | Health status, free/total/quota, last seen, circuit-breaker state |
-| `/ingest` | Ingest | cPanel drop-folder queue with live progress, staging/DB health, per-account generations, Parquet history queries |
+| `/backends` | Backends | Health status, free/total/quota, last seen, circuit-breaker state, onboard/rebalance/drain |
+| `/ingest` | Ingest | cPanel drop-folder queue with live progress, staging/DB health, per-account generations, Parquet history queries, pause/resume |
 | `/logs` | Activity | Filtered op_log + recovery_events |
 | `/database` | DB Health | Integrity status, snapshot/WAL list, generation/instance_id, recovery history |
 | `/report` | Report | Full integrity report with charts and recommendations |
@@ -637,6 +653,8 @@ POST /api/backup
 POST /api/verify
 POST /api/db/replicate
 ```
+
+All `/api/*` endpoints require the bearer token when `web.token` is set.
 
 ---
 
@@ -689,6 +707,9 @@ scheduler:
   ingest_interval: 300          # daemon drop-folder scan cadence (seconds)
   gc_interval_days: 7
   verify_interval_days: 1
+
+web:
+  token: ""                     # bearer token for /api/* (empty = open dashboard)
 ```
 
 Optional deps for cold history: `pip install pyarrow duckdb` (features degrade to no-ops with a warning without them).
@@ -714,6 +735,16 @@ backupme db history "SELECT source_root, COUNT(*) FROM files GROUP BY source_roo
 ```
 
 Exit codes: `0` ok/idle, `1` partial/errors, `2` config/usage error.
+
+### Skip visibility and pause
+
+Every archive result (and its generation manifest) reports `excluded`
+(members matched by `exclude_members` globs) and `skipped_oversize` (members
+over `max_member_size_gb`) alongside `members`/`dupe`/`errors` — a
+restore-gap is always explainable from the manifest, not just log lines.
+On the Ingest page, **Pause** stops the worker between archives (queued
+archives are reported as `deferred`); while paused, `POST /api/ingest/scan`
+returns **409** — only **Resume** re-enables scans.
 
 ### Row economics
 

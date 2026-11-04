@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import struct
 import tempfile
@@ -8,6 +9,9 @@ from backupme.core import hasher as hasher_mod
 from backupme.core import compress as compress_mod
 from backupme.core import crypto as crypto_mod
 from backupme.core.database import execute, commit
+from backupme.log import get_logger
+
+log = get_logger("downloader")
 
 _BUNDLE_HEADER_FMT = struct.Struct(">32sQQI")
 
@@ -49,7 +53,7 @@ def _decrypt_if_needed(work_file: Path, dec: Path, st: dict, config) -> Path:
 
 
 def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int | None,
-                         st: dict, config, expected_hash: str | None = None) -> bytes:
+                         st: dict, config) -> bytes:
     """Download the full bundle, decrypt/decompress it, and extract the target bytes."""
     if offset is None or length is None or offset <= 0 or length <= 0:
         raise UnrecoverableChunkError(
@@ -92,7 +96,9 @@ def download_file(
         ).fetchone()
 
     if not file_row:
-        raise FileNotFoundError(f"File id={file_id} not found")
+        raise FileNotFoundError(
+            f"File id={file_id}" + (f" version={version}" if version is not None else "")
+            + " not found (or soft-deleted)")
 
     chunks = execute(
         "SELECT * FROM file_chunks WHERE file_id = ? ORDER BY seq",
@@ -105,73 +111,88 @@ def download_file(
     from backupme.config import load_config
     config = load_config()
 
-    Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     hasher = hashlib.sha256()
     total_written = 0
 
-    with open(dest_path, "wb") as fout:
-        for chunk in chunks:
-            blob_id = chunk["blob_id"]
-            storage_options = _find_chunk_storage(blob_id, backend_name)
-            if not storage_options:
-                storage_options = _find_chunk_storage(blob_id)
+    # Write to a sibling temp file and rename only on full success: a failed
+    # restore must never leave a partial file at the destination that could
+    # be mistaken for the restored data.
+    tmp_dest = dest.with_name(dest.name + f".part-{os.getpid()}")
+    try:
+        with open(tmp_dest, "wb") as fout:
+            for chunk in chunks:
+                blob_id = chunk["blob_id"]
+                storage_options = _find_chunk_storage(blob_id, backend_name)
+                if not storage_options:
+                    storage_options = _find_chunk_storage(blob_id)
 
-            data = None
-            for st in storage_options:
-                bk = None
-                for b in _get_all_backends(config):
-                    if b.name == st["backend_name"]:
-                        bk = b
-                        break
-                if bk is None:
-                    continue
-
-                try:
-                    remote_path = st["storage_path"]
-
-                    if blob_id.startswith("bundle/") and "@" in remote_path:
-                        bundle_path, range_spec = remote_path.split("@", 1)
-                        offset_str, len_str = range_spec.split(":", 1)
-                        offset = int(offset_str)
-                        length = int(len_str)
-                        expected_hash = blob_id.rsplit("/", 1)[-1]
-                        data = _extract_from_bundle(bk, bundle_path, offset, length, st, config, expected_hash)
-                    elif blob_id.startswith("bundle/"):
-                        # Old-style bundled entry fallback where remote_path has no @offset:length!
-                        expected_hash = blob_id.rsplit("/", 1)[-1]
-                        data = _extract_from_bundle(bk, remote_path, None, None, st, config, expected_hash)
-                    else:
-                        tmp_dir = Path(tempfile.mkdtemp())
-                        tmp = tmp_dir / "chunk_dl"
-                        try:
-                            bk.download(remote_path, str(tmp))
-                            work = _decrypt_if_needed(tmp, tmp_dir / "chunk_dec", st, config)
-                            data = work.read_bytes()
-                            if st["compression_algo"]:
-                                data = compress_mod.decompress(data, st["compression_algo"])
-                        finally:
-                            shutil.rmtree(str(tmp_dir), ignore_errors=True)
-
-                    if data is not None:
-                        expected_hash = blob_id.rsplit("/", 1)[-1]
-                        if hashlib.sha256(data).hexdigest() == expected_hash:
+                data = None
+                for st in storage_options:
+                    bk = None
+                    for b in _get_all_backends(config):
+                        if b.name == st["backend_name"]:
+                            bk = b
                             break
-                        data = None
-                except UnrecoverableChunkError:
-                    raise
-                except Exception:
-                    continue
+                    if bk is None:
+                        continue
 
-            if data is None:
-                raise RuntimeError(f"Failed to download chunk {blob_id}")
+                    try:
+                        remote_path = st["storage_path"]
 
-            fout.write(data)
-            hasher.update(data)
-            total_written += len(data)
+                        if blob_id.startswith("bundle/") and "@" in remote_path:
+                            bundle_path, range_spec = remote_path.split("@", 1)
+                            offset_str, len_str = range_spec.split(":", 1)
+                            offset = int(offset_str)
+                            length = int(len_str)
+                            data = _extract_from_bundle(bk, bundle_path, offset, length, st, config)
+                        elif blob_id.startswith("bundle/"):
+                            # Old-style bundled entry fallback where remote_path has no @offset:length!
+                            data = _extract_from_bundle(bk, remote_path, None, None, st, config)
+                        else:
+                            tmp_dir = Path(tempfile.mkdtemp())
+                            tmp = tmp_dir / "chunk_dl"
+                            try:
+                                bk.download(remote_path, str(tmp))
+                                work = _decrypt_if_needed(tmp, tmp_dir / "chunk_dec", st, config)
+                                data = work.read_bytes()
+                                if st["compression_algo"]:
+                                    data = compress_mod.decompress(data, st["compression_algo"])
+                            finally:
+                                shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
-    final_sha256 = hasher.hexdigest()
-    if final_sha256 != file_row["sha256"]:
-        raise RuntimeError(f"Integrity mismatch: expected {file_row['sha256']}, got {final_sha256}")
+                        if data is not None:
+                            expected_hash = blob_id.rsplit("/", 1)[-1]
+                            if hashlib.sha256(data).hexdigest() == expected_hash:
+                                break
+                            data = None
+                    except UnrecoverableChunkError:
+                        raise
+                    except Exception as e:
+                        log.debug("chunk %s: storage option %s failed: %s",
+                                  blob_id, st.get("backend_name"), e)
+                        continue
+
+                if data is None:
+                    raise RuntimeError(f"Failed to download chunk {blob_id}")
+
+                fout.write(data)
+                hasher.update(data)
+                total_written += len(data)
+
+        final_sha256 = hasher.hexdigest()
+        if final_sha256 != file_row["sha256"]:
+            raise RuntimeError(
+                f"Integrity mismatch: expected {file_row['sha256']}, got {final_sha256}")
+
+        os.replace(str(tmp_dest), str(dest))
+    except Exception:
+        try:
+            tmp_dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     return {"status": "ok", "path": dest_path, "sha256": final_sha256, "size": total_written}
 

@@ -224,6 +224,7 @@ def test_pause_defers_remaining_archives_mid_scan(client, env, monkeypatch):
     client.post("/api/ingest/resume")
     first_called = threading.Event()
     release = threading.Event()
+    original_ingest = ci.ingest_archive
 
     def slow_first(path, account, backends, config, **kw):
         first_called.set()
@@ -251,7 +252,9 @@ def test_pause_defers_remaining_archives_mid_scan(client, env, monkeypatch):
     ).fetchone()[0] == 0
 
     # Resume + re-scan ingests both archives for real.
-    monkeypatch.undo()
+    # (Targeted restore — monkeypatch.undo() would also undo the env
+    # fixture's BACKUPME_CONFIG/chdir patches.)
+    monkeypatch.setattr(ci, "ingest_archive", original_ingest)
     client.post("/api/ingest/resume")
     assert client.post("/api/ingest/scan", json={}).status_code == 200
     _wait_ingest_done(client, want_done=2)

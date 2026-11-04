@@ -242,13 +242,32 @@ backupme web --port 8080
 
 Then open `http://localhost:8080` in your browser.
 
+**Protecting the API (recommended beyond loopback).** By default the dashboard
+is open — safe because `backupme web` binds loopback-only and warns loudly if
+you bind elsewhere. When exposing the port (LAN, container, reverse proxy),
+set a bearer token; every `/api/*` request then requires
+`Authorization: Bearer <token>` (401 otherwise). Static pages stay public so
+the UI still loads:
+
+```bash
+backupme web --host 0.0.0.0 --token "$DASHBOARD_TOKEN"
+```
+
+or in `config.yaml`:
+
+```yaml
+web:
+  token: "{{DASHBOARD_TOKEN}}"    # empty = open dashboard (loopback-only)
+```
+
 ### 5.2 Dashboard Pages
 
 | Page | URL | What You Can Do |
 |---|---|---|
 | **Dashboard** | `/` | Overview: file count, dedup ratio, compression ratio, per-backend usage chart |
 | **Files** | `/files` | Searchable table of all files, download buttons, redundancy status |
-| **Backends** | `/backends` | Health status, free/total space, circuit-breaker state |
+| **Backends** | `/backends` | Health status, free/total space, circuit-breaker state, onboard/rebalance/drain |
+| **Ingest** | `/ingest` | cPanel drop-folder queue with live progress, staging usage vs budget, per-account generations, history queries, pause/resume |
 | **Logs** | `/logs` | Filterable operation log and recovery events |
 | **Database** | `/database` | Integrity status, snapshots list, generation/instance info |
 | **Report** | `/report` | Full integrity report with charts and recommendations |
@@ -267,6 +286,9 @@ curl http://localhost:8080/api/files?q=report
 
 # Get integrity report
 curl http://localhost:8080/api/report
+
+# With a token configured (see 5.1):
+curl -H "Authorization: Bearer $DASHBOARD_TOKEN" http://localhost:8080/api/status
 ```
 
 ---
@@ -553,6 +575,17 @@ backupme ingest-cpanel /srv/drop --dry-run --json   # what would happen
 backupme ingest-status                      # accounts, generations, dedup ratio, storage sizes
 ```
 
+Each archive result reports `excluded` (members matched by
+`exclude_members` globs) and `skipped_oversize` (members larger than
+`max_member_size_gb`) alongside `members`/`dupe`/`errors`; the generation
+manifest carries the same counters, so a restore-gap is always explainable
+from the manifest rather than only from log lines.
+
+On the Ingest page, **Pause** stops the worker between archives (queued
+archives are reported as `deferred` and the queue counters stay consistent).
+While paused, `POST /api/ingest/scan` returns **409** — a pause is explicit
+consent to not ingest, and only **Resume** re-enables scans.
+
 ### Restoring
 
 ```bash
@@ -671,6 +704,21 @@ backupme check-consistency
 
 Ensures all backends have consistent copies of mirrored files.
 
+### 8.7 Garbage Collection
+
+```bash
+backupme gc              # dry run: list orphaned remote objects per backend
+backupme gc --apply      # delete them
+```
+
+`gc` deletes remote objects (under `objects/` and `bundle/`) that the index no
+longer references — typically leftovers after retention purged old versions.
+Objects **younger than one hour are never candidates**: an upload lands on the
+backend before its database rows commit, so a just-written object can look
+unreferenced for a short window, and deleting it would corrupt the in-flight
+backup. Objects whose size listing carries no timestamp are skipped for the
+same reason (a leak is recoverable; a deleted live blob is not).
+
 ---
 
 ## 9. Troubleshooting
@@ -721,6 +769,11 @@ backupme report
 # If a backend is consistently corrupted, restore from another:
 backupme db restore --from healthy_backend
 ```
+
+Restores are **atomic**: the file is written to a temporary sibling and
+renamed into place only after every chunk downloaded and the final SHA-256
+matched. A failed restore leaves the destination untouched (a previous good
+copy survives) and no `.part-*` temp files behind.
 
 ### 9.4 "Operation log has pending entries"
 

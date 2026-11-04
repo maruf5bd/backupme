@@ -182,3 +182,14 @@ cpanel_ingest:
   account_pattern: ""           # optional regex; default derives account from folder/cpmove-NAME
   exclude_members: []           # glob patterns to skip, e.g. ["*/mail/*/cur/*"]
   max_member_size_gb: 5         # skip members larger than this
+
+# --- Web Dashboard ---
+# Binds loopback-only by default and is open (no auth) — safe on localhost.
+# When exposing the port beyond loopback, set a bearer token: every /api/*
+# request then requires "Authorization: Bearer <token>" (401 otherwise).
+# Static pages stay public so the UI still loads.
+web:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080
+  token: ""                     # empty = open dashboard; e.g. "{{ DASHBOARD_TOKEN }}"

@@ -37,3 +37,35 @@ def test_encrypted_row_without_key_raises_clearly(enc_env):
     cfg_path.write_text(cfg_path.read_text().replace("test.key", "gone.key"))
     with pytest.raises(RuntimeError, match="[Kk]ey"):
         restore_bytes(r["file_id"], enc_env)
+
+
+def test_failed_restore_leaves_no_partial_file(env, backends, monkeypatch):
+    """QA round D: a restore that fails mid-download must not leave a partial
+    or corrupt file at the destination — the previous good content survives
+    and no .part temp file leaks."""
+    from pathlib import Path
+    from backupme.backends.local import LocalBackend
+    r = backup_bytes(env, "atomic/a.txt", b"atomic " * 100, backends)
+    dest = env / "out" / "a.txt"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"PREVIOUS GOOD CONTENT")
+
+    def bad_download(self, remote_path, local_path):
+        Path(local_path).write_bytes(b"garbage")   # hash check will fail
+
+    original_download = LocalBackend.download
+    monkeypatch.setattr(LocalBackend, "download", bad_download)
+    with pytest.raises(RuntimeError):
+        download_file(r["file_id"], str(dest))
+
+    assert dest.read_bytes() == b"PREVIOUS GOOD CONTENT"
+    assert list(dest.parent.glob("*.part-*")) == []
+
+    # A later successful restore replaces the destination atomically.
+    # (Targeted restore — monkeypatch.undo() would also undo the env
+    # fixture's BACKUPME_CONFIG/chdir patches.)
+    monkeypatch.setattr(LocalBackend, "download", original_download)
+    out = download_file(r["file_id"], str(dest))
+    assert out["status"] == "ok"
+    assert dest.read_bytes() == b"atomic " * 100
+    assert list(dest.parent.glob("*.part-*")) == []

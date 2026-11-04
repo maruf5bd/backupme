@@ -18,10 +18,24 @@ def _referenced_remote_paths() -> dict[str, set[str]]:
     return refs
 
 
-def find_orphans(backends: list) -> dict[str, list[dict]]:
+_DEFAULT_MIN_AGE_SECONDS = 3600
+
+
+def find_orphans(backends: list, min_age_seconds: float = _DEFAULT_MIN_AGE_SECONDS) -> dict[str, list[dict]]:
     """Per backend: remote blob files (objects/, bundle/) the index no longer
-    references. Manifests and tree pointers are never candidates."""
+    references. Manifests and tree pointers are never candidates.
+
+    Objects younger than ``min_age_seconds`` are never candidates: an upload
+    lands on the backend before its DB rows commit, so a freshly written
+    object can look unreferenced for a short window (TOCTOU with in-flight
+    uploads). Deleting it would corrupt the file the uploader is about to
+    index. Files whose walk entry carries no mtime are also skipped —
+    a leak is recoverable, a deleted live blob is not.
+    """
+    import time
+
     refs = _referenced_remote_paths()
+    cutoff = time.time() - min_age_seconds
     orphans: dict[str, list[dict]] = {}
     for bk in backends:
         refs_bk = refs.get(bk.name, set())
@@ -32,16 +46,21 @@ def find_orphans(backends: list) -> dict[str, list[dict]]:
             log.warning("gc: cannot walk backend %s", bk.name, exc_info=True)
             continue
         for f in files:
-            if f["path"] not in refs_bk:
-                items.append(f)
+            if f["path"] in refs_bk:
+                continue
+            mtime = f.get("mtime")
+            if min_age_seconds > 0 and (mtime is None or mtime > cutoff):
+                continue
+            items.append(f)
         orphans[bk.name] = items
     return orphans
 
 
-def run_gc(backends: list, apply: bool = False) -> dict:
+def run_gc(backends: list, apply: bool = False,
+           min_age_seconds: float = _DEFAULT_MIN_AGE_SECONDS) -> dict:
     """Dry-run by default: report orphaned remote objects per backend.
-    With apply=True, delete them."""
-    orphans = find_orphans(backends)
+    With apply=True, delete them. See find_orphans for the min-age grace."""
+    orphans = find_orphans(backends, min_age_seconds=min_age_seconds)
     result = {}
     for name, items in orphans.items():
         entry = {"orphans": len(items), "bytes": sum(f["size"] for f in items)}
