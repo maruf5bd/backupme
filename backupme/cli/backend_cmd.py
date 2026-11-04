@@ -78,10 +78,32 @@ def backend():
 
 
 @backend.command("add")
-@click.argument("type", type=click.Choice(list(_BACKEND_FIELDS)), required=False)
+@click.argument("backend_type", type=click.Choice(list(_BACKEND_FIELDS)), required=False)
+@click.option("--name", help="Backend name")
+@click.option("--host", help="Host address")
+@click.option("--port", type=int, help="Port number")
+@click.option("--username", help="Username")
+@click.option("--password", help="Password")
+@click.option("--key-file", help="SSH key file path")
+@click.option("--path", help="Remote path")
+@click.option("--share", help="SMB share name")
+@click.option("--remote", help="rclone remote name")
+@click.option("--base-url", help="9drive base URL")
+@click.option("--api-key", help="9drive API key")
+@click.option("--email", help="Email address")
+@click.option("--refresh-token", help="Refresh token")
+@click.option("--folder", help="Folder name")
+@click.option("--bwlimit", help="Bandwidth limit")
+@click.option("--quota", help="Quota")
+@click.option("--priority", type=int, help="Priority")
+@click.option("--weight", type=int, help="Weight")
+@click.option("--test/--no-test", default=True, help="Test connection after adding")
 @click.pass_context
-def backend_add(ctx, backend_type):
-    """Add a storage backend interactively"""
+def backend_add(ctx, backend_type, name, host, port, username, password, key_file,
+                path, share, remote, base_url, api_key, email, refresh_token,
+                folder, bwlimit, quota, priority, weight, test):
+    """Add a storage backend. With --name/--host/--port/etc. it runs
+    non-interactively; otherwise it prompts for each field."""
     if not backend_type:
         click.echo("Available types:")
         for t in _BACKEND_FIELDS:
@@ -89,15 +111,30 @@ def backend_add(ctx, backend_type):
         backend_type = click.prompt("Backend type", type=click.Choice(list(_BACKEND_FIELDS)))
 
     fields = _BACKEND_FIELDS[backend_type]
+    field_map = {
+        "name": name, "host": host, "port": port, "username": username,
+        "password": password, "key_file": key_file, "path": path, "share": share,
+        "remote": remote, "base_url": base_url, "api_key": api_key,
+        "email": email, "refresh_token": refresh_token, "folder": folder,
+        "bwlimit": bwlimit, "quota": quota, "priority": priority, "weight": weight,
+    }
+
     entry = {}
-    for name, typ, default in fields:
-        default_str = str(default) if default else ""
-        val = click.prompt(f"  {name}", default=default_str)
+    interactive = all(v is None for v in field_map.values())
+
+    for field_name, typ, default in fields:
+        val = field_map.get(field_name)
+        if val is None:
+            if interactive:
+                default_str = str(default) if default else ""
+                val = click.prompt(f"  {field_name}", default=default_str)
+            else:
+                val = default
         if not val and typ == int:
             val = default
         else:
             val = typ(val) if val else typ()
-        if name in ("password",) and val and (not isinstance(val, str) or not val.startswith("{{")):
+        if name == "password" and val and (not isinstance(val, str) or not val.startswith("{{")):
             env_key = f"{backend_type.upper()}_{val.upper()}"
             click.echo(f"  Tip: use $env:{env_key} instead of plaintext password")
             use_env = click.confirm(f"  Use env var {env_key}?", default=True)
@@ -110,7 +147,7 @@ def backend_add(ctx, backend_type):
             continue
         if not val:
             continue
-        entry[name] = val
+        entry[field_name] = val
 
     cfg_path = ctx.obj.get("config_path", "config.yaml")
     if not os.path.exists(cfg_path):
