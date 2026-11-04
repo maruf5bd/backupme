@@ -2396,6 +2396,12 @@ def register_routes(app, config: cfgmod.Config):
                 _ingest_state["completed"] = True
                 _ingest_state["current_archive"] = ""
                 _ingest_state["current_member"] = ""
+            # Release this worker's SQLite handle before the thread returns.
+            # The handle is per-thread (threading.local), so it stays open
+            # after the worker finishes and keeps the DB file locked — on
+            # Windows that is a real lock (WinError 32) and breaks teardown
+            # of any test that reopens the same DB file.
+            db.close_connection()
 
     @app.get("/api/ingest/status")
     async def api_ingest_status():
@@ -2646,6 +2652,7 @@ def register_routes(app, config: cfgmod.Config):
             with _rebalance_lock:
                 _rebalance_state["running"] = False
                 _rebalance_state["completed"] = True
+            db.close_connection()
 
     @app.post("/api/backends/onboard")
     async def api_backends_onboard(data: dict = Body(...)):
