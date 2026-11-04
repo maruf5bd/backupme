@@ -3,9 +3,13 @@ import io
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 from .base import StorageBackend
+from backupme.log import get_logger
+
+log = get_logger("backends.ftp_sftp")
 
 
 class FTPBackend(StorageBackend):
@@ -126,8 +130,8 @@ class FTPBackend(StorageBackend):
                     items.extend(self._walk_recursive(rel_path))
                 else:
                     items.append({"path": rel_path, "size": parsed["size"], "mtime": parsed["mtime"]})
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("ftp walk: skipping %s: %s", prefix or "/", e)
         return items
 
     @staticmethod
@@ -377,21 +381,43 @@ class SFTPBackend(StorageBackend):
             pass
         return result
 
+    def _listdir_retry(self, prefix: str = ""):
+        """listdir_attr with reconnect+backoff: a dropped SFTP session mid-walk
+        must retry instead of silently truncating the listing."""
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                if prefix:
+                    return self._sftp.listdir_attr(prefix)
+                return self._sftp.listdir_attr()
+            except Exception as e:
+                last_exc = e
+                time.sleep(2 * (attempt + 1))
+                try:
+                    self._reconnect()
+                except Exception:
+                    pass
+        raise last_exc if last_exc else RuntimeError("listdir failed")
+
     def walk(self, prefix: str = "") -> list[dict]:
+        self.walk_errors = 0
         return self._walk_recursive(prefix)
 
     def _walk_recursive(self, prefix: str = "") -> list[dict]:
         self._reconnect()
         items = []
         try:
-            for attr in self._sftp.listdir_attr(prefix) if prefix else self._sftp.listdir_attr():
+            for attr in self._listdir_retry(prefix):
                 rel = f"{prefix}/{attr.filename}" if prefix else attr.filename
                 if stat.S_ISDIR(attr.st_mode):
                     items.extend(self._walk_recursive(rel))
                 else:
                     items.append({"path": rel, "size": attr.st_size, "mtime": attr.st_mtime})
-        except Exception:
-            pass
+        except Exception as e:
+            # Never silently truncate: record the gap so callers can detect
+            # an incomplete listing (walk_errors > 0 means partial data).
+            self.walk_errors = getattr(self, "walk_errors", 0) + 1
+            log.warning("sftp walk: skipping %s after retries: %s", prefix or "/", e)
         return items
 
     def free_space(self) -> int | None:
