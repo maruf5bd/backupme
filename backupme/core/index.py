@@ -144,6 +144,21 @@ def next_version_seq(source_root: str, relative_path: str) -> int:
     return 1
 
 
+def rebuild_fts() -> int:
+    """Repopulate files_fts from the files table. Returns the number of rows
+    indexed. Used after a manifest-based rebuild (FTS5 has no triggers)."""
+    execute("DELETE FROM files_fts")
+    rows = execute(
+        "SELECT id, relative_path, content_text FROM files WHERE deleted_at IS NULL"
+    ).fetchall()
+    executemany(
+        "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
+        [(r[0], r[1], r[2]) for r in rows],
+    )
+    commit()
+    return len(rows)
+
+
 def hard_delete_file(file_id: int):
     """Hard-delete a file row and its chunk mappings, unreferencing blobs."""
     from backupme.core import dedup as dedup_mod

@@ -680,6 +680,14 @@ def restore_cpanel(
     restored: list[dict] = []
     for row in rows:
         rel = row["relative_path"].replace("/", os.sep)
+        # Defense in depth: ingest sanitizes member names, but a poisoned or
+        # legacy index row must not write outside the restore root.
+        p = Path(rel)
+        if ".." in p.parts or p.is_absolute() or (len(rel) >= 2 and rel[1] == ":"):
+            restored.append({"relative_path": row["relative_path"],
+                             "status": "error",
+                             "error": "unsafe member path rejected"})
+            continue
         dest = out_base / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:

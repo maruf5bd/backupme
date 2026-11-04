@@ -649,6 +649,18 @@ def register_routes(app, config: cfgmod.Config):
                     rel = rel[len(path_filter)+1:].lstrip("\\/")
                 elif rel == path_filter:
                     rel = os.path.basename(rel)
+            # Defense in depth: the index is expected to hold clean relative
+            # paths (scan + sanitize_member enforce this), but a poisoned or
+            # legacy row must not write outside the restore destination.
+            p = Path(rel)
+            if ".." in p.parts or p.is_absolute() or (len(rel) >= 2 and rel[1] == ":"):
+                with _restore_lock:
+                    _restore_state["errors"] += 1
+                    if len(_restore_state["error_list"]) < 500:
+                        _restore_state["error_list"].append(f"{rel}: unsafe path skipped")
+                    _restore_state["done"] += 1
+                _emit_restore()
+                continue
             out_path = dest / rel
             with _restore_lock:
                 _restore_state["current"] = rel
