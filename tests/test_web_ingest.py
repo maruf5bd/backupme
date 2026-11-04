@@ -316,3 +316,35 @@ def test_rebalance_stream_sse_terminates(client, env, backends):
     assert last["running"] is False
     assert (last.get("result") or {}).get("status") == "ok"
     assert last.get("backend") == "second"
+
+
+# ---------------------------------------------------------------------------
+# Web auth token (QA M1) — optional bearer guard over /api/*
+# ---------------------------------------------------------------------------
+
+def test_api_unauthenticated_by_default(client):
+    """No web.token configured -> the dashboard is open (loopback-only today)."""
+    r = client.get("/api/status")
+    assert r.status_code == 200
+
+
+def test_api_requires_bearer_token_when_configured(env):
+    from backupme.config import load_config
+    cfg = load_config()
+    cfg.web.token = "secret-token-123"
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    # Static pages are public; the admin API is not.
+    assert client.get("/").status_code == 200
+    assert client.get("/api/status").status_code == 401
+
+    # Wrong token -> 401.
+    assert client.get(
+        "/api/status", headers={"authorization": "Bearer nope"}).status_code == 401
+
+    # Correct token -> 200.
+    r = client.get(
+        "/api/status", headers={"authorization": "Bearer secret-token-123"})
+    assert r.status_code == 200
+    assert "backend" in r.json() or "backends" in r.json() or "db" in r.json()

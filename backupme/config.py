@@ -147,6 +147,14 @@ class BackupDef:
     move: bool = False
 
 @dataclass
+class WebConfig:
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 8080
+    token: str = ""          # empty = open dashboard (loopback-only today)
+
+
+@dataclass
 class Config:
     backups: list[BackupDef] = field(default_factory=list)
     backends: dict[str, list[BackendDef]] = field(default_factory=dict)
@@ -160,6 +168,7 @@ class Config:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)
+    web: WebConfig = field(default_factory=WebConfig)
 
 
 def _resolve_env(value: str) -> str:
