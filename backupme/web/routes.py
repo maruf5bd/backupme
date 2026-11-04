@@ -2296,7 +2296,6 @@ def register_routes(app, config: cfgmod.Config):
 
     _ingest_state = {
         "running": False,
-        "paused": False,
         "drop_root": "",
         "started_at": 0,
         "current_archive": "",
@@ -2473,7 +2472,12 @@ def register_routes(app, config: cfgmod.Config):
             last_snapshot = ""
             while True:
                 with _ingest_lock:
-                    snapshot = json.dumps(_ingest_state)
+                    snap = dict(_ingest_state)
+                # The pause Event is the single source of truth; the state
+                # dict never stores it (a stale copy would mislead SSE
+                # consumers into reading "paused": false mid-pause).
+                snap["paused"] = _ingest_paused.is_set()
+                snapshot = json.dumps(snap)
                 if snapshot != last_snapshot:
                     yield f"data: {snapshot}\n\n"
                     last_snapshot = snapshot
@@ -2573,6 +2577,8 @@ def register_routes(app, config: cfgmod.Config):
                 account, generation, member_filter=member_filter, out=out,
                 retar=retar,
                 backends=_get_backends(), config=_config_as_dict())
+            if result.get("status") == "error":
+                return JSONResponse(result, status_code=404)
             return JSONResponse(result)
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)

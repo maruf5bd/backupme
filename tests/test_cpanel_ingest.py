@@ -500,3 +500,33 @@ def test_exclude_members_globs_skip_matching_members(env, backends, ingest_cfg):
     manifests = list((env / "manifest").glob("*.json"))
     mdata = json.loads(manifests[0].read_text())
     assert mdata["excluded"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 14. restore edge cases (QA coverage M5)
+# ---------------------------------------------------------------------------
+
+def test_restore_unknown_account_is_error_not_ok(env, backends, ingest_cfg):
+    """QA M5: a restore of something that was never ingested must be
+    detectably failed — status 'error', not ok/0."""
+    r = cpanel_ingest.restore_cpanel("ghost", 99, out=str(env / "restore_out"),
+                                     backends=backends, config=ingest_cfg)
+    assert r["status"] == "error"
+    assert "no ingested generation 99 for account 'ghost'" in r["error"]
+    assert r["members"] == 0
+
+    # Unknown generation of a REAL account is the same error.
+    r2 = cpanel_ingest.restore_cpanel("acct", 42, out=str(env / "restore_out"),
+                                      backends=backends, config=ingest_cfg)
+    assert r2["status"] == "error"
+
+
+def test_restore_filter_matching_nothing_is_ok_zero(drop_root, env, backends, ingest_cfg):
+    """The generation exists; the filter simply selects nothing — a
+    legitimate empty result, not an error."""
+    cpanel_ingest.ingest_tree(str(drop_root), backends, ingest_cfg)
+    r = cpanel_ingest.restore_cpanel("acct", 1, member_filter="nomatch/*",
+                                     out=str(env / "restore_out"),
+                                     backends=backends, config=ingest_cfg)
+    assert r["status"] == "ok"
+    assert r["members"] == 0

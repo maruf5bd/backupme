@@ -173,6 +173,12 @@ def test_api_ingest_restore_generation(client, env, backends):
     bad = client.post("/api/ingest/restore-generation", json={"account": "", "generation": 0})
     assert bad.status_code == 400
 
+    # Unknown account/generation -> 404 with the error payload (QA M5).
+    ghost = client.post("/api/ingest/restore-generation",
+                        json={"account": "ghost", "generation": 7})
+    assert ghost.status_code == 404
+    assert ghost.json()["status"] == "error"
+
 
 def test_pause_resume(client):
     assert client.post("/api/ingest/pause").json()["status"] == "paused"

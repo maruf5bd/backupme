@@ -44,6 +44,8 @@ def _human_restore(result):
     click.echo(f"generation: {result.get('generation')}")
     click.echo(f"members restored: {result.get('members')}")
     click.echo(f"out: {result.get('out')}")
+    if result.get("error"):
+        click.echo(f"error: {result['error']}")
     if result.get("retar"):
         click.echo(f"retar: {result['retar']}")
 

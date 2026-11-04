@@ -660,6 +660,19 @@ def restore_cpanel(
         (source_root, generation),
     ).fetchall()
 
+    if not rows:
+        # Unknown account or generation: scripts must be able to detect a
+        # failed restore, so this is an error (CLI exits 1), not ok/0.
+        return {
+            "status": "error",
+            "error": f"no ingested generation {generation} for account '{account}'",
+            "account": account,
+            "generation": generation,
+            "members": 0,
+            "out": str(Path(out) / account),
+            "detail": [],
+        }
+
     if member_filter:
         rows = [r for r in rows if fnmatch.fnmatch(r["relative_path"], member_filter)]
 
@@ -682,7 +695,7 @@ def restore_cpanel(
                              "status": "error", "error": str(e)})
 
     result = {
-        "status": "ok",
+        "status": "ok" if all(r["status"] == "ok" for r in restored) else "partial",
         "account": account,
         "generation": generation,
         "members": len([r for r in restored if r["status"] == "ok"]),

@@ -101,14 +101,14 @@ def test_ingest_cpanel_redundancy_flag(env, backends):
 
 
 def test_restore_cpanel_missing(env, backends):
-    """Pins today's contract: an unknown account/generation restores 0 members
-    and exits 0 (weak signal — see QA M5 product follow-up)."""
+    """Unknown account/generation is an error: exit 1 with a clear message
+    (QA M5 — scripts must be able to detect a failed restore)."""
     runner = CliRunner()
     result = runner.invoke(cli, ["--db", str(env / "test.db"), "restore-cpanel",
                                  "nope", "1"])
     assert "Traceback" not in result.output
-    assert result.exit_code == 0
-    assert "members restored: 0" in result.output
+    assert result.exit_code == 1
+    assert "no ingested generation 1 for account 'nope'" in result.output
 
 
 def test_ingest_status(env, backends):
