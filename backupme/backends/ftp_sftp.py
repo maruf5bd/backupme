@@ -224,21 +224,81 @@ class SFTPBackend(StorageBackend):
         self._transport = None
 
     def connect(self) -> bool:
+        """Connect to the SFTP server.
+
+        Tries key-based authentication first (if ``key_file`` is set), then
+        password authentication. Hetzner Storage Boxes rate-limit new sessions,
+        so a short retry loop absorbs transient "Unable to open channel"
+        failures right after a previous connection was closed.
+        """
+        import time
+        import paramiko
+
+        def _open_transport() -> paramiko.Transport:
+            # A bare Transport has no TCP timeout; create a pre-configured
+            # socket and cap the SSH banner/auth exchanges too — without
+            # banner_timeout a blackholed server hangs transport.connect()
+            # forever (it waits on a threading.Event, not on the socket).
+            import socket
+            sock = socket.create_connection((self.host, self.port), timeout=15)
+            t = paramiko.Transport(sock)
+            # Older paramiko versions don't take these as constructor kwargs;
+            # they are plain instance attributes on Transport.
+            t.banner_timeout = 15
+            t.auth_timeout = 15
+            return t
+
+        def _open_channel(transport) -> None:
+            # SFTPClient.from_transport opens the session channel; retry the
+            # whole open because a rate-limited server rejects new channels
+            # for a few seconds.
+            last_exc: Exception | None = None
+            for attempt in range(4):
+                try:
+                    self._sftp = paramiko.SFTPClient.from_transport(transport)
+                    return
+                except Exception as e:  # SSHException: Unable to open channel
+                    last_exc = e
+                    time.sleep(2 * (attempt + 1))
+            raise last_exc if last_exc else RuntimeError("sftp channel open failed")
+
         try:
-            import paramiko
-            transport = paramiko.Transport((self.host, self.port))
             if self.key_file:
-                key = paramiko.RSAKey.from_private_key_file(
-                    os.path.expanduser(self.key_file)
-                )
-                transport.connect(username=self.username, pkey=key)
-            else:
+                try:
+                    key = paramiko.RSAKey.from_private_key_file(
+                        os.path.expanduser(self.key_file)
+                    )
+                    transport = _open_transport()
+                    transport.connect(username=self.username, pkey=key)
+                    _open_channel(transport)
+                    self._transport = transport
+                    self._sftp.chdir(self.base_path)
+                    self._connected = True
+                    return True
+                except Exception as ke:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "SFTP key auth failed for %s: %s", self.name, ke
+                    )
+                    self.disconnect()
+            try:
+                transport = _open_transport()
                 transport.connect(username=self.username, password=self.password)
-            self._transport = transport
-            self._sftp = paramiko.SFTPClient.from_transport(transport)
-            self._sftp.chdir(self.base_path)
-            self._connected = True
-            return True
+                _open_channel(transport)
+                self._transport = transport
+                self._sftp.chdir(self.base_path)
+                self._connected = True
+                return True
+            except Exception as pe:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "SFTP password auth failed for %s: %s", self.name, pe
+                )
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+                return False
         except Exception:
             return False
 

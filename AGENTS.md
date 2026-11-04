@@ -26,6 +26,11 @@ BackupMe is a Python 3.13 (Windows) deduplicating backup tool: click CLI, FastAP
 - **Web** (`web/routes.py`): all routes registered inside `register_routes(app, config)`; background tasks use module-scoped state dicts + `threading.Lock` + SSE `StreamingResponse` (see `_scan_state`, `_ingest_state`, `_rebalance_state`). Route order matters: specific paths like `/api/backends/usage` must be registered BEFORE `/api/backends/{name}`.
 - **Config** (`config.py`): dataclass per YAML section wired via `_filter_fields` (unknown keys warn, never crash). Sections: chunking, compression, encryption, verification, retention, database, notifications, ingest(cpanel_ingest), DBLifecycleConfig(db_lifecycle), SchedulerConfig(scheduler).
 
+## Known broken (fix first — ignoring is NOT allowed)
+- **hostraj Gdrive backend data loss**: backend root is `H:\Backupme` (fixed from stale `M:\My Drive\backupme` / `R:\`). Only 8,201 of 66,227 recorded blobs (12.4%) are present; 58,026 are gone (97,275 blobs have no copy on any other backend). Root cause: the Gdrive mount letter changed (R:→M:→H:) and the old mounts' data was not migrated. Recovery path: identify which of the 97,275 orphan blobs are still needed (ref_count>0) and re-upload from source if available; otherwise mark as lost. Do NOT silently continue backup/restore work that depends on these blobs.
+- **Corrupt/placeholder archives in DB** (4 rows): `K:\256\Downloads (3)\a.zip` (484 B), `D:\...\Work Files\2FA.7z` (192 B), `D:\...\Compressed\2020-12-03--21-37-48.tar.gz` (1,861 B), `D:\...\Compressed\bitexchanger_v20.zip` (414 B) — all too small to be real archives; download OK (SHA-256 matches) but extraction fails. Fix by investigating origin (truncated download, junk leftover) and purging or re-acquiring the source before declaring archive-processing work done.
+- Rule: never skip, silence, or work around a failing component. If something is broken, fix the root cause first; if genuinely unfixable in this session, record it here with root cause and the concrete unblock condition, then get explicit user approval before proceeding without it.
+
 ## Common Workflows
 - Run tests: `/c/Python313/python.exe -m pytest tests/ -q` (pytest.ini adds `-q --basetemp=test_tmp_backend/pytest`)
 - Single file: `/c/Python313/python.exe -m pytest tests/test_cpanel_ingest.py -q`
