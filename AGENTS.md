@@ -9,7 +9,7 @@ defect register (brain/defects.md), decision log (brain/decisions.md), lessons (
 Update these on every significant finding, fix, or decision; date entries; append, don't rewrite.
 
 ## Project Overview
-See @README.md for project overview and @package.json for available npm/pnpm commands for this project.
+See @README.md for the project overview. Commands are Python/CLI, not npm: tests via `/c/Python313/python.exe -m pytest tests/ -q`, CLI entry `backupme` (see MANUAL.md §10 Command Reference).
 
 BackupMe is a Python 3.13 (Windows) deduplicating backup tool: click CLI, FastAPI web dashboard, pluggable storage backends (local, ftp, sftp, smb, ssh, rclone, 9drive), SQLite hot store + monthly Zstd Parquet cold history (DuckDB queries).
 
