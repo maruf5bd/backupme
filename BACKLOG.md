@@ -95,6 +95,39 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
 - **B15 [C] Fix AGENTS.md project-overview reference** to `@package.json` npm commands — this is
   a Python project; point to pytest/CLI commands instead.
 
+## QA-found defects (2026-11-05, black-box sweep — `diagnostics/qa_dashboard_report.txt`)
+
+- **D1 [W] P0 — `web.token` from config.yaml is silently ignored (unauthenticated admin API).**
+  `config.py load_config()` has no `web` branch, so `WebConfig.token` stays `""`; every `/api/*`
+  route serves 200 to tokenless and wrong-token requests. The gate itself is correct when armed
+  via `backupme web --token` (verified 401/200 across 21 GETs + writes + malformed headers).
+  Fix: wire the `web` section in load_config (same pattern as other sections) + regression test
+  asserting a token from config.yaml rejects bad bearers.
+  Done when: token set in config.yaml → 401 without/with wrong bearer, 200 with correct one.
+
+- **D2 [F] P0 — health scan false "unreachable" verdicts for compressed bundles.**
+  `_health_scan_backend` compares member PLAINTEXT byte ranges (offset+len) against the parent
+  bundle's COMPRESSED on-disk size, flagging members `members_unreachable` that `download_file`
+  restores perfectly (2/2 proven). Same class of error as the Gdrive misdiagnosis: member
+  reachability must be decided against the parent's size AND the member's recorded compressed
+  length semantics — decompress-hash is the definitive check for borderline cases.
+  Done when: zero false members_unreachable on fixture data with compressed parents; scan result
+  cross-checked against restore success.
+
+- **D3 [F] P1 — search 500s on user-typed punctuation.**
+  `GET /api/files?q=delta.txt`, `/api/search?q=` and the `/files?q=` page: raw `q` goes into
+  sqlite FTS5 `MATCH` → `fts5: syntax error near "."` escapes as 500.
+  Fix: escape/quote the query (or fallback to LIKE on FTS error); never 500 on user input.
+  Done when: punctuation queries return 200 (or clean 4xx), verified by test.
+
+- **D4 [F] P1 — `/api/browse` cannot descend forward-slash paths.**
+  Handler builds a backslash `LIKE 'sub\%'` prefix; all cPanel-ingested rows use forward slashes
+  (`sanitize_member`), so `?root=R&path=sub` returns empty dirs/files.
+  Done when: browse works for both separator styles; test covers a forward-slash tree.
+
+- **D5 [F] P1 — unknown file id returns 500 instead of 4xx** on `GET /api/download/{id}` and
+  `/api/files/{id}/preview`. Map missing rows to 404 with a JSON error body.
+
 ## Wiring checks that PASSED (do not re-litigate)
 
 - Route order: `/api/backends/usage` (1256) correctly precedes `/api/backends/{name}` (1277);
