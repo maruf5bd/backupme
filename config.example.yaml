@@ -1,0 +1,139 @@
+# BackupMe configuration reference — every section and option the code reads.
+# tests/test_config_example_sync.py pins this file to the config dataclasses:
+# if you add/remove a field in backupme/config.py, update this file in the same commit.
+# Real config lives in config.yaml (gitignored); {{ENV_VAR}} placeholders are supported.
+
+backends:
+  # Entries are lists per backend type. Common fields per type below; unknown
+  # keys in backend entries are ignored (see BackendDef for the full field list).
+  local:
+  - name: my_local
+    path: ./backup_storage
+    priority: 100        # higher = preferred for new uploads
+    quota: 500GB         # optional
+  sftp:
+  - name: my_sftp
+    host: host.example.com
+    port: 22
+    username: user
+    password: ""         # or key_file (non-encrypted keys)
+    key_file: ""
+    path: /
+    priority: 90
+  # Other types:
+  smb:
+  - name: my_smb
+    type: smb
+    share: //server/backup
+    username: user
+    password: ""
+    priority: 60
+  ssh:
+  - name: my_ssh
+    type: ssh
+    host: host.example.com
+    port: 22
+    username: user
+    password: ""
+    key_file: ""
+    remote: /srv/backupme
+    priority: 70
+  rclone:
+  - name: my_rclone
+    type: rclone
+    remote: gdrive:backupme
+    bwlimit: 10MB
+    priority: 80
+  9drive:
+  - name: my_9drive
+    type: 9drive
+    base_url: https://api.example.com
+    api_key: ""
+    email: user@example.com
+    refresh_token: ""
+    folder: backupme
+    priority: 85
+
+backups:
+- source: C:\data\to\backup   # directory to back up
+  exclude: []                 # fnmatch globs, e.g. ["*.tmp", "node_modules/**"]
+  mirror: false               # true = deletions propagate to storage
+  backend: null               # pin to one backend name (null = all by priority)
+  move: false
+
+chunking:
+  enabled: true
+  min_size: 10MB              # files below this are stored as single blobs
+  chunk_size: 64MB            # content-defined chunk target size
+
+compression:
+  enabled: true
+  default_algorithm: zstd
+  default_level: 3
+  min_size: 1024              # do not compress below this many bytes
+  intelligent_skip: true      # skip already-compressed media by extension
+  overrides: []               # e.g. - {ext: ".jpg", skip: true}
+
+encryption:
+  enabled: false
+  method: aes-256-gcm
+  key_file: ""                # required when enabled
+
+verification:
+  enabled: true
+  retries: 3
+  verify_restore:             # periodic restore spot-checks
+    count: 5                  # files per pass
+    schedule: weekly
+
+retention:
+  enabled: true
+  versions: 5                 # max versions per file
+  daily: 7
+  weekly: 4
+  monthly: 12
+
+database:
+  snapshots:
+    interval: 3600            # seconds between DB snapshots
+    retention: 168            # snapshots kept (hours' worth)
+  auto_backup:
+    enabled: true
+    backends: all             # or a backend name for DB replica copies
+  lifecycle:                  # or use the top-level db_lifecycle section
+    purge_grace_days: 14
+    cold_export_after_days: 30
+    parquet_dir: parquet
+    parquet_compression: zstd
+    parquet_compression_level: 3
+
+db_lifecycle: {}              # optional top-level override of database.lifecycle
+
+scheduler:
+  interval: 3600              # backup pass interval (seconds)
+  ingest_interval: 300
+  gc_interval_days: 7
+  verify_interval_days: 1
+
+notifications:
+  on_failure: true
+  desktop: true
+
+cpanel_ingest:
+  enabled: false
+  drop_root: ""               # directory holding cpmove-*.tar.gz
+  staging_dir: staging
+  staging_budget_gb: 10.0
+  max_parallel: 2
+  bandwidth_limit_mbps: 0.0   # 0 = unlimited
+  keep_raw: 0                 # generations of raw archive to keep (0 = none)
+  raw_backend: ""             # backend name for raw archives ("" = default set)
+  account_pattern: ""         # optional regex override for account detection
+  exclude_members: []         # fnmatch globs, e.g. ["**/.cpanel/**"]
+  max_member_size_gb: 5.0
+
+web:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080
+  token: ""                   # set a value to require Bearer auth on /api/*

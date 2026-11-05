@@ -14,12 +14,13 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   Done when: every backend `walk()` exposes a `walk_errors` counter, retries transient list
   failures, and logs skips; a test asserts truncation surfaces instead of passing silently.
 
-- **B02 [W] Dead config keys warn on every startup — wire or remove.**
-  `config.yaml` has `chunking.parallel_uploads` and `verification.fallback_on_fail`; the
+- **B02 [W] Dead config keys warn on every startup — wire or remove.** **DONE (2026-11-05)**
+  `config.yaml` had `chunking.parallel_uploads` and `verification.fallback_on_fail`; the
   dataclasses (`config.py` ChunkingConfig/VerificationConfig) dropped them, so every process
-  prints "ignoring unknown option(s)". Decide per key: re-implement (parallel uploads is a real
-  perf feature) or delete from config + document in config example.
-  Done when: zero startup warnings; example config matches dataclasses exactly (test compares).
+  printed "ignoring unknown option(s)". Resolution: keys removed from config.yaml (zero
+  behavior change, verified no warnings on load); committed `config.example.yaml` documents
+  every section incl. the nested `verify_restore` shape and all backend types;
+  `tests/test_config_example_sync.py` pins example <-> dataclass drift both directions.
 
 - **B03 [W] Destructive endpoints need token + explicit confirm.**
   `POST /api/server/restart` (routes.py:1470), `POST /api/db/restore` (1480),
