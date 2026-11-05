@@ -3,6 +3,11 @@
 ## Language (mandatory)
 - ALWAYS write in English. This applies to everything an agent produces: chat responses, commit messages, code comments, docstrings, docs (README/MANUAL/config examples), plan/brief/report files, progress ledgers, and subagent dispatch prompts. Never output any other language, in any file or message.
 
+## Brain (living knowledge base)
+See @brain/README.md — operational status (brain/status.md), wiring status (brain/wiring.md),
+defect register (brain/defects.md), decision log (brain/decisions.md), lessons (brain/lessons.md).
+Update these on every significant finding, fix, or decision; date entries; append, don't rewrite.
+
 ## Project Overview
 See @README.md for project overview and @package.json for available npm/pnpm commands for this project.
 
