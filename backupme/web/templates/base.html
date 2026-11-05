@@ -51,6 +51,10 @@
           <i data-lucide="hard-drive"></i>
           <span>DB Health</span>
         </a>
+        <a href="/health" class="nav-link {% if request.url.path.startswith('/health') %}active{% endif %}">
+          <i data-lucide="heart-pulse"></i>
+          <span>Data Health</span>
+        </a>
         <a href="/report" class="nav-link {% if request.url.path == '/report' %}active{% endif %}">
           <i data-lucide="shield-check"></i>
           <span>Report</span>

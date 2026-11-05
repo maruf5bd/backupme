@@ -1,0 +1,424 @@
+{% extends "base.html" %}
+{% block title %}Data Health{% endblock %}
+{% block breadcrumb %}Data Health{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1><i data-lucide="heart-pulse" style="width:28px;height:28px;"></i> Data Health</h1>
+  <div class="page-header-actions">
+    <button class="btn btn-secondary btn-sm" onclick="refreshHealth()">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> Refresh
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="startHealthScan(this)">
+      <i data-lucide="radar" style="width:14px;height:14px;"></i> Scan Storage
+    </button>
+  </div>
+</div>
+
+<!-- Summary Stat Cards -->
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-icon green">
+      <i data-lucide="files" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Live Files</div>
+    <div class="stat-value" id="dh-live-files">{{ "{:,}".format(summary.live_files) }}</div>
+    <div class="stat-sub">not soft-deleted</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon {% if summary.no_chunks_files %}red{% else %}blue{% endif %}">
+      <i data-lucide="file-x" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">No Chunks</div>
+    <div class="stat-value" id="dh-no-chunks">{{ "{:,}".format(summary.no_chunks_files) }}</div>
+    <div class="stat-sub">content never stored</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon {% if summary.missing_blob_files %}red{% else %}blue{% endif %}">
+      <i data-lucide="unplug" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Broken Blob Files</div>
+    <div class="stat-value" id="dh-missing-blob-files">{{ "{:,}".format(summary.missing_blob_files) }}</div>
+    <div class="stat-sub">blob has no storage row</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon {% if summary.missing_blobs %}red{% else %}cyan{% endif %}">
+      <i data-lucide="boxes" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Missing Blobs</div>
+    <div class="stat-value" id="dh-missing-blobs">{{ "{:,}".format(summary.missing_blobs) }}</div>
+    <div class="stat-sub">referenced, zero storage rows</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon yellow">
+      <i data-lucide="copy" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Same-Name Groups</div>
+    <div class="stat-value" id="dh-same-name-groups">{{ "{:,}".format(summary.same_name_groups) }}</div>
+    <div class="stat-sub">{{ "{:,}".format(summary.same_name_files) }} files share a basename</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon {% if summary.purge_candidates %}red{% else %}purple{% endif %}">
+      <i data-lucide="trash-2" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Purge Candidates</div>
+    <div class="stat-value" id="dh-purge-candidates">{{ "{:,}".format(summary.purge_candidates) }}</div>
+    <div class="stat-sub">can never restore</div>
+  </div>
+</div>
+
+<div class="grid-2 mb-4">
+  <!-- Per-backend blob counts -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Blobs per Backend</span>
+    </div>
+    {% if summary.backend_blobs %}
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr><th>Backend</th><th>Blobs</th><th>Stored</th></tr>
+        </thead>
+        <tbody>
+          {% for b in summary.backend_blobs %}
+          <tr>
+            <td class="font-semibold">{{ b.backend }}</td>
+            <td>{{ "{:,}".format(b.blobs) }}</td>
+            <td class="text-sm text-muted" data-bytes="{{ b.stored_bytes }}">{{ "{:,}".format(b.stored_bytes) }} B</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding: 2rem;"><p>No blobs stored yet</p></div>
+    {% endif %}
+  </div>
+
+  <!-- Physical reachability scan -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Physical Reachability Scan</span>
+      <span class="badge badge-gray" id="dh-scan-badge">loading…</span>
+    </div>
+    <div class="card-body" id="dh-scan-body">
+      <div class="empty-state" style="padding: 1.5rem;"><p>Loading scan state…</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- Drill-down: issue buckets -->
+<div class="grid-2 mb-4">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Files with No Chunks</span>
+      <span class="badge badge-gray" id="dh-no-chunks-total">…</span>
+    </div>
+    <div class="card-body">
+      <div id="dh-issues-no_chunks"><div class="empty-state" style="padding: 1.5rem;"><p>Loading…</p></div></div>
+      <div class="flex justify-between" style="margin-top: 0.5rem;">
+        <button class="btn btn-ghost btn-xs" onclick="issuesPage('no_chunks', -1)">← Prev</button>
+        <button class="btn btn-ghost btn-xs" onclick="issuesPage('no_chunks', 1)">Next →</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Files with Missing Blobs</span>
+      <span class="badge badge-gray" id="dh-missing-blob-total">…</span>
+    </div>
+    <div class="card-body">
+      <div id="dh-issues-missing_blob"><div class="empty-state" style="padding: 1.5rem;"><p>Loading…</p></div></div>
+      <div class="flex justify-between" style="margin-top: 0.5rem;">
+        <button class="btn btn-ghost btn-xs" onclick="issuesPage('missing_blob', -1)">← Prev</button>
+        <button class="btn btn-ghost btn-xs" onclick="issuesPage('missing_blob', 1)">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="grid-2 mb-4">
+  <!-- Same-name groups -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Same-Name Groups</span>
+      <span class="badge badge-gray" id="dh-same-name-total">…</span>
+    </div>
+    <div class="card-body">
+      <div id="dh-same-name"><div class="empty-state" style="padding: 1.5rem;"><p>Loading…</p></div></div>
+      <div class="flex justify-between" style="margin-top: 0.5rem;">
+        <button class="btn btn-ghost btn-xs" onclick="sameNamePage(-1)">← Prev</button>
+        <button class="btn btn-ghost btn-xs" onclick="sameNamePage(1)">Next →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Purge candidates -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Purge Candidates</span>
+      <div class="flex items-center gap-2">
+        <span class="badge badge-gray" id="dh-purge-total">…</span>
+        <button class="btn btn-danger btn-xs" id="dh-purge-btn" onclick="purgeSelected()" disabled>
+          <i data-lucide="trash-2" style="width:12px;height:12px;"></i> Purge Selected
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <p class="text-xs text-muted" style="margin-bottom: 0.5rem;">
+        Files that can never restore (no chunks, or every blob missing from storage).
+        Purging soft-deletes the rows; content blobs are dropped later by GC.
+      </p>
+      <div id="dh-purge"><div class="empty-state" style="padding: 1.5rem;"><p>Loading…</p></div></div>
+      <div class="flex justify-between" style="margin-top: 0.5rem;">
+        <button class="btn btn-ghost btn-xs" onclick="purgePage(-1)">← Prev</button>
+        <button class="btn btn-ghost btn-xs" onclick="purgePage(1)">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const PAGE_SIZE = 25;
+  const issueState = { no_chunks: { offset: 0 }, missing_blob: { offset: 0 } };
+  const sameNameState = { offset: 0 };
+  const purgeState = { offset: 0 };
+  const selectedForPurge = new Set();
+
+  function fileLink(id, text) {
+    return '<a href="/files?q=' + encodeURIComponent(id) + '" style="color: var(--accent);" class="text-sm">' +
+           App.escapeHtml(String(text)) + '</a>';
+  }
+
+  function issueTable(items) {
+    if (!items.length) return '<div class="empty-state" style="padding: 1.5rem;"><p>Nothing here — all clear</p></div>';
+    let h = '<div class="table-wrapper"><table><thead><tr><th>File</th><th>Source Root</th><th>Size</th><th>Why</th></tr></thead><tbody>';
+    for (const it of items) {
+      h += '<tr>' +
+        '<td>' + fileLink(it.file_id, '#' + it.file_id + ' ' + it.relative_path) + '</td>' +
+        '<td class="text-sm text-muted">' + App.escapeHtml(it.source_root) + '</td>' +
+        '<td class="text-sm">' + App.formatBytes(it.size) + '</td>' +
+        '<td class="text-xs text-muted">' + App.escapeHtml(it.why) + '</td>' +
+        '</tr>';
+    }
+    return h + '</tbody></table></div>';
+  }
+
+  async function loadIssues(reason) {
+    const st = issueState[reason];
+    const data = await App.fetchAPI('/api/health/issues?reason=' + encodeURIComponent(reason) +
+                                    '&limit=' + PAGE_SIZE + '&offset=' + st.offset);
+    document.getElementById('dh-issues-' + reason).innerHTML = issueTable(data.items);
+    const badge = document.getElementById(reason === 'no_chunks' ? 'dh-no-chunks-total' : 'dh-missing-blob-total');
+    badge.textContent = data.total + ' file(s)';
+    badge.className = 'badge ' + (data.total > 0 ? 'badge-yellow' : 'badge-green');
+  }
+
+  function issuesPage(reason, delta) {
+    issueState[reason].offset = Math.max(0, issueState[reason].offset + delta * PAGE_SIZE);
+    loadIssues(reason);
+  }
+
+  async function loadSameName() {
+    const data = await App.fetchAPI('/api/health/same-name?limit=' + PAGE_SIZE + '&offset=' + sameNameState.offset);
+    document.getElementById('dh-same-name-total').textContent = data.total_groups + ' group(s)';
+    document.getElementById('dh-same-name-total').className = 'badge ' + (data.total_groups > 0 ? 'badge-yellow' : 'badge-green');
+    if (!data.groups.length) {
+      document.getElementById('dh-same-name').innerHTML =
+        '<div class="empty-state" style="padding: 1.5rem;"><p>No duplicate basenames</p></div>';
+      return;
+    }
+    let h = '';
+    for (const g of data.groups) {
+      h += '<div style="margin-bottom: 0.75rem;">' +
+        '<div class="font-semibold text-sm" style="margin-bottom: 0.25rem;">' +
+        App.escapeHtml(g.base_name) + ' <span class="badge badge-gray">' + g.file_count + ' files</span></div>' +
+        '<div class="table-wrapper"><table><tbody>';
+      for (const m of g.members) {
+        h += '<tr><td>' + fileLink(m.file_id, m.relative_path) + '</td>' +
+             '<td class="text-sm text-muted">' + App.escapeHtml(m.source_root) + '</td>' +
+             '<td class="text-sm">' + App.formatBytes(m.size) + '</td></tr>';
+      }
+      h += '</tbody></table></div></div>';
+    }
+    document.getElementById('dh-same-name').innerHTML = h;
+  }
+
+  function sameNamePage(delta) {
+    sameNameState.offset = Math.max(0, sameNameState.offset + delta * PAGE_SIZE);
+    loadSameName();
+  }
+
+  function purgeTable(items) {
+    if (!items.length) return '<div class="empty-state" style="padding: 1.5rem;"><p>No purge candidates</p></div>';
+    let h = '<div class="table-wrapper"><table><thead><tr><th></th><th>File</th><th>Source Root</th><th>Why</th></tr></thead><tbody>';
+    for (const it of items) {
+      const checked = selectedForPurge.has(it.file_id) ? ' checked' : '';
+      h += '<tr>' +
+        '<td><input type="checkbox" class="purge-check" data-id="' + it.file_id + '"' + checked + ' onchange="purgeCheckChanged(this)"></td>' +
+        '<td>' + fileLink(it.file_id, '#' + it.file_id + ' ' + it.relative_path) + '</td>' +
+        '<td class="text-sm text-muted">' + App.escapeHtml(it.source_root) + '</td>' +
+        '<td class="text-xs text-muted">' + App.escapeHtml(it.why) + '</td>' +
+        '</tr>';
+    }
+    return h + '</tbody></table></div>';
+  }
+
+  function purgeCheckChanged(box) {
+    const id = parseInt(box.dataset.id, 10);
+    if (box.checked) selectedForPurge.add(id);
+    else selectedForPurge.delete(id);
+    document.getElementById('dh-purge-btn').disabled = selectedForPurge.size === 0;
+  }
+
+  async function loadPurge() {
+    const data = await App.fetchAPI('/api/health/purge-candidates?limit=' + PAGE_SIZE + '&offset=' + purgeState.offset);
+    document.getElementById('dh-purge').innerHTML = purgeTable(data.items);
+    const badge = document.getElementById('dh-purge-total');
+    badge.textContent = data.total + ' file(s)';
+    badge.className = 'badge ' + (data.total > 0 ? 'badge-red' : 'badge-green');
+    document.getElementById('dh-purge-btn').disabled = selectedForPurge.size === 0;
+  }
+
+  function purgePage(delta) {
+    purgeState.offset = Math.max(0, purgeState.offset + delta * PAGE_SIZE);
+    loadPurge();
+  }
+
+  function purgeSelected() {
+    const ids = Array.from(selectedForPurge);
+    if (!ids.length) return;
+    App.Modal.confirm(
+      'Purge ' + ids.length + ' file(s)?',
+      'These rows will be soft-deleted (deleted_at set, blob refs dropped). This cannot be undone from the dashboard.',
+      async () => {
+        try {
+          const resp = await App.fetchAPI('/api/health/purge', {
+            method: 'POST',
+            body: JSON.stringify({ confirm: true, file_ids: ids }),
+          });
+          App.Toast.success(resp.results.filter(r => r.status === 'ok').length + ' file(s) purged');
+          selectedForPurge.clear();
+          await refreshHealth();
+        } catch (e) { /* fetchAPI already toasted the error */ }
+      },
+      'Purge', true);
+  }
+
+  function renderScan(scan, age, running) {
+    const badge = document.getElementById('dh-scan-badge');
+    const body = document.getElementById('dh-scan-body');
+    if (running) {
+      badge.textContent = 'scanning…';
+      badge.className = 'badge badge-yellow';
+    } else if (scan.completed) {
+      badge.textContent = age == null ? 'done' : ('last: ' + Math.round(age) + 's ago');
+      badge.className = 'badge badge-green';
+    } else {
+      badge.textContent = 'never scanned';
+      badge.className = 'badge badge-gray';
+    }
+    let h = '';
+    const names = Object.keys(scan.results || {});
+    if (!names.length && !(scan.remote || []).length && !(scan.errors || []).length && !running) {
+      h += '<div class="empty-state" style="padding: 1.5rem;"><p>No scan has run yet — click Scan Storage</p></div>';
+    }
+    for (const name of names) {
+      const r = scan.results[name];
+      h += '<div style="margin-bottom: 0.75rem;">' +
+        '<div class="font-semibold text-sm">' + App.escapeHtml(name) + ' <span class="badge badge-gray">local</span></div>' +
+        '<div class="text-xs text-muted" style="margin-bottom: 0.25rem;">' + App.escapeHtml(r.root || '') + '</div>' +
+        '<div class="table-wrapper"><table><tbody>' +
+        '<tr><td>Objects</td><td>' + r.objects_ok + ' ok / ' + r.objects_missing.length + ' missing / ' +
+          r.objects_size_mismatch.length + ' size mismatch</td></tr>' +
+        '<tr><td>Bundles</td><td>' + r.bundles_ok + ' ok / ' + r.bundles_missing.length + ' missing</td></tr>' +
+        '<tr><td>Members</td><td>' + r.members_ok + ' reachable / ' + r.members_unreachable.length + ' unreachable</td></tr>' +
+        '</tbody></table></div>';
+      if (r.objects_missing.length) {
+        h += '<details class="text-xs text-muted"><summary>' + r.objects_missing.length + ' missing object file(s)</summary>' +
+          r.objects_missing.map(p => '<div class="font-mono text-xs">' + App.escapeHtml(p) + '</div>').join('') + '</details>';
+      }
+      if (r.bundles_missing.length) {
+        h += '<details class="text-xs text-muted"><summary>' + r.bundles_missing.length + ' missing bundle file(s)</summary>' +
+          r.bundles_missing.map(p => '<div class="font-mono text-xs">' + App.escapeHtml(p) + '</div>').join('') + '</details>';
+      }
+      if (r.members_unreachable.length) {
+        h += '<details class="text-xs text-muted"><summary>' + r.members_unreachable.length + ' unreachable member(s)</summary>' +
+          r.members_unreachable.map(m => '<div class="font-mono text-xs">' + App.escapeHtml(m.blob_id) + ' — ' + App.escapeHtml(m.reason) + '</div>').join('') + '</details>';
+      }
+      for (const err of (r.errors || [])) {
+        h += '<div class="text-xs text-red">' + App.escapeHtml(err) + '</div>';
+      }
+      h += '</div>';
+    }
+    for (const rm of (scan.remote || [])) {
+      h += '<div class="text-sm text-muted" style="margin-bottom: 0.5rem;">' +
+        App.escapeHtml(rm.name) + ' <span class="badge badge-gray">' + App.escapeHtml(rm.type) + '</span> — not scanned (remote)</div>';
+    }
+    for (const err of (scan.errors || [])) {
+      h += '<div class="text-xs text-red">' + App.escapeHtml(err) + '</div>';
+    }
+    body.innerHTML = h;
+  }
+
+  async function refreshHealth() {
+    const data = await App.fetchAPI('/api/health/data');
+    const s = data.summary;
+    document.getElementById('dh-live-files').textContent = App.formatNumber(s.live_files);
+    document.getElementById('dh-no-chunks').textContent = App.formatNumber(s.no_chunks_files);
+    document.getElementById('dh-missing-blob-files').textContent = App.formatNumber(s.missing_blob_files);
+    document.getElementById('dh-missing-blobs').textContent = App.formatNumber(s.missing_blobs);
+    document.getElementById('dh-same-name-groups').textContent = App.formatNumber(s.same_name_groups);
+    document.getElementById('dh-purge-candidates').textContent = App.formatNumber(s.purge_candidates);
+    renderScan(data.scan, data.scan_age_seconds, data.scan_running);
+    issueState.no_chunks.offset = 0;
+    issueState.missing_blob.offset = 0;
+    sameNameState.offset = 0;
+    purgeState.offset = 0;
+    await Promise.all([loadIssues('no_chunks'), loadIssues('missing_blob'), loadSameName(), loadPurge()]);
+  }
+
+  async function startHealthScan(btn) {
+    btn.disabled = true;
+    try {
+      await App.fetchAPI('/api/health/scan', { method: 'POST' });
+      App.Toast.success('Storage scan started');
+      // Live-update while the background scan runs.
+      let source;
+      try {
+        source = new EventSource('/api/health/scan/stream');
+        source.onmessage = (ev) => {
+          const s = JSON.parse(ev.data);
+          renderScan(s, s.finished_at ? (Date.now() / 1000 - s.finished_at) : null, s.running);
+          if (s.completed && !s.running) {
+            source.close();
+            btn.disabled = false;
+            refreshHealth();
+          }
+        };
+        source.onerror = () => { source.close(); btn.disabled = false; };
+      } catch (e) {
+        source = null;
+      }
+      if (!source) {
+        // Fallback: poll until the scan completes.
+        const poll = setInterval(async () => {
+          const d = await App.fetchAPI('/api/health/data');
+          if (!d.scan_running) {
+            clearInterval(poll);
+            btn.disabled = false;
+            refreshHealth();
+          }
+        }, 1000);
+      }
+    } catch (e) {
+      btn.disabled = false;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', refreshHealth);
+  if (window.lucide) lucide.createIcons();
+</script>
+{% endblock %}
