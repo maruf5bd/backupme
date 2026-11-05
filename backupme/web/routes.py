@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import sqlite3
 import stat
 import sys
 import threading
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from fastapi import Request, Query, Body, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
+from starlette.background import BackgroundTask
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
@@ -33,6 +35,35 @@ def _be_to_dict(be: cfgmod.BackendDef) -> dict:
                                          "password", "key_file", "share", "remote", "bwlimit",
                                          "quota", "priority", "weight", "base_url", "api_key",
                                          "email", "refresh_token", "folder")}
+
+
+def _fts_phrase(q: str) -> str:
+    """Quote a user query as a single FTS5 phrase so punctuation is never
+    parsed as query syntax (qa defect D3: 'delta.txt' used to raise
+    'fts5: syntax error near "."'). Escaped double quotes keep the result a
+    valid string token for any input."""
+    return '"' + q.replace('"', '""') + '"'
+
+
+def _search_files_like(q: str, limit: int = 100) -> list[dict]:
+    """Plain LIKE fallback for queries FTS5 refuses to parse — user input
+    must never turn into a 500."""
+    pattern = f"%{q}%"
+    rows = db.execute(
+        "SELECT * FROM files WHERE deleted_at IS NULL "
+        "AND (relative_path LIKE ? OR content_text LIKE ?) "
+        "ORDER BY id LIMIT ?",
+        (pattern, pattern, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _search_files_safe(q: str, limit: int = 100) -> list[dict]:
+    """FTS search with a hard LIKE fallback on sqlite parse errors."""
+    try:
+        return index_mod.search_files(_fts_phrase(q))
+    except sqlite3.OperationalError:
+        return _search_files_like(q, limit=limit)
 
 
 def register_routes(app, config: cfgmod.Config):
@@ -165,7 +196,7 @@ def register_routes(app, config: cfgmod.Config):
                     ).fetchall()
                 files = [dict(r) for r in rows]
             else:
-                files = index_mod.search_files(q)
+                files = _search_files_safe(q, limit=limit)
         else:
             files = index_mod.get_all_files(limit=limit, offset=offset, backend=backend or None)
         if backend and q:
@@ -455,7 +486,7 @@ def register_routes(app, config: cfgmod.Config):
     @app.get("/api/files")
     async def api_files(q: str = "", backend: str = "", limit: int = 100, offset: int = 0):
         if q:
-            all_files = index_mod.search_files(q)
+            all_files = _search_files_safe(q, limit=limit)
         else:
             all_files = index_mod.get_all_files(limit=limit, offset=offset, backend=backend or None)
         if backend and q:
@@ -482,35 +513,47 @@ def register_routes(app, config: cfgmod.Config):
                 ).fetchall()
                 return JSONResponse({"root": "", "path": "", "drives": [r["source_root"] for r in rows], "dirs": [], "files": []})
 
-            prefix = path.rstrip("\\/") + "\\" if path else ""
-            like_pattern = prefix + "%"
+            # Rows in the DB may use either separator: the scan worker stores
+            # os.sep (backslash on Windows) while cPanel ingest normalizes to
+            # forward slashes, so match both prefix styles (qa defect D4).
+            base = path.replace("\\", "/").strip("/") if path else ""
+            base_bs = base.replace("/", "\\") if base else ""
+            like_fs = (base + "/%") if base else "%"
+            like_bs = (base_bs + "\\%") if base else "%"
 
             # Find immediate subdirectories
             rows = db.execute(
-                "SELECT DISTINCT relative_path FROM files WHERE source_root = ? AND relative_path LIKE ? AND deleted_at IS NULL",
-                (root, like_pattern),
+                "SELECT DISTINCT relative_path FROM files WHERE source_root = ? "
+                "AND (relative_path LIKE ? OR relative_path LIKE ?) AND deleted_at IS NULL",
+                (root, like_fs, like_bs),
             ).fetchall()
 
             dirs_set = set()
             files_list = []
             for r in rows:
                 rel = r["relative_path"]
-                remainder = rel[len(prefix):] if prefix else rel
+                # Both prefixes have the same length, so slicing by the
+                # normalized base works for either separator style.
+                remainder = rel[len(base):].lstrip("\\/") if base else rel
                 if "\\" in remainder or "/" in remainder:
                     # Has subdirectory
                     subdir = remainder.split("\\")[0].split("/")[0]
                     dirs_set.add(subdir)
                 else:
-                    # Direct file
-                    files_list.append(rel)
+                    # Direct file at this level: keep the LEAF, the full rel
+                    # would be double-prefixed in the detail lookup below.
+                    files_list.append(remainder)
 
-            # Get file details for direct files
+            # Get file details for direct files (exact match in either style)
             file_details = []
             for fname in sorted(files_list):
-                fpath = prefix + fname if prefix else fname
+                fpath_fs = (base + "/" + fname) if base else fname
+                fpath_bs = (base_bs + "\\" + fname) if base else fname
                 frow = db.execute(
-                    "SELECT id, relative_path, sha256, size, mtime, created_at FROM files WHERE source_root = ? AND relative_path = ? AND deleted_at IS NULL ORDER BY version_seq DESC LIMIT 1",
-                    (root, fpath),
+                    "SELECT id, relative_path, sha256, size, mtime, created_at FROM files "
+                    "WHERE source_root = ? AND relative_path IN (?, ?) AND deleted_at IS NULL "
+                    "ORDER BY version_seq DESC LIMIT 1",
+                    (root, fpath_fs, fpath_bs),
                 ).fetchone()
                 if frow:
                     file_details.append(dict(frow))
@@ -899,12 +942,17 @@ def register_routes(app, config: cfgmod.Config):
                 "SELECT * FROM files WHERE content_text LIKE ? AND deleted_at IS NULL LIMIT 50",
                 (f"%{q}%",),
             ).fetchall()
-        else:
+            return JSONResponse([dict(r) for r in rows])
+        # Quoted-phrase MATCH + LIKE fallback: raw user input must never
+        # surface as a 500 via an fts5 syntax error (qa defect D3).
+        try:
             rows = db.execute(
                 "SELECT f.* FROM files f INNER JOIN files_fts ON f.id = files_fts.rowid "
                 "WHERE files_fts MATCH ? AND f.deleted_at IS NULL ORDER BY rank LIMIT 50",
-                (q,),
+                (_fts_phrase(q),),
             ).fetchall()
+        except sqlite3.OperationalError:
+            return JSONResponse(_search_files_like(q, limit=50))
         return JSONResponse([dict(r) for r in rows])
 
     # ── API: Post actions ────────────────────────────────────────
@@ -986,6 +1034,17 @@ def register_routes(app, config: cfgmod.Config):
     async def api_download(file_id: int):
         import tempfile
         tmp = Path(tempfile.mkdtemp()) / f"dl_{file_id}"
+        # Unknown / soft-deleted id: 404 with a JSON error body, never a 500
+        # (qa defect D5). Other download failures still map to 500 below.
+        row = db.execute(
+            "SELECT id FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,)
+        ).fetchone()
+        if row is None:
+            tmp.unlink(missing_ok=True)
+            return JSONResponse(
+                {"error": f"File id={file_id} not found (or soft-deleted)"},
+                status_code=404,
+            )
         try:
             result = downloader_mod.download_file(file_id, str(tmp))
             if result["status"] != "ok":
@@ -996,7 +1055,9 @@ def register_routes(app, config: cfgmod.Config):
                 path=str(tmp),
                 filename=filename,
                 media_type="application/octet-stream",
-                background=lambda: tmp.unlink(missing_ok=True),
+                # A bare lambda is not awaitable: starlette responses require
+                # a BackgroundTask (raised TypeError on every download before).
+                background=BackgroundTask(tmp.unlink, missing_ok=True),
             )
         except Exception as e:
             tmp.unlink(missing_ok=True)
@@ -1006,6 +1067,17 @@ def register_routes(app, config: cfgmod.Config):
     async def api_file_preview(file_id: int):
         import tempfile
         tmp = Path(tempfile.mkdtemp()) / f"prev_{file_id}"
+        # Unknown / soft-deleted id: 404 with a JSON error body, never a 500
+        # (qa defect D5). Other read failures still map to 500 below.
+        row = db.execute(
+            "SELECT id FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,)
+        ).fetchone()
+        if row is None:
+            tmp.unlink(missing_ok=True)
+            return JSONResponse(
+                {"status": "error", "message": f"File id={file_id} not found (or soft-deleted)"},
+                status_code=404,
+            )
         try:
             result = downloader_mod.download_file(file_id, str(tmp))
             if result["status"] != "ok":
@@ -2785,6 +2857,7 @@ def register_routes(app, config: cfgmod.Config):
             "objects_checked": 0, "objects_ok": 0,
             "objects_missing": [], "objects_size_mismatch": [],
             "bundles_checked": 0, "bundles_ok": 0, "bundles_missing": [],
+            "bundles_size_mismatch": [],
             "members_checked": 0, "members_ok": 0, "members_unreachable": [],
             "errors": [],
         }
@@ -2814,7 +2887,8 @@ def register_routes(app, config: cfgmod.Config):
                 if expected and actual_size != expected:
                     result[f"{bucket}_size_mismatch"].append(entry["path"])
             if entry["is_bundle_parent"]:
-                parent_status[entry["path"]] = (exists, actual_size)
+                parent_status[entry["path"]] = (exists, actual_size,
+                                                int(entry.get("pt_size") or 0))
         for m in plan.get("members", []):
             result["members_checked"] += 1
             parent = m["parent"]
@@ -2825,16 +2899,21 @@ def register_routes(app, config: cfgmod.Config):
                     "reason": "parent bundle has no storage row",
                 })
                 continue
-            exists, size = info
+            exists, size, pt_size = info
             if not exists:
                 result["members_unreachable"].append({
                     "blob_id": m["blob_id"], "parent": parent,
                     "reason": "parent bundle missing",
                 })
-            elif size is not None and size < m["offset"] + m["length"]:
+            elif pt_size and pt_size < m["offset"] + m["length"]:
+                # Member ranges are offsets into the parent bundle's PLAINTEXT
+                # stream, so the reachability check must use blobs.pt_size —
+                # never the compressed on-disk size, which is typically smaller
+                # and produced false data-loss alarms for every compressed
+                # bundle (qa defect D2).
                 result["members_unreachable"].append({
                     "blob_id": m["blob_id"], "parent": parent,
-                    "reason": (f"parent bundle size {size} smaller than "
+                    "reason": (f"parent bundle plaintext size {pt_size} smaller than "
                                f"offset+length {m['offset'] + m['length']}"),
                 })
             else:

@@ -328,12 +328,18 @@ def local_scan_plan(backend_names: list[str]) -> dict:
     where ``plain`` holds one entry per distinct non-member storage_path
     (object blobs and bundle parents) and ``members`` holds bundle-member
     byte ranges that must resolve through their parent bundle file.
+
+    Plain entries carry ``pt_size`` (plaintext size from ``blobs``) next to
+    ``stored_size`` (on-disk/compressed size): member byte ranges are offsets
+    into the parent bundle's PLAINTEXT stream, so reachability must be judged
+    against ``pt_size``, never the compressed on-disk size.
     """
     plan: dict[str, dict] = {}
     for name in backend_names:
         rows = execute(
-            "SELECT blob_id, storage_path, stored_size FROM blob_storage "
-            "WHERE backend_name = ?",
+            "SELECT bs.blob_id, bs.storage_path, bs.stored_size, b.pt_size "
+            "FROM blob_storage bs LEFT JOIN blobs b ON b.blob_id = bs.blob_id "
+            "WHERE bs.backend_name = ?",
             (name,),
         ).fetchall()
         plain: dict[str, dict] = {}
@@ -344,8 +350,12 @@ def local_scan_plan(backend_names: list[str]) -> dict:
                 entry = plain.setdefault(r["storage_path"], {
                     "path": r["storage_path"],
                     "stored_size": int(r["stored_size"] or 0),
+                    "pt_size": int(r["pt_size"] or 0),
                     "blob_id": r["blob_id"],
-                    "is_bundle_parent": r["blob_id"].startswith("bundle/"),
+                    # Bundle parents carry a bundle/ blob_id (uploader style);
+                    # the storage_path prefix guards against id variants.
+                    "is_bundle_parent": r["blob_id"].startswith("bundle/")
+                                        or r["storage_path"].startswith("bundle/"),
                 })
                 # Same path advertised by several blob rows: keep the largest
                 # expected size so a truncated file still gets flagged.

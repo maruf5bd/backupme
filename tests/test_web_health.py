@@ -478,3 +478,110 @@ def test_parse_member_path():
     assert dh.parse_member_path("bundle/aa@8:") is None
     assert dh.parse_member_path("bundle/aa@-1:5") is None
     assert dh.parse_member_path("") is None
+
+
+# ---------------------------------------------------------------------------
+# Compressed parent bundles (qa defect D2)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def compressed_bundle_ids(env, backends):
+    """Compressed parent bundle dataset:
+
+    - parent bundle whose PLAINTEXT tar stream (blobs.pt_size = 200) is larger
+      than its compressed on-disk file (stored_size = 100 bytes written). Its
+      member range 150..190 lies beyond the compressed size but inside the
+      plaintext stream, so it must NOT be flagged unreachable (qa defect D2:
+      the old scan compared member ranges against the compressed size).
+    - member whose parent bundle has no blob_storage row at all, which MUST
+      still be flagged as 'parent bundle has no storage row'.
+    """
+    backend = next(b for b in backends if b.name == "test_local")
+    root = Path(backend.base_path)
+    backend_name = backend.name
+    ids = {"backend": backend_name}
+    with write_txn() as conn:
+        # Compressed parent: 200-byte plaintext stream, 100 bytes on disk.
+        # blob_id mirrors the uploader: bundle/<a>/<b>/<sha>, storage_path
+        # appends the compression extension.
+        p3_sha = _sha("tar3")
+        p3 = f"bundle/{p3_sha[:2]}/{p3_sha[2:4]}/{p3_sha}"
+        parent_path = p3 + ".zstd"
+        conn.execute("INSERT INTO blobs (blob_id, pt_size, ref_count) VALUES (?,?,1)",
+                     (p3, 200))
+        conn.execute(
+            "INSERT INTO blob_storage (blob_id, backend_name, storage_path, stored_size, "
+            "stored_sha256, compression_algo) VALUES (?,?,?,?,?,'zstd')",
+            (p3, backend_name, parent_path, 100, _sha(parent_path)))
+        assert _write_backend_file(root, parent_path, b"Z" * 100) == 100
+        m3 = f"{p3}/{_sha('mem3')}"
+        conn.execute("INSERT INTO blobs (blob_id, pt_size, ref_count) VALUES (?,?,1)",
+                     (m3, 40))
+        conn.execute(
+            "INSERT INTO blob_storage (blob_id, backend_name, storage_path, stored_size, stored_sha256) "
+            "VALUES (?,?,?,?,?)", (m3, backend_name, f"{parent_path}@150:40", 40, _sha(parent_path)))
+        fid = conn.execute(
+            "INSERT INTO files (source_root, relative_path, sha256, size, version_group) "
+            "VALUES ('bundles', 'three.dat', ?, 40, 'vg-m3')", (_sha("three"),)
+        ).lastrowid
+        conn.execute("INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) "
+                     "VALUES (?, 0, ?, 0, 40)", (fid, m3))
+        ids["member_compressed"] = fid
+        ids["member_compressed_blob"] = m3
+        ids["compressed_parent_path"] = parent_path
+
+        # Member whose parent bundle has NO storage row at all.
+        p4_sha = _sha("tar4")
+        p4 = f"bundle/{p4_sha[:2]}/{p4_sha[2:4]}/{p4_sha}"
+        orphan_parent_path = p4
+        m4 = f"{p4}/{_sha('mem4')}"
+        conn.execute("INSERT INTO blobs (blob_id, pt_size, ref_count) VALUES (?,?,1)",
+                     (m4, 6))
+        conn.execute(
+            "INSERT INTO blob_storage (blob_id, backend_name, storage_path, stored_size, stored_sha256) "
+            "VALUES (?,?,?,?,?)",
+            (m4, backend_name, f"{orphan_parent_path}@0:6", 6, _sha(orphan_parent_path)))
+        fid = conn.execute(
+            "INSERT INTO files (source_root, relative_path, sha256, size, version_group) "
+            "VALUES ('bundles', 'four.dat', ?, 6, 'vg-m4')", (_sha("four"),)
+        ).lastrowid
+        conn.execute("INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) "
+                     "VALUES (?, 0, ?, 0, 6)", (fid, m4))
+        ids["member_no_parent_row"] = fid
+        ids["member_no_parent_row_blob"] = m4
+        ids["orphan_parent_path"] = orphan_parent_path
+    return ids
+
+
+def test_scan_plan_carries_plaintext_parent_size(env, backends, compressed_bundle_ids):
+    plan = dh.local_scan_plan([compressed_bundle_ids["backend"]])[compressed_bundle_ids["backend"]]
+    parents = [e for e in plan["plain"] if e["is_bundle_parent"]]
+    assert len(parents) == 1
+    parent = parents[0]
+    assert parent["path"] == compressed_bundle_ids["compressed_parent_path"]
+    assert parent["pt_size"] == 200          # plaintext tar stream
+    assert parent["stored_size"] == 100      # compressed on-disk size
+    member = next(m for m in plan["members"]
+                  if m["blob_id"] == compressed_bundle_ids["member_compressed_blob"])
+    assert (member["offset"], member["length"]) == (150, 40)
+    assert member["parent"] == compressed_bundle_ids["compressed_parent_path"]
+
+
+def test_scan_compressed_parent_members_not_flagged(client, compressed_bundle_ids):
+    """Member ranges are plaintext offsets: with a compressed parent the
+    on-disk size is smaller than offset+length, yet the member restores fine —
+    it must not be reported unreachable (qa defect D2)."""
+    assert client.post("/api/health/scan").status_code == 200
+    data = _wait_scan(client)
+    res = data["scan"]["results"][compressed_bundle_ids["backend"]]
+    assert res["bundles_checked"] == 1
+    assert res["bundles_ok"] == 1
+    assert res["bundles_missing"] == []
+    assert res["bundles_size_mismatch"] == []
+    assert res["members_checked"] == 2
+    # The compressed-parent member is reachable.
+    assert res["members_ok"] == 1
+    unreachable = {u["blob_id"]: u["reason"] for u in res["members_unreachable"]}
+    assert set(unreachable) == {compressed_bundle_ids["member_no_parent_row_blob"]}
+    assert unreachable[compressed_bundle_ids["member_no_parent_row_blob"]] == \
+        "parent bundle has no storage row"
