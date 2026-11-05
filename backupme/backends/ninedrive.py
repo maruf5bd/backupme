@@ -7,6 +7,9 @@ from pathlib import Path
 import httpx
 
 from .base import StorageBackend
+from backupme.log import get_logger
+
+log = get_logger("backends.ninedrive")
 
 
 class NineDriveError(RuntimeError):
@@ -66,7 +69,8 @@ class NineDriveBackend(StorageBackend):
                 return False
             self._connected = True
             return True
-        except Exception:
+        except Exception as e:
+            log.warning("ninedrive connect failed for %s: %s", self.name, e)
             self._connected = False
             return False
 
@@ -118,8 +122,8 @@ class NineDriveBackend(StorageBackend):
             msg = data.get("message") or ""
             if code or msg:
                 return f"{code} {msg}".strip()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("ninedrive: error body is not JSON (%s), falling back to raw text", e)
         return resp.text[:200]
 
     def _request(self, method, path, *, jwt=False, use_api_key=False, retry=True, **kw):
@@ -160,6 +164,19 @@ class NineDriveBackend(StorageBackend):
         self._index = {f["name"]: f for f in files if f.get("status") == "active"}
         self._index_ts = time.monotonic()
 
+    def _refresh_index_retry(self, force=False, attempts=3):
+        """_refresh_index with backoff: a transient API hiccup mid-listing must
+        retry before the listing is counted as incomplete."""
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                self._refresh_index(force=force)
+                return
+            except (NineDriveError, httpx.HTTPError) as e:
+                last_exc = e
+                time.sleep(2 * (attempt + 1))
+        raise last_exc if last_exc else RuntimeError("index refresh failed")
+
     def _index_stale(self):
         self._index = None
 
@@ -169,7 +186,8 @@ class NineDriveBackend(StorageBackend):
             params["folderId"] = self._folder_id
         try:
             resp = self._request("GET", "/files", params=params, jwt=True)
-        except NineDriveError:
+        except (NineDriveError, httpx.HTTPError) as e:
+            log.warning("ninedrive: search for %s failed: %s", name, e)
             return None
         for f in resp.json().get("files", []):
             if f.get("name") == name and f.get("status") == "active":
@@ -181,7 +199,8 @@ class NineDriveBackend(StorageBackend):
             if self._index is None or time.monotonic() - self._index_ts >= self._INDEX_TTL:
                 try:
                     self._refresh_index(force=True)
-                except NineDriveError:
+                except (NineDriveError, httpx.HTTPError) as e:
+                    log.warning("ninedrive: index refresh failed while resolving %s: %s", remote_rel_path, e)
                     self._index = None
             if self._index and remote_rel_path in self._index:
                 return self._index[remote_rel_path].get("id")
@@ -270,10 +289,14 @@ class NineDriveBackend(StorageBackend):
         return self._resolve(remote_rel_path) is not None
 
     def list_files(self, prefix: str = "") -> list[dict]:
+        self.walk_errors = 0
         try:
-            self._refresh_index()
-        except NineDriveError:
-            return []
+            self._refresh_index_retry()
+        except (NineDriveError, httpx.HTTPError) as e:
+            # Never silently truncate: record the gap so callers can detect
+            # an incomplete listing (walk_errors > 0 means partial data).
+            self.walk_errors += 1
+            log.warning("ninedrive list: index unavailable after retries, listing may be truncated: %s", e)
         idx = self._index or {}
         out = []
         for name, f in idx.items():
@@ -287,6 +310,7 @@ class NineDriveBackend(StorageBackend):
         return out
 
     def walk(self, prefix: str = "") -> list[dict]:
+        self.walk_errors = 0
         return self.list_files(prefix)
 
     def hash(self, remote_rel_path: str) -> str | None:
@@ -323,7 +347,8 @@ class NineDriveBackend(StorageBackend):
         with self._lock:
             try:
                 self._refresh_index(force=True)
-            except NineDriveError:
+            except (NineDriveError, httpx.HTTPError) as e:
+                log.warning("ninedrive: index refresh failed while fingerprinting: %s", e)
                 self._index = None
             if self._index and remote_rel_path in self._index:
                 f = self._index[remote_rel_path]
@@ -352,12 +377,14 @@ class NineDriveBackend(StorageBackend):
             content = resp.content
             if len(content) == end - start + 1:
                 return content
-        except Exception:
-            pass
+            log.warning("ninedrive: short range read for %s: got %d of %d bytes", fid, len(content), end - start + 1)
+        except Exception as e:
+            log.warning("ninedrive: range download failed for %s: %s", fid, e)
         return None
 
     def health(self) -> bool:
         try:
             return self._get_session().get("/health").status_code == 200
-        except Exception:
+        except Exception as e:
+            log.warning("ninedrive health check failed: %s", e)
             return False

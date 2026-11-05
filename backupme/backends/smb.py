@@ -1,8 +1,12 @@
 import hashlib
 import os
+import time
 from pathlib import Path
 
 from .base import StorageBackend
+from backupme.log import get_logger
+
+log = get_logger("backends.smb")
 
 
 class SMBBackend(StorageBackend):
@@ -99,48 +103,77 @@ class SMBBackend(StorageBackend):
         except Exception:
             return False
 
-    def list_files(self, prefix: str = "") -> list[dict]:
-        from smbclient import listdir, stat as smb_stat
-        import stat as statmod
-        result = []
-        try:
-            base = self._smb_path(prefix) if prefix else self._smb_path()
-            for entry in listdir(base):
-                name = str(entry).split("/")[-1]
-                rel = f"{prefix}/{name}" if prefix else name
+    def _listdir_retry(self, path: str):
+        """listdir with backoff: a transient SMB hiccup mid-walk must retry
+        instead of silently truncating the listing."""
+        from smbclient import listdir
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                return listdir(path)
+            except Exception as e:
+                last_exc = e
+                time.sleep(2 * (attempt + 1))
                 try:
-                    s = smb_stat(f"{base}/{name}")
-                    if not statmod.S_ISDIR(s.st_mode):
-                        result.append({"path": rel, "size": s.st_size, "mtime": s.st_mtime})
+                    self.connect()
                 except Exception:
                     pass
-        except Exception:
-            pass
+        raise last_exc if last_exc else RuntimeError("listdir failed")
+
+    def list_files(self, prefix: str = "") -> list[dict]:
+        self.walk_errors = 0
+        from smbclient import stat as smb_stat
+        import stat as statmod
+        result = []
+        base = self._smb_path(prefix) if prefix else self._smb_path()
+        try:
+            entries = self._listdir_retry(base)
+        except Exception as e:
+            # Never silently truncate: record the gap so callers can detect
+            # an incomplete listing (walk_errors > 0 means partial data).
+            self.walk_errors += 1
+            log.warning("smb list: cannot list %s after retries: %s", base, e)
+            return result
+        for entry in entries:
+            name = str(entry).split("/")[-1]
+            rel = f"{prefix}/{name}" if prefix else name
+            try:
+                s = smb_stat(f"{base}/{name}")
+                if not statmod.S_ISDIR(s.st_mode):
+                    result.append({"path": rel, "size": s.st_size, "mtime": s.st_mtime})
+            except Exception as e:
+                self.walk_errors += 1
+                log.warning("smb list: skipping %s: %s", rel, e)
         return result
 
     def walk(self, prefix: str = "") -> list[dict]:
+        self.walk_errors = 0
         return self._walk_recursive(prefix)
 
     def _walk_recursive(self, prefix: str = "") -> list[dict]:
-        from smbclient import listdir, stat as smb_stat
+        from smbclient import stat as smb_stat
         import stat as statmod
         items = []
+        base = self._smb_path(prefix) if prefix else self._smb_path()
         try:
-            base = self._smb_path(prefix) if prefix else self._smb_path()
-            for entry in listdir(base):
-                name = str(entry).split("/")[-1]
-                rel = f"{prefix}/{name}" if prefix else name
-                full = f"{base}/{name}"
-                try:
-                    s = smb_stat(full)
-                    if statmod.S_ISDIR(s.st_mode):
-                        items.extend(self._walk_recursive(rel))
-                    else:
-                        items.append({"path": rel, "size": s.st_size, "mtime": s.st_mtime})
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            entries = self._listdir_retry(base)
+        except Exception as e:
+            self.walk_errors += 1
+            log.warning("smb walk: skipping %s after retries: %s", prefix or "/", e)
+            return items
+        for entry in entries:
+            name = str(entry).split("/")[-1]
+            rel = f"{prefix}/{name}" if prefix else name
+            full = f"{base}/{name}"
+            try:
+                s = smb_stat(full)
+                if statmod.S_ISDIR(s.st_mode):
+                    items.extend(self._walk_recursive(rel))
+                else:
+                    items.append({"path": rel, "size": s.st_size, "mtime": s.st_mtime})
+            except Exception as e:
+                self.walk_errors += 1
+                log.warning("smb walk: skipping %s: %s", rel, e)
         return items
 
     def free_space(self) -> int | None:
