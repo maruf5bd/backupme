@@ -66,11 +66,13 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
 
 ## P2 — functionality
 
-- **B10 [F] CLI for health + verify.**
-  `backupme health [--json]` wiring `core/data_health.summary()`; `backupme verify [--apply]`
-  wiring `core/verify.run_verify_restore()` — both exist in core but have no CLI entry
-  (cli/ has no verify/health command module).
-  Done when: both commands work and are documented in MANUAL.
+- **B10 [F] CLI for health + verify.** **DONE (2026-11-05)**
+  `backupme health [--json] [--purge-candidates] [--limit N]` wiring `core/data_health`;
+  `backupme verify [--count N] [--backend NAME] [--file ID]` wiring `core/verify`
+  (restore-and-hash, exit 1 on any failure). `cli/__init__.py` registers both;
+  tests/test_cli_health.py covers JSON shape, human output, empty-DB check, unknown-id exit.
+  Notably, MANUAL's command table and `get_report()` already referenced `backupme verify`
+  before it existed. Documented in MANUAL 8.0 + command reference table.
 
 - **B11 [W] Scheduler data-health tick.**
   Fold a data-health summary line into the existing verify tick (`scheduler.py` `_periodic_loop`)

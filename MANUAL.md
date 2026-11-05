@@ -624,6 +624,33 @@ section for editing every knob.
 
 ## 8. Maintenance & Monitoring
 
+### 8.0 Data Health & Restore Verification
+
+`backupme health` shows a live data-health summary computed from the index: files with no
+stored chunks, files whose chunks reference missing blobs, same-name groups, and purge
+candidates (files that can never restore). The same data is on the dashboard's Data Health
+page.
+
+```bash
+backupme health                       # human-readable summary
+backupme health --json                # machine-readable
+backupme health --purge-candidates    # also list purge candidates
+```
+
+`backupme verify` restores real files to a temp location and compares sha256 against the
+index (the strongest check — it proves content is actually recoverable):
+
+```bash
+backupme verify                       # sample size from config (verification.verify_restore.count)
+backupme verify --count 20            # check 20 random live files
+backupme verify --backend storagebox  # restrict to one backend
+backupme verify --file 1234           # verify a single file id
+```
+
+Exit code is 0 when everything checked OK, 1 when any file failed. Broken files surface in
+`backupme health --purge-candidates` and on the dashboard, where purging them requires
+explicit confirmation and is soft-delete only.
+
 ### 8.1 Database Health Check
 
 ```bash
@@ -829,6 +856,7 @@ backupme encrypt change-password
 | `backupme search QUERY` | Search files | `backupme search "report" --content` |
 | `backupme status` | Show backup status | `backupme status` |
 | `backupme verify` | Verify random files | `backupme verify --count 10` |
+| `backupme health` | Data health summary (broken files, purge candidates) | `backupme health --json` |
 | `backupme report` | Full integrity report | `backupme report --format html` |
 | `backupme convert BACKEND` | Convert backend files | `backupme convert ftp --delete --resume` |
 | `backupme db check` | Database integrity | `backupme db check --full` |
