@@ -24,9 +24,19 @@
 ## Running right now
 
 - **Storage Box full re-scan** (background): first corrected walk since the truncation fix;
-  output -> `diagnostics/storagebox_rescan_report.txt`.
-- **Agent: defect fixes D1-D5** (config.py, web/routes.py, data_health.py).
-- **Agent: B01 walk-fix port** to smb/ssh/ninedrive/agent backends.
+  output -> `diagnostics/storagebox_rescan_report.txt`. Its DB cross-check needed the
+  `backend_name` column fix (was `backend`) — cross-check re-runs from the JSON after the walk.
+- **Agent: defect fixes D1-D5** (config.py, web/routes.py, data_health.py) — running.
+- **Agent: B01 walk-fix port** to smb/ssh/ninedrive/agent backends — running.
+- **Agent: W3-B notifications dispatcher (B16)** — new `core/notify.py` + scheduler/ingest
+  hooks + tests; owns BACKLOG.md, brain/wiring.md, MANUAL.md while running.
+
+## Backlog progress
+
+- DONE: B02 (90112f5), B10 (b43fb88), B11 (10e4aaf), B13-CLI (3d88ab1), B15 (8beafe8).
+- In flight: D1-D5, B01, B16.
+- Queued on routes.py: B03, B04, B13-dashboard button, B14 endpoint, then W4 (B05 split,
+  B06 helper, B07 except-cleanup), W5 (B08 QA regression suite, B09 skip counters).
 
 ## Pending user decisions (do NOT proceed without approval)
 
