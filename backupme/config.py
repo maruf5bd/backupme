@@ -275,5 +275,7 @@ def load_config(path: str | None = None) -> Config:
         cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
     if "cpanel_ingest" in raw:
         cfg.cpanel_ingest = IngestConfig(**_filter_fields(IngestConfig, raw["cpanel_ingest"]))
+    if "web" in raw:
+        cfg.web = WebConfig(**_filter_fields(WebConfig, raw["web"]))
 
     return cfg
