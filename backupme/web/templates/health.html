@@ -354,8 +354,18 @@
       h += '</div>';
     }
     for (const rm of (scan.remote || [])) {
+      let badge = '<span class="badge badge-gray">' + App.escapeHtml(rm.type) + '</span>';
+      let note = rm.note || 'not scanned';
+      if (rm.note === 'sampled-missing') {
+        note += ' — ' + (rm.missing || []).length + ' sampled path(s) MISSING';
+        badge += ' <span class="badge badge-red">phantom rows likely</span>';
+      } else if (rm.note === 'sampled') {
+        badge += ' <span class="badge badge-green">sampled ok</span>';
+      } else if (rm.note === 'unreachable') {
+        badge += ' <span class="badge badge-yellow">unreachable</span>';
+      }
       h += '<div class="text-sm text-muted" style="margin-bottom: 0.5rem;">' +
-        App.escapeHtml(rm.name) + ' <span class="badge badge-gray">' + App.escapeHtml(rm.type) + '</span> — not scanned (remote)</div>';
+        App.escapeHtml(rm.name) + ' ' + badge + ' — ' + App.escapeHtml(note) + '</div>';
     }
     for (const err of (scan.errors || [])) {
       h += '<div class="text-xs text-red">' + App.escapeHtml(err) + '</div>';

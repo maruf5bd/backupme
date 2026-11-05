@@ -321,6 +321,60 @@ def parse_member_path(storage_path: str) -> tuple[str, int, int] | None:
     return parent, offset, length
 
 
+def remote_sample_plan(backend_name: str, n: int = 25) -> list[str]:
+    """Random sample of distinct plain storage paths expected on a backend.
+
+    Bundle-member rows (``@offset:len``) are excluded — their parents are the
+    real files. Used for sampled remote-backend verification (defect D6:
+    phantom storage rows must become visible without a full remote walk).
+    """
+    n = max(1, min(int(n), 200))
+    rows = execute(
+        "SELECT DISTINCT storage_path FROM blob_storage "
+        "WHERE backend_name = ? AND storage_path NOT LIKE '%@%' "
+        "ORDER BY RANDOM() LIMIT ?",
+        (backend_name, n),
+    ).fetchall()
+    return [r["storage_path"] for r in rows]
+
+
+def sample_remote_backend(backend, n: int = 25) -> dict:
+    """Existence-check a random sample of a remote backend's expected paths.
+
+    Detects phantom storage rows — rows recorded for a backend whose bytes
+    never landed (D6) — without walking the whole backend. Never raises.
+    """
+    result = {
+        "backend": backend.name, "name": backend.name,
+        "type": getattr(backend, "type", "?"),
+        "note": "sampled", "requested": max(1, min(int(n), 200)),
+        "checked": 0, "missing": [], "errors": [],
+    }
+    try:
+        if not backend.connected and not backend.connect():
+            result["note"] = "unreachable"
+            result["errors"].append("backend failed to connect")
+            return result
+    except Exception as e:
+        result["note"] = "unreachable"
+        result["errors"].append(f"connect failed: {str(e)[:120]}")
+        return result
+    paths = remote_sample_plan(backend.name, n)
+    if not paths:
+        result["note"] = "no-paths"
+        return result
+    for p in paths:
+        result["checked"] += 1
+        try:
+            if not backend.exists(p):
+                result["missing"].append(p)
+        except Exception as e:
+            result["errors"].append(f"{p}: {str(e)[:120]}")
+    if result["missing"]:
+        result["note"] = "sampled-missing"
+    return result
+
+
 def local_scan_plan(backend_names: list[str]) -> dict:
     """Group blob_storage rows per local backend for the physical scan.
 

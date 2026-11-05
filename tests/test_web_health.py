@@ -448,7 +448,10 @@ def test_scan_notes_remote_backends(client, env, fixture_ids):
     remote = {x["name"]: x for x in data["scan"]["remote"]}
     assert "remote_ghost" in remote
     assert remote["remote_ghost"]["type"] == "sftp"
-    assert remote["remote_ghost"]["note"] == "not scanned (remote)"
+    # Sampled remote verification (D6): an unreachable remote is reported as
+    # such instead of being silently skipped.
+    assert remote["remote_ghost"]["note"] == "unreachable"
+    assert remote["remote_ghost"]["errors"]
     assert fixture_ids["backend"] in data["scan"]["results"]
 
 

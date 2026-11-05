@@ -2927,8 +2927,17 @@ def register_routes(app, config: cfgmod.Config):
         try:
             backends = _get_backends()
             local = [b for b in backends if b.type == "local"]
-            remote = [{"name": b.name, "type": b.type, "note": "not scanned (remote)"}
-                      for b in backends if b.type != "local"]
+            remote = []
+            for b in [x for x in backends if x.type != "local"]:
+                # Sampled existence check: catches phantom storage rows (D6)
+                # without a full remote walk.
+                try:
+                    remote.append(data_health.sample_remote_backend(b, n=25))
+                except Exception as e:
+                    remote.append({"backend": b.name, "name": b.name,
+                                   "type": getattr(b, "type", "?"),
+                                   "note": "error", "checked": 0, "missing": [],
+                                   "errors": [str(e)[:200]]})
             plan = data_health.local_scan_plan([b.name for b in local])
             results = {}
             for b in local:
