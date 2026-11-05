@@ -288,7 +288,7 @@
       'This will restore the database from backend replicas using consensus. Continue?',
       async () => {
         try {
-          const result = await App.fetchAPI('/api/db/restore', { method: 'POST' });
+          const result = await App.fetchAPI('/api/db/restore', { method: 'POST', body: JSON.stringify({ confirm: true }) });
           App.Toast.success(result.message || 'Database restored');
           setTimeout(() => location.reload(), 1000);
         } catch (e) {}
@@ -304,7 +304,7 @@
       'This will rebuild the database from manifest files on backends. This is a destructive operation — the current DB will be preserved as a corrupt copy. Continue?',
       async () => {
         try {
-          const result = await App.fetchAPI('/api/db/rebuild', { method: 'POST' });
+          const result = await App.fetchAPI('/api/db/rebuild', { method: 'POST', body: JSON.stringify({ confirm: true }) });
           App.Toast.success('Rebuilt: ' + (result.files || 0) + ' files');
           setTimeout(() => location.reload(), 1000);
         } catch (e) {
@@ -355,7 +355,7 @@
       'Delete <strong>' + name + '</strong>? This cannot be undone.',
       async () => {
         try {
-          await App.fetchAPI('/api/db/snapshots/' + encodeURIComponent(name), { method: 'DELETE' });
+          await App.fetchAPI('/api/db/snapshots/' + encodeURIComponent(name), { method: 'DELETE', body: JSON.stringify({ confirm: true }) });
           App.Toast.success('Snapshot deleted');
           setTimeout(() => location.reload(), 600);
         } catch (e) {}
@@ -371,7 +371,7 @@
       'Keep the 5 most recent snapshots and delete all older ones. Continue?',
       async () => {
         try {
-          const result = await App.fetchAPI('/api/db/snapshots/prune?keep=5', { method: 'POST' });
+          const result = await App.fetchAPI('/api/db/snapshots/prune?keep=5', { method: 'POST', body: JSON.stringify({ confirm: true }) });
           App.Toast.success('Pruned ' + (result.deleted || 0) + ' snapshot(s)');
           setTimeout(() => location.reload(), 600);
         } catch (e) {}

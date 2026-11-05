@@ -484,7 +484,7 @@
       'Are you sure you want to remove <strong>' + name + '</strong>? This cannot be undone.',
       async () => {
         try {
-          await App.fetchAPI('/api/backends/remove/' + encodeURIComponent(name), { method: 'DELETE' });
+          await App.fetchAPI('/api/backends/remove/' + encodeURIComponent(name), { method: 'DELETE', body: JSON.stringify({ confirm: true }) });
           App.Toast.success('Backend removed');
           const card = document.querySelector('.backend-card[data-name="' + name + '"]');
           if (card) {

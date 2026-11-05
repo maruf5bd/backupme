@@ -806,7 +806,7 @@
       async () => {
         try {
           App.Toast.info('Server restarting...');
-          await App.fetchAPI('/api/server/restart', { method: 'POST' });
+          await App.fetchAPI('/api/server/restart', { method: 'POST', body: JSON.stringify({ confirm: true }) });
           let attempts = 0;
           const check = setInterval(async () => {
             attempts++;

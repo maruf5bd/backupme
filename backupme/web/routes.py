@@ -456,7 +456,10 @@ def register_routes(app, config: cfgmod.Config):
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.delete("/api/backends/remove/{name}")
-    async def api_backend_remove(name: str):
+    async def api_backend_remove(name: str, data: dict = Body(default={})):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
         try:
             yaml_path = Path("config.yaml")
             if not yaml_path.exists():
@@ -1547,7 +1550,11 @@ def register_routes(app, config: cfgmod.Config):
     # ── API: Server Restart ─────────────────────────────────────
 
     @app.post("/api/server/restart")
-    async def api_server_restart():
+    async def api_server_restart(data: dict = Body(default={})):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
+
         def _do_restart():
             time.sleep(1)
             os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -1557,7 +1564,10 @@ def register_routes(app, config: cfgmod.Config):
     # ── API: DB Restore/Rebuild ─────────────────────────────────
 
     @app.post("/api/db/restore")
-    async def api_db_restore():
+    async def api_db_restore(data: dict = Body(default={})):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
         try:
             result = recover_mod.recover_database(_get_backends())
             return JSONResponse(result)
@@ -1565,7 +1575,10 @@ def register_routes(app, config: cfgmod.Config):
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/db/rebuild")
-    async def api_db_rebuild():
+    async def api_db_rebuild(data: dict = Body(default={})):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
         try:
             result = recover_mod.rebuild_from_manifests()
             return JSONResponse(result)
@@ -1926,7 +1939,10 @@ def register_routes(app, config: cfgmod.Config):
         )
 
     @app.delete("/api/db/snapshots/{name}")
-    async def api_snapshot_delete(name: str):
+    async def api_snapshot_delete(name: str, data: dict = Body(default={})):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
         try:
             p = Path(name)
             if not p.exists() or not p.name.startswith("snapshot-"):
@@ -1937,7 +1953,10 @@ def register_routes(app, config: cfgmod.Config):
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/db/snapshots/prune")
-    async def api_snapshot_prune(keep: int = 5):
+    async def api_snapshot_prune(keep: int = 5, data: dict = Body(default={})):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
         try:
             snaps = sorted(Path(".").glob("snapshot-*.db.zst"), key=lambda p: p.stat().st_mtime, reverse=True)
             deleted = 0
