@@ -159,6 +159,7 @@ class BackupScheduler:
         self._last_export = 0.0
         self._last_gc = 0.0
         self._last_verify = 0.0
+        self._last_health: dict | None = None
         self._ingest_lock = threading.Lock()
         self._purge_lock = threading.Lock()
         self._export_lock = threading.Lock()
@@ -388,5 +389,30 @@ class BackupScheduler:
                      result.get("status"), result.get("failed_files"))
         except Exception:
             log.exception("verify tick failed")
+        try:
+            self._log_health()
+        except Exception:
+            log.exception("health tick failed")
         finally:
             self._verify_lock.release()
+
+    def _log_health(self):
+        """Log the data-health summary each verify tick; warn on regressions."""
+        from backupme.core import data_health
+
+        s = data_health.summary()
+        tracked = ("live_files", "no_chunks_files", "missing_blob_files",
+                   "missing_blobs", "same_name_groups", "purge_candidates")
+        log.info("health tick: live=%s no_chunks=%s missing_blob_files=%s "
+                 "missing_blobs=%s same_name_groups=%s purge_candidates=%s",
+                 s["live_files"], *(s[k] for k in tracked[1:]))
+        regressions = []
+        if self._last_health:
+            regressions = [
+                f"{k}: {self._last_health[k]} -> {s[k]}"
+                for k in tracked[1:]
+                if s[k] > self._last_health.get(k, 0)
+            ]
+        self._last_health = {k: s[k] for k in tracked}
+        if regressions:
+            log.warning("data health regression: %s", "; ".join(regressions))

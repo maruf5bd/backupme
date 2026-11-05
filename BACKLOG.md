@@ -1,6 +1,7 @@
 # Improvement Backlog
 
 Generated 2026-11-05 from a full codebase scan (`diagnostics/codebase_scan.txt`).
+Status: **B02, B10, B11 DONE**; D1-D5 + B01 in flight; the rest queued.
 Tracks: **[F]** functionality, **[C]** codebase quality, **[W]** wiring.
 Priorities: **P0** = fix first (correctness), **P1** = quality, **P2** = features.
 Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not allowed.
@@ -74,11 +75,19 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   Notably, MANUAL's command table and `get_report()` already referenced `backupme verify`
   before it existed. Documented in MANUAL 8.0 + command reference table.
 
-- **B11 [W] Scheduler data-health tick.**
-  Fold a data-health summary line into the existing verify tick (`scheduler.py` `_periodic_loop`)
-  and fire the `notifications.on_failure` hook when regressions appear (new orphan chunks,
-  walk_errors > 0).
-  Done when: daemon log shows the summary daily; a regression notifies.
+- **B11 [W] Scheduler data-health tick.** **DONE (2026-11-05)**
+  `_run_scheduled_verify` now logs the data-health summary every verify tick
+  (`health tick: live=... no_chunks=...`) and emits `data health regression: key: old -> new`
+  warnings when any tracked bucket (no_chunks_files, missing_blob_files, missing_blobs,
+  purge_candidates) grows vs the previous tick. Covered by tests/test_scheduler_health_tick.py.
+  NOTE: `notifications.on_failure` could not be wired — see B16.
+- **B16 [W] NotificationsConfig is parsed but never consumed — no dispatcher exists.**
+  `notifications.on_failure`/`desktop` have no reader anywhere in the package (grep confirms);
+  scheduler "notifications" are currently log lines only. Decide the minimal honest version:
+  a dispatcher module (log + optional desktop toast) consumed by scheduler ticks and ingest
+  failure hooks, or drop the section from config/example and document logging-only.
+  Done when: a failure actually reaches the user through the configured channel, or the
+  section is gone with a documented alternative.
 
 - **B12 [F] Purge approval workflow end-to-end.**
   Dashboard purge-candidates view → confirm dialog → `POST /api/health/purge`, plus an
