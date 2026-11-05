@@ -651,6 +651,12 @@ Exit code is 0 when everything checked OK, 1 when any file failed. Broken files 
 `backupme health --purge-candidates` and on the dashboard, where purging them requires
 explicit confirmation and is soft-delete only.
 
+**Failure notifications** (`notifications` config section): failures that always reach the
+log — data-health regressions found by the daemon and cPanel ingest archive failures — also
+fire a desktop toast when `notifications.on_failure` and `notifications.desktop` are both
+enabled. The toast needs the optional `plyer` package (`pip install plyer`); without it the
+failure is still logged.
+
 ### 8.1 Database Health Check
 
 ```bash

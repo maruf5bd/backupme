@@ -416,3 +416,6 @@ class BackupScheduler:
         self._last_health = {k: s[k] for k in tracked}
         if regressions:
             log.warning("data health regression: %s", "; ".join(regressions))
+            from backupme.core import notify
+            notify.notify_failure("Data health regression",
+                                  "; ".join(regressions), self.config)

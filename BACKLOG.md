@@ -81,13 +81,13 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   warnings when any tracked bucket (no_chunks_files, missing_blob_files, missing_blobs,
   purge_candidates) grows vs the previous tick. Covered by tests/test_scheduler_health_tick.py.
   NOTE: `notifications.on_failure` could not be wired — see B16.
-- **B16 [W] NotificationsConfig is parsed but never consumed — no dispatcher exists.**
-  `notifications.on_failure`/`desktop` have no reader anywhere in the package (grep confirms);
-  scheduler "notifications" are currently log lines only. Decide the minimal honest version:
-  a dispatcher module (log + optional desktop toast) consumed by scheduler ticks and ingest
-  failure hooks, or drop the section from config/example and document logging-only.
-  Done when: a failure actually reaches the user through the configured channel, or the
-  section is gone with a documented alternative.
+- **B16 [W] NotificationsConfig is parsed but never consumed — no dispatcher exists.** **DONE (2026-11-05)**
+  New `core/notify.py`: `notify_failure(title, detail, config)` always logs a warning and
+  best-effort fires a desktop toast (plyer, optional, zero new hard deps) when
+  on_failure+desktop are enabled; never raises. Wired at the two real failure points:
+  scheduler data-health regressions (`_log_health`) and cPanel ingest archive failures
+  (`ingest_archive` failure-recording block). Covered by tests/test_notify.py (7 tests) incl.
+  the scheduler-regression path. Documented in MANUAL section 8.
 
 - **B12 [F] Purge approval workflow end-to-end.**
   Dashboard purge-candidates view → confirm dialog → `POST /api/health/purge`, plus an

@@ -461,6 +461,13 @@ def ingest_archive(
             log.error("could not mark op failed", exc_info=True)
         _notify_failure({"archive": archive_path, "account": account,
                          "error": str(e), "sha256": archive_sha256})
+        try:
+            from backupme.core import notify
+            notify.notify_failure("cPanel ingest failure",
+                                  f"{archive_path}: {e}", config)
+        except Exception:
+            log.warning("ingest failure notification could not be dispatched",
+                        exc_info=True)
         return {"status": "failed", "error": str(e),
                 "account": account, "archive": archive_path}
 
