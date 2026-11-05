@@ -421,3 +421,45 @@ def backend_drain(ctx, name, dry_run, as_json):
     emit(out, as_json=as_json, human=human)
     if out.get("status") in ("error", "partial"):
         raise SystemExit(1)
+
+
+@backend.command("rescan")
+@click.argument("name")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def backend_rescan(ctx, name, as_json):
+    """Walk backend NAME and diff its real contents against the index."""
+    from ..backends import get_all_backends
+    from ..core.backend_scan import rescan_backend
+
+    bk = next((b for b in get_all_backends(ctx.obj["config"]) if b.name == name), None)
+    if bk is None:
+        out = {"status": "error", "error": f"no backend named {name!r}"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    if not bk.connected and not bk.connect():
+        out = {"status": "error", "error": f"backend {name!r} failed to connect"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    result = rescan_backend(bk)
+    result["status"] = "ok"
+
+    def human(d):
+        click.echo(f"{d['backend']}: walk={d['walk_files']} file(s) "
+                   f"(walk_errors={d['walk_errors']}), db={d['db_paths']} path(s)")
+        click.echo(f"missing on box : {len(d['missing_on_box'])} "
+                   f"({_fmt_bytes(d['missing_bytes'])})")
+        click.echo(f"on box not in DB: {len(d['extra_on_box'])}")
+        click.echo(f"size mismatches: {len(d['size_mismatch'])}")
+        for p in d["missing_on_box"][:10]:
+            click.echo(f"  missing: {p}")
+        for p in d["extra_on_box"][:10]:
+            click.echo(f"  extra  : {p}")
+        for m in d["size_mismatch"][:10]:
+            click.echo(f"  size   : {m['path']} db={m['db_size']} box={m['box_size']}")
+
+    emit(result, as_json=as_json, human=human)
+    if result["missing_on_box"] or result["size_mismatch"]:
+        raise SystemExit(1)

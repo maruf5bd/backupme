@@ -33,7 +33,11 @@
   forever without instance attributes `banner_timeout`/`auth_timeout` (constructor kwargs are
   not honored).
 - **SQLite concurrency**: single writer via WAL + thread-local connections + `write_txn()`;
-  readonly inspection from scripts uses `file:...?mode=ro`.
+  readonly inspection from scripts uses `file:...?mode=ro`. **FK enforcement is ON**
+  (`blob_storage.blob_id -> blobs.blob_id` fails inserts without a parent row; `blobs` needs
+  `pt_size`). `blob_storage`'s backend column is `backend_name`, NOT `backend` — two ad-hoc
+  scripts already tripped on this. CLI invocations reset `dbmod.DB_PATH` to `backupme.db`
+  unless `--db` is passed — in-process CLI tests must pass `--db` to see the fixture DB.
 
 ## Process
 

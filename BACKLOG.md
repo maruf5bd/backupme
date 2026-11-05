@@ -94,10 +94,12 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   `op_log` entry per purge for audit.
   Done when: a purge is impossible without the dialog and every purge is auditable.
 
-- **B13 [F] Backend rescan as a product feature.**
-  Generalize `storagebox_rescan.py` (walk vs DB diff: missing-on-box / on-box-not-in-DB) into a
-  dashboard button + CLI (`backend rescan NAME`), reusing the fixed walk.
-  Done when: any backend can be diffed against the DB from the UI.
+- **B13 [F] Backend rescan as a product feature.** **CLI DONE (2026-11-05); dashboard button queued**
+  `core/backend_scan.rescan_backend(backend)` diffs a walk against blob_storage (correct
+  `backend_name` column; bundle-member rows `@offset:len` excluded, parents compared as plain
+  paths) reporting missing_on_box / extra_on_box / **size_mismatch** (cheap corruption signal)
+  + missing_bytes. CLI: `backupme backend rescan NAME [--json]` (exit 1 on missing/mismatch).
+  Covered by tests/test_backend_rescan.py. Remaining: dashboard button once routes.py frees up.
 
 - **B14 [F] Capability introspection for crypto.**
   `core/crypto.py` has 5 optional-dependency fallbacks; `/api/encrypt/status` should report

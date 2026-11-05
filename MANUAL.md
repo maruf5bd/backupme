@@ -857,6 +857,7 @@ backupme encrypt change-password
 | `backupme status` | Show backup status | `backupme status` |
 | `backupme verify` | Verify random files | `backupme verify --count 10` |
 | `backupme health` | Data health summary (broken files, purge candidates) | `backupme health --json` |
+| `backupme backend rescan NAME` | Walk a backend, diff vs index (missing/extra/size mismatch) | `backupme backend rescan storagebox` |
 | `backupme report` | Full integrity report | `backupme report --format html` |
 | `backupme convert BACKEND` | Convert backend files | `backupme convert ftp --delete --resume` |
 | `backupme db check` | Database integrity | `backupme db check --full` |
