@@ -46,8 +46,28 @@
   2FA.7z vault copy is the LAST copy in existence (source deleted).
 - Rotate the Storage Box password (it appeared in plaintext in some gitignored diagnostics
   scripts; config.yaml is the single allowed home).
+- Approve `gc --apply` to delete 8,498 verified zero-reference remote orphans (28.22 GiB;
+  see 2026-11-05 update 2 below).
 
 ## Where things stand overall
 
 Dashboard + repair tooling are in good shape; the defect wave (D1-D5, B01) is the last
 known correctness work before the wiring wave (B02-B04) and feature wave (B10-B14).
+
+## 2026-11-05 (update 2)
+
+- **Landed since the scoreboard above was written**: B16 notifications dispatcher
+  (`dcb074b`), D1 web.token wiring (`80e9d23`), D2-D5 dashboard fixes (`cc5d88a`), D6
+  detection — sampled remote-backend verification (`8a27d40`), brain updates (`15f54ae`,
+  `42d79b9`, `a7ced81`). Scoreboard correction: DONE now also includes B16; D1-D5 closed;
+  D6 open and under investigation in the working tree.
+- **Test suite** (full run, 2026-11-05): 326 collected, 2 skipped, 0 failures.
+- **NEW finding — GC dry-run on the real backends** (`python main.py --db-path backupme.db
+  gc`, dry-run, nothing deleted): backend `h local drive` 8,497 orphan remote files /
+  28.22 GiB (30,300,645,922 B); backend `local_disk` 1 orphan / 3,017 B
+  (`objects/ab/14/ab1491471215c0de49f43d9143906b78fb74baa791811f5539af60481179f24f.zstd`);
+  backend `hostraj Gdrive` NOT scanned (root unreachable at scan time). Deep
+  cross-verification: every orphan path has ZERO rows in `blobs`, `file_chunks`, and
+  `blob_storage` — leftovers of an earlier DB generation that no restore path can address;
+  the 15,607 live blobs on the same drive matched DB rows exactly, so the GC matcher is
+  healthy. `gc --apply` awaits explicit user approval (added to pending decisions above).

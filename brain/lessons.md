@@ -45,3 +45,12 @@
   to context rollovers; the data (orphan-chunk counts) is the source of truth.
 - **Fan out but fence** — parallel agents only with disjoint file ownership; a routes.py
   edit by two agents is a lost edit.
+
+## GC / destructive operations (2026-11-05)
+
+- **A 28 GiB deletion is never trusted from one dry-run number.** A GC dry-run count is
+  only as good as the reference set it is diffed against. Before any apply: (1) verify
+  matcher health — matched-file count must equal the live DB row count for that backend
+  (here 15,607 = 15,607); (2) sweep every orphan path across ALL referencing tables
+  (`blobs`, `file_chunks`, `blob_storage`) — on this DB all 8,498 orphans had zero rows in
+  every table, i.e. leftovers of an earlier DB generation that no restore path can address.

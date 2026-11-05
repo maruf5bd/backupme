@@ -29,3 +29,16 @@
   never copy from them without decompress-hash verification (24 corrupt files live there).
 - **Gdrive "loss" corrected** — the 51,644 "lost rows" estimate was wrong; true loss is exactly
   1 bundle (2 blobs) affecting 1 live file. Lesson recorded in lessons.md.
+
+## 2026-11-05 (update 2)
+
+- **GC apply gate** — remote-blob deletion (`gc --apply`) runs only after a three-step
+  cross-verification of the dry-run: (1) matcher health — the count of matched files must
+  equal the count of live DB rows for that backend; (2) category sweep — every orphan path
+  checked against `blobs`, `file_chunks`, and `blob_storage`; (3) zero-reference proof —
+  any orphan with even one reference row is excluded from deletion. Applied to the
+  2026-11-05 finding (8,498 orphans / 28.22 GiB): all category-D, zero rows anywhere;
+  deletion awaits explicit user approval.
+- **Gdrive GC coverage deferred** — the `hostraj Gdrive` backend was unreachable during the
+  2026-11-05 scan, so its orphan picture is unknown; GC must be re-run there once the root
+  is mounted (old-generation junk likely exists there too).
