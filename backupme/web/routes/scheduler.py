@@ -81,7 +81,8 @@ def register(app, ctx):
                 "interval": sched.get("interval", 3600),
                 "enabled": sched.get("enabled", False),
             })
-        except Exception:
+        except Exception as e:
+            log.warning("scheduler config read failed for /api/scheduler/config, serving defaults: %s", e)
             return JSONResponse({"interval": 3600, "enabled": False})
 
     @app.post("/api/scheduler/config")

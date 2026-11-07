@@ -396,7 +396,8 @@ def register(app, ctx):
                     chunk = f.read(1024)
                     if b"\x00" in chunk:
                         is_binary = True
-            except Exception:
+            except Exception as e:
+                log.warning("preview binary sniff failed for file id=%s: %s", file_id, e)
                 is_binary = True
 
             if is_binary:
@@ -436,7 +437,8 @@ def register(app, ctx):
             )
             db.commit()
             op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            log.warning("op_log insert failed for upload op %s: %s", upload_key, e)
             op_id = None
 
         tmp_path = None
@@ -470,8 +472,8 @@ def register(app, ctx):
                         (json.dumps({"filename": file.filename, "result": "success", "size": len(content)}), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log completion update failed for upload op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "ok", "filename": file.filename, **r})
         except Exception as e:
             if tmp_path:
@@ -483,8 +485,8 @@ def register(app, ctx):
                         (str(e), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log failure record update failed for upload op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
     @app.delete("/api/files/{file_id}")

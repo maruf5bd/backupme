@@ -66,8 +66,8 @@ def register(app, ctx):
                     with _ingest_lock:
                         _ingest_state["members_total"] = est["members"]
                         _ingest_state["members_done"] = 0
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("archive size estimate failed for %s: %s", item["path"], e)
                 try:
                     r = ci_mod.ingest_archive(
                         item["path"], item["account"], backends, cfg_dict,
@@ -109,6 +109,9 @@ def register(app, ctx):
                     try:
                         staging_bytes += os.path.getsize(os.path.join(dirpath, fn))
                     except OSError:
+                        # Expected control flow, not a failure: staging files
+                        # can vanish between the walk and the stat (staging
+                        # cleanup runs concurrently), skipping them is normal.
                         pass
         db_path = Path(str(db.DB_PATH))
         db_size = db_path.stat().st_size if db_path.exists() else 0
@@ -269,7 +272,8 @@ def register(app, ctx):
                 (f"-{int(days)} days",),
             ).fetchall()
             return JSONResponse([dict(r) for r in rows])
-        except Exception:
+        except Exception as e:
+            log.warning("ingest trend query failed for /api/stats/ingest-trend: %s", e)
             return JSONResponse([])
 
     @app.post("/api/ingest/restore-generation")

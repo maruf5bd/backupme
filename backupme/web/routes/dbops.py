@@ -14,8 +14,11 @@ from fastapi.responses import JSONResponse, FileResponse
 from backupme.core import database as db
 from backupme.core import recover as recover_mod
 from backupme.core import snapshot as snapmod
+from backupme.log import get_logger
 
 from .common import _config_as_dict, _get_backends
+
+log = get_logger("web.routes.dbops")
 
 
 def register(app, ctx):
@@ -30,7 +33,8 @@ def register(app, ctx):
         try:
             wal = db.execute("PRAGMA journal_mode").fetchone()
             wal_mode = wal[0].upper() == "WAL" if wal else False
-        except Exception:
+        except Exception as e:
+            log.warning("journal_mode PRAGMA read failed for /api/db/info: %s", e)
             wal_mode = False
         return JSONResponse({
             "generation": gen,
@@ -75,7 +79,8 @@ def register(app, ctx):
             )
             db.commit()
             op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            log.warning("op_log insert failed for snapshot op %s: %s", snap_key, e)
             op_id = None
 
         try:
@@ -87,8 +92,8 @@ def register(app, ctx):
                         (json.dumps(result), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log completion update failed for snapshot op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
             if op_id:
@@ -98,8 +103,8 @@ def register(app, ctx):
                         (str(e), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log failure record update failed for snapshot op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/db/replicate")

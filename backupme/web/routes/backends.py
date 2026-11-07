@@ -36,8 +36,8 @@ def register(app, ctx):
             try:
                 free = b.free_space()
                 total = b.total_space()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("free/total space probe failed for backend %s: %s", b.name, e)
             result.append({
                 "name": b.name, "type": b.type, "connected": b.connected,
                 "free_space": free, "total_space": total,
@@ -59,7 +59,9 @@ def register(app, ctx):
             if pw and use_env:
                 env_key = f"BACKUP_{name.upper()}_PASS"
                 payload["password"] = "{{ " + env_key + " }}"
-            # Convert numeric fields
+            # Convert numeric fields. Non-numeric form input is left as-is
+            # on purpose (expected control flow, not a failure): the backend
+            # factory re-validates these fields when the config is loaded.
             if "priority" in payload:
                 try: payload["priority"] = int(payload["priority"])
                 except (ValueError, TypeError): pass
@@ -127,8 +129,8 @@ def register(app, ctx):
             free = total = None
             try:
                 free, total = be.free_space(), be.total_space()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("free/total space probe failed for backend %s: %s", be.name, e)
             u = usage.get(be.name, {})
             out.append({
                 "name": be.name, "type": be.type, "connected": be.connected,
@@ -148,8 +150,8 @@ def register(app, ctx):
         try:
             free = be.free_space()
             total = be.total_space()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("free/total space probe failed for backend %s: %s", be.name, e)
         return JSONResponse({
             "name": be.name,
             "type": be.type,
@@ -267,8 +269,8 @@ def register(app, ctx):
         free = total = None
         try:
             free, total = be.free_space(), be.total_space()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("free/total space probe failed for backend %s: %s", be.name, e)
         result = {"name": name, "type": be.type, "connected": be.connected,
                   "free_space": free, "total_space": total}
         if not data.get("rebalance"):

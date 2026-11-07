@@ -15,9 +15,12 @@ from backupme.core import database as db
 from backupme.core import crypto as crypto_mod
 from backupme.core import dedup, index as index_mod, verify
 from backupme.core import hasher as hasher_mod
+from backupme.log import get_logger
 
 from .common import (_get_backends, _get_backend, _fts_phrase,
                      _search_files_like)
+
+log = get_logger("web.routes.misc")
 
 
 def register(app, ctx):
@@ -37,8 +40,8 @@ def register(app, ctx):
             ).fetchall()
             for r in rows:
                 backend_sizes[r["backend_name"]] = r["total_size"]
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("stored-bytes query failed for /api/status: %s", e)
 
         be_full = []
         for b in backends:
@@ -85,13 +88,15 @@ def register(app, ctx):
                     "SELECT status, target_json, completed_at FROM op_log "
                     "WHERE op_type = ? AND completed_at IS NOT NULL "
                     "ORDER BY id DESC LIMIT 1", (op_type,)).fetchone()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as e:
+                log.warning("op_log counter query failed for op_type=%s: %s", op_type, e)
                 continue
             if row is None:
                 continue
             try:
                 payload = json.loads(row["target_json"]) if row["target_json"] else {}
-            except ValueError:
+            except ValueError as e:
+                log.warning("malformed target_json in op_log for op_type=%s: %s", op_type, e)
                 payload = {}
             counters[op_type] = {"status": row["status"],
                                  "completed_at": row["completed_at"], **payload}
@@ -130,7 +135,8 @@ def register(app, ctx):
             )
             db.commit()
             op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            log.warning("op_log insert failed for report op %s: %s", report_key, e)
             op_id = None
 
         try:
@@ -145,8 +151,8 @@ def register(app, ctx):
                         (json.dumps({"checked_files": result.get("checked_files", 0), "failed_files": result.get("failed_files", 0)}), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log completion update failed for report op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
             if op_id:
@@ -156,8 +162,8 @@ def register(app, ctx):
                         (str(e), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log failure record update failed for report op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/encrypt/init")
@@ -197,7 +203,8 @@ def register(app, ctx):
             result = [{"date": r["date"], "count": r["count"]} for r in rows]
             result.reverse()
             return JSONResponse(result)
-        except Exception:
+        except Exception as e:
+            log.warning("activity trend query failed for /api/stats/trend: %s", e)
             return JSONResponse([])
 
     @app.get("/api/reports")
@@ -209,6 +216,7 @@ def register(app, ctx):
             ).fetchall()
             return JSONResponse([dict(r) for r in rows])
         except Exception as e:
+            log.warning("integrity report list query failed for /api/reports: %s", e)
             return JSONResponse([])
 
     @app.get("/api/reports/{report_id}")
@@ -222,8 +230,8 @@ def register(app, ctx):
                 try:
                     import json as _json
                     r["details"] = _json.loads(r["details"])
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("malformed details JSON in integrity_checks row id=%s: %s", report_id, e)
             return JSONResponse(r)
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -275,7 +283,9 @@ def register(app, ctx):
                         (len(new_data), new_hash, row["blob_id"], row["backend_name"]),
                     )
                     converted += 1
-                except Exception:
+                except Exception as e:
+                    log.warning("blob recompress failed for blob_id=%s on %s: %s",
+                                row["blob_id"], row["backend_name"], e)
                     continue
                 finally:
                     if tmp_dir:
@@ -313,6 +323,7 @@ def register(app, ctx):
                 ).fetchall()
             return JSONResponse([dict(r) for r in rows])
         except Exception as e:
+            log.warning("hash lookup query failed for /api/hash/%s: %s", sha256, e)
             return JSONResponse([])
 
     @app.get("/api/logs/export")
@@ -351,7 +362,8 @@ def register(app, ctx):
             result = [{"date": r["date"], "completed": r["completed"], "total": r["total"]} for r in rows]
             result.reverse()
             return JSONResponse(result)
-        except Exception:
+        except Exception as e:
+            log.warning("storage trend query failed for /api/stats/storage-trend: %s", e)
             return JSONResponse([])
 
     @app.get("/api/replication/status")

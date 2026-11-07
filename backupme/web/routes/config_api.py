@@ -11,8 +11,11 @@ from fastapi import Body, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backupme.core import database as db
+from backupme.log import get_logger
 
 from .common import _reload_config
+
+log = get_logger("web.routes.config_api")
 
 
 def register(app, ctx):
@@ -27,7 +30,8 @@ def register(app, ctx):
                 "SELECT DISTINCT source_root FROM files WHERE deleted_at IS NULL"
             ).fetchall()
             db_sources = {r["source_root"] for r in rows}
-        except Exception:
+        except Exception as e:
+            log.warning("source roots query failed for /api/sources: %s", e)
             db_sources = set()
 
         all_sources = sorted(list(cfg_sources.union(db_sources)))

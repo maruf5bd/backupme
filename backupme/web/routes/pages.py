@@ -11,8 +11,11 @@ from fastapi.responses import HTMLResponse
 from backupme.core import database as db
 from backupme.core import dedup, state, verify
 from backupme.core import index as index_mod
+from backupme.log import get_logger
 
 from .common import _get_backends, _get_backups, _get_cfg_dict, _search_files_safe
+
+log = get_logger("web.routes.pages")
 
 
 def register(app, ctx):
@@ -33,7 +36,8 @@ def register(app, ctx):
                 "SELECT * FROM op_log ORDER BY id DESC LIMIT 5"
             ).fetchall()
             checkpoints = [dict(c) for c in cps]
-        except Exception:
+        except Exception as e:
+            log.warning("recent checkpoints query failed for dashboard page: %s", e)
             checkpoints = []
         return ctx.templates.TemplateResponse("dashboard.html", {
             "request": request,
@@ -112,8 +116,8 @@ def register(app, ctx):
             try:
                 free = b.free_space()
                 total = b.total_space()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("free/total space probe failed for backend %s: %s", b.name, e)
             be_list.append({"name": b.name, "type": b.type, "connected": b.connected,
                            "free_space": free, "total_space": total,
                            "priority": b.config.get("priority", 50),
@@ -171,7 +175,8 @@ def register(app, ctx):
         try:
             wal_row = db.execute("PRAGMA journal_mode").fetchone()
             wal_mode = wal_row and wal_row[0].upper() == "WAL"
-        except Exception:
+        except Exception as e:
+            log.warning("journal_mode PRAGMA read failed for database page: %s", e)
             wal_mode = False
         page_count = db.execute("PRAGMA page_count").fetchone()[0]
         page_size = db.execute("PRAGMA page_size").fetchone()[0]

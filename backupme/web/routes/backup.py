@@ -39,7 +39,8 @@ def register(app, ctx):
             )
             db.commit()
             op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            log.warning("op_log insert failed for backup op %s: %s", backup_key, e)
             op_id = None
 
         results = []
@@ -96,8 +97,8 @@ def register(app, ctx):
                     (status_str, json.dumps({"results": results}), op_id),
                 )
                 db.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("op_log completion update failed for backup op id=%s: %s", op_id, e)
 
         return JSONResponse({"status": "completed", "results": results})
 
@@ -115,7 +116,8 @@ def register(app, ctx):
             )
             db.commit()
             op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            log.warning("op_log insert failed for backup op %s: %s", backup_key, e)
             op_id = None
 
         from backupme.core.skip import should_skip, should_skip_dir
@@ -137,8 +139,8 @@ def register(app, ctx):
                             (json.dumps({"source": source, "result": "success", "file_count": 1}), op_id),
                         )
                         db.commit()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.warning("op_log completion update failed for backup op id=%s: %s", op_id, exc)
                 return JSONResponse({"status": "ok", **r})
             elif os.path.isdir(source):
                 count = 0
@@ -165,8 +167,8 @@ def register(app, ctx):
                             (json.dumps({"source": source, "result": "success", "file_count": count}), op_id),
                         )
                         db.commit()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.warning("op_log completion update failed for backup op id=%s: %s", op_id, exc)
                 return JSONResponse({"status": "ok", "file_count": count})
         except Exception as e:
             if op_id:
@@ -176,8 +178,8 @@ def register(app, ctx):
                         (str(e), op_id),
                     )
                     db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("op_log failure record update failed for backup op id=%s: %s", op_id, exc)
             return JSONResponse({"status": "error", "message": str(e)})
 
     # ── Scan Drive ───────────────────────────────────────────────
@@ -216,7 +218,8 @@ def register(app, ctx):
             )
             db.commit()
             scan_op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            log.warning("op_log insert failed for scan op %s: %s", scan_key, e)
             scan_op_id = None
 
         all_files = []  # list of (display_path, fs_path) tuples
@@ -306,8 +309,8 @@ def register(app, ctx):
                     except OSError:
                         try:
                             os.remove(disp_path)
-                        except OSError:
-                            pass
+                        except OSError as e:
+                            log.warning("post-upload source delete failed for %s: %s", disp_path, e)
 
                 with _scan_lock:
                     _scan_state["files_done"] += 1
@@ -343,8 +346,8 @@ def register(app, ctx):
                     ("completed" if errs == 0 else "partial", detail, scan_op_id),
                 )
                 db.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("op_log completion update failed for scan op id=%s: %s", scan_op_id, e)
         _emit_scan()
 
     @app.post("/api/backup/scan")
