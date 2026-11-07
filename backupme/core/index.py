@@ -1,3 +1,5 @@
+import sqlite3
+
 from backupme.core.database import execute, commit
 
 
@@ -76,20 +78,34 @@ def get_latest_version(source_root: str, relative_path: str) -> dict | None:
     return dict(row) if row else None
 
 
-def search_files(query: str, source_root: str | None = None) -> list[dict]:
+def search_files(query: str, source_root: str | None = None, limit: int = 100) -> list[dict]:
+    """FTS search over the index. The user query is quoted as a single FTS5
+    phrase so punctuation is never parsed as query syntax (qa P0: the CLI
+    'search report-2026' crashed with a raw MATCH -> 'no such column: 2026');
+    if sqlite still refuses the input, fall back to a plain LIKE search —
+    user input must never raise."""
+    phrase = '"' + query.replace('"', '""') + '"'
+    sql = ("SELECT f.* FROM files f INNER JOIN files_fts ON f.id = files_fts.rowid "
+           "WHERE files_fts MATCH ? AND f.deleted_at IS NULL")
+    params: list = [phrase]
     if source_root:
-        rows = execute(
-            "SELECT f.* FROM files f INNER JOIN files_fts ON f.id = files_fts.rowid "
-            "WHERE files_fts MATCH ? AND f.source_root = ? AND f.deleted_at IS NULL "
-            "ORDER BY rank LIMIT 100",
-            (query, source_root),
-        ).fetchall()
-    else:
-        rows = execute(
-            "SELECT f.* FROM files f INNER JOIN files_fts ON f.id = files_fts.rowid "
-            "WHERE files_fts MATCH ? AND f.deleted_at IS NULL ORDER BY rank LIMIT 100",
-            (query,),
-        ).fetchall()
+        sql += " AND f.source_root = ?"
+        params.append(source_root)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+    try:
+        rows = execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        pattern = f"%{query}%"
+        lsql = ("SELECT f.* FROM files f WHERE f.deleted_at IS NULL "
+                "AND (f.relative_path LIKE ? OR f.content_text LIKE ?)")
+        lparams: list = [pattern, pattern]
+        if source_root:
+            lsql += " AND f.source_root = ?"
+            lparams.append(source_root)
+        lsql += " ORDER BY f.id LIMIT ?"
+        lparams.append(limit)
+        rows = execute(lsql, lparams).fetchall()
     return [dict(r) for r in rows]
 
 

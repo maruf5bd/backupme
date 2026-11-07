@@ -77,11 +77,10 @@ def _search_files_like(q: str, limit: int = 100) -> list[dict]:
 
 
 def _search_files_safe(q: str, limit: int = 100) -> list[dict]:
-    """FTS search with a hard LIKE fallback on sqlite parse errors."""
-    try:
-        return index_mod.search_files(_fts_phrase(q))
-    except sqlite3.OperationalError:
-        return _search_files_like(q, limit=limit)
+    """FTS search with a hard LIKE fallback on sqlite parse errors. The
+    quoting + fallback live inside index.search_files since the qa P0 CLI
+    fix — the raw user query goes in, never raises."""
+    return index_mod.search_files(q, limit=limit)
 
 
 # ── Config helpers ────────────────────────────────────────────
