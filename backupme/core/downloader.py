@@ -148,8 +148,23 @@ def download_file(
                             length = int(len_str)
                             data = _extract_from_bundle(bk, bundle_path, offset, length, st, config)
                         elif blob_id.startswith("bundle/"):
-                            # Old-style bundled entry fallback where remote_path has no @offset:length!
-                            data = _extract_from_bundle(bk, remote_path, None, None, st, config)
+                            # Old-style bundled entry fallback where remote_path has no
+                            # @offset:length: the row is actually a standalone compressed
+                            # object named after the member sha (legacy 2026-05 uploader).
+                            # Download it directly; the sha256 check below is the gate.
+                            tmp_dir = Path(tempfile.mkdtemp())
+                            tmp = tmp_dir / "legacy_blob"
+                            dec = tmp_dir / "legacy_dec"
+                            try:
+                                bk.download(remote_path, str(tmp))
+                                work = _decrypt_if_needed(tmp, dec, st, config)
+                                raw = work.read_bytes()
+                                if st.get("compression_algo"):
+                                    data = compress_mod.decompress(raw, st["compression_algo"])
+                                else:
+                                    data = raw
+                            finally:
+                                shutil.rmtree(str(tmp_dir), ignore_errors=True)
                         else:
                             tmp_dir = Path(tempfile.mkdtemp())
                             tmp = tmp_dir / "chunk_dl"
@@ -165,6 +180,22 @@ def download_file(
                         if data is not None:
                             expected_hash = blob_id.rsplit("/", 1)[-1]
                             if hashlib.sha256(data).hexdigest() == expected_hash:
+                                # Legacy dedup envelope: the stored object is a 52-byte
+                                # "bndl/objects/<sha-prefix>" header followed by the real
+                                # chunk content; the blob is named after the whole
+                                # envelope. The pt_size arithmetic locates the content;
+                                # the header's embedded sha prefix cross-checks it.
+                                expected_size = chunk["pt_size"] or 0
+                                if (expected_size and len(data) > expected_size
+                                        and data.startswith(b"bndl/objects/")):
+                                    content = data[len(data) - expected_size:]
+                                    pointed = data[19:32]
+                                    try:
+                                        if hashlib.sha256(content).hexdigest().startswith(
+                                                pointed.decode("ascii")):
+                                            data = content
+                                    except UnicodeDecodeError:
+                                        pass
                                 break
                             data = None
                     except UnrecoverableChunkError:
