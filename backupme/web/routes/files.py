@@ -212,13 +212,17 @@ def register(app, ctx):
         for r in rows:
             rel = r["relative_path"]
             if path_filter:
-                # Match exact directory: "DCIM" should match "DCIM/photo.jpg" but not "DCIM2/photo.jpg"
-                if not (rel == path_filter or rel.startswith(path_filter + sep) or rel.startswith(path_filter + "\\")):
+                pf = path_filter.rstrip("\\/")
+                # cPanel-ingested rows use forward slashes while scanned rows
+                # use os.sep — match and strip both (qa P1: 'DCIM/photo.jpg'
+                # rows never matched a 'DCIM' filter before).
+                if not (rel == pf or rel.startswith(pf + sep)
+                        or rel.startswith(pf + "/") or rel.startswith(pf + "\\")):
                     continue
-                if rel.startswith(path_filter + sep) or rel.startswith(path_filter + "\\"):
-                    rel = rel[len(path_filter)+1:].lstrip("\\/")
-                elif rel == path_filter:
+                if rel == pf:
                     rel = os.path.basename(rel)
+                else:
+                    rel = rel[len(pf) + 1:].lstrip("\\/")
             files.append({"id": r["id"], "relative_path": rel})
         return files
 
@@ -234,6 +238,18 @@ def register(app, ctx):
                 "dest_path": dest_path, "restoring": len(files)}
 
     def _restore_worker(files: list, dest_path: str):
+        try:
+            _restore_worker_inner(files, dest_path)
+        finally:
+            # The worker runs in a daemon thread; its thread-local SQLite
+            # connection must not outlive it (qa P1: leaked connection caused
+            # intermittent 'database is locked' flakes).
+            try:
+                db.close_connection()
+            except Exception:
+                pass
+
+    def _restore_worker_inner(files: list, dest_path: str):
         with _restore_lock:
             _restore_state["total"] = len(files)
             _restore_state["running"] = True
@@ -246,7 +262,9 @@ def register(app, ctx):
             # paths (scan + sanitize_member enforce this), but a poisoned or
             # legacy row must not write outside the restore destination.
             p = Path(rel)
-            if ".." in p.parts or p.is_absolute() or (len(rel) >= 2 and rel[1] == ":"):
+            if (".." in p.parts or p.is_absolute() or p.drive or p.root
+                    or (len(rel) >= 2 and rel[1] == ":")
+                    or rel[:1] in ("/", "\\")):
                 with _restore_lock:
                     _restore_state["errors"] += 1
                     if len(_restore_state["error_list"]) < 500:
@@ -260,7 +278,11 @@ def register(app, ctx):
             _emit_restore()
             try:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-                downloader_mod.download_file(f["id"], str(out_path))
+                res = downloader_mod.download_file(f["id"], str(out_path))
+                # download_file reports soft failures as a status dict instead
+                # of raising — counting those as restored was a lie (qa P1).
+                if isinstance(res, dict) and res.get("status") != "ok":
+                    raise RuntimeError(str(res.get("message") or res.get("status") or "download failed")[:100])
                 with _restore_lock:
                     _restore_state["done"] += 1
                 _emit_restore()
@@ -386,7 +408,13 @@ def register(app, ctx):
             if result["status"] != "ok":
                 tmp.unlink(missing_ok=True)
                 return JSONResponse({"error": result.get("message", "download failed")}, status_code=500)
-            filename = Path(result.get("path", f"file_{file_id}")).name
+            # result["path"] is the internal temp dir (dl_<id>) — serve the
+            # real indexed name instead (qa P2 D10).
+            row = db.execute(
+                "SELECT relative_path FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            filename = (Path(row["relative_path"]).name if row and row["relative_path"]
+                        else f"file_{file_id}")
             return FileResponse(
                 path=str(tmp),
                 filename=filename,
@@ -511,6 +539,14 @@ def register(app, ctx):
             backends = _get_backends(ctx)
             if backend:
                 backends = [b for b in backends if b.name == backend]
+                if not backends:
+                    if tmp_path:
+                        Path(tmp_path).unlink(missing_ok=True)
+                    op_log_finish(op_id, "failed",
+                                  last_error=f"backend '{backend}' not found")
+                    return JSONResponse(
+                        {"status": "error", "message": f"backend '{backend}' not found"},
+                        status_code=400)
 
             cfg_dict = _config_as_dict(ctx)
             r = uploader_mod.upload_file(
@@ -524,11 +560,25 @@ def register(app, ctx):
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
 
-            op_log_finish(op_id, "completed", target_json={
-                "filename": safe_name, "result": "success", "size": len(content),
-                "dest": relative_path})
+            # Truthful audit: a failed/partial upload must not be logged as
+            # completed (qa P1: op_log said success even on error).
+            ok = isinstance(r, dict) and r.get("status") in ("ok", "partial")
+            op_log_finish(op_id, "completed" if ok else "failed",
+                          target_json={
+                              "filename": safe_name, "result": "success" if ok else "error",
+                              "size": len(content), "dest": relative_path,
+                              "upload_status": r.get("status") if isinstance(r, dict) else "?",
+                          },
+                          last_error=None if ok else str(r.get("error", "upload failed"))[:200])
+            if not ok:
+                return JSONResponse(
+                    {"status": "error", "message": str(r.get("error", "upload failed")),
+                     "filename": safe_name, "dest": relative_path},
+                    status_code=500)
+            # Never echo internal temp paths back to the client.
             return JSONResponse({"status": "ok", "filename": safe_name,
-                                 "dest": relative_path, **r})
+                                 "dest": relative_path, "file_id": r.get("file_id"),
+                                 "sha256": r.get("sha256"), "upload_status": r.get("status")})
         except Exception as e:
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -599,13 +649,24 @@ def register(app, ctx):
     async def api_download_to_path(file_id: int, data: dict = Body(...)):
         dest = data.get("path", "")
         if not dest:
-            return JSONResponse({"status": "error", "message": "Destination path required"})
+            return JSONResponse(
+                {"status": "error", "message": "Destination path required"},
+                status_code=400)
+        known = db.execute(
+            "SELECT 1 FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,)
+        ).fetchone()
+        if not known:
+            return JSONResponse(
+                {"status": "error", "message": f"File id={file_id} not found (or soft-deleted)"},
+                status_code=404)
         try:
             dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             result = downloader_mod.download_file(file_id, str(dest_path))
             if result["status"] != "ok":
-                return JSONResponse({"status": "error", "message": result.get("message", "download failed")})
+                return JSONResponse(
+                    {"status": "error", "message": result.get("message", "download failed")},
+                    status_code=500)
             return JSONResponse({"status": "ok", "path": str(dest_path), "size": dest_path.stat().st_size})
         except Exception as e:
-            return JSONResponse({"status": "error", "message": str(e)})
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)

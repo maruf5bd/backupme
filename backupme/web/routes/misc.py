@@ -135,9 +135,11 @@ def register(app, ctx):
             if backend:
                 check_type = f"backend:{backend}"
             result = verify.run_integrity_check(check_type, count=count, backend_name=backend or None)
+            # run_integrity_check returns 'checked'/'failed' — the old
+            # 'checked_files' keys recorded always-zero counters (qa D16).
             op_log_finish(op_id, "completed", target_json={
-                "checked_files": result.get("checked_files", 0),
-                "failed_files": result.get("failed_files", 0)})
+                "checked_files": result.get("checked", 0),
+                "failed_files": result.get("failed", 0)})
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
             op_log_finish(op_id, "failed", last_error=str(e))
