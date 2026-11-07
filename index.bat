@@ -458,15 +458,20 @@ echo    backupme web
 echo    backupme web --port 8080
 echo.
 set /p args="Enter args: "
-if "%args%"=="" (
-    echo Starting web dashboard on default port...
-    start http://127.0.0.1:8080
-    backupme web
-) else (
-    echo Starting web dashboard...
-    start http://127.0.0.1:8080
-    backupme web %args%
+set "port=8080"
+set "portnext=0"
+if not "%args%"=="" (
+    for %%a in (%args%) do (
+        if "!portnext!"=="1" (
+            set "port=%%a"
+            set "portnext=0"
+        )
+        if "%%a"=="--port" set "portnext=1"
+    )
 )
+echo Starting web dashboard on port !port! ...
+start "" http://127.0.0.1:!port!
+backupme web %args%
 pause
 cls
 goto :menu
