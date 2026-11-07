@@ -43,8 +43,13 @@
 
 - **Verify completion from the DB, not from task handles** — background job IDs can be lost
   to context rollovers; the data (orphan-chunk counts) is the source of truth.
+- **Verify heals by DOWNLOADING THE LATEST VERSION, never by row presence or a remembered
+  id** — repairs create new version rows (files table versions by root+path+version_seq);
+  testing a stale id "proves" breakage that no longer exists (D7), and row presence proves
+  nothing about physical bytes (the original 10/10 heal claim).
 - **Fan out but fence** — parallel agents only with disjoint file ownership; a routes.py
-  edit by two agents is a lost edit.
+  edit by two agents is a lost edit. Never run the full test suite against the tree while
+  a refactor agent is mid-move — you will "find" failures that are just half-moved modules.
 
 ## GC / destructive operations (2026-11-05)
 
