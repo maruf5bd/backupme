@@ -1966,6 +1966,26 @@ def register_routes(app, config: cfgmod.Config):
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
 
+    @app.post("/api/backends/{name}/rescan")
+    async def api_backend_rescan(name: str):
+        be = _get_backend(name)
+        if be is None:
+            return JSONResponse({"error": f"backend '{name}' not found"}, status_code=404)
+        try:
+            connected = be.connected or be.connect()
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=502)
+        if not connected:
+            return JSONResponse(
+                {"status": "error", "message": f"backend '{name}' connect failed"},
+                status_code=502)
+        try:
+            from ..core.backend_scan import rescan_backend
+            # rescan_backend returns a JSON-ready dict (counts + sorted lists).
+            return JSONResponse(rescan_backend(be))
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)})
+
     # ── API: Replication Status ──────────────────────────────────
 
     @app.get("/api/replication/status")

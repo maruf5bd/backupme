@@ -112,6 +112,9 @@
       <button class="btn btn-ghost btn-sm" onclick="verifyBackend('{{ be.name }}', this)" title="Verify files">
         <i data-lucide="shield-check" style="width:14px;height:14px;"></i>
       </button>
+      <button class="btn btn-ghost btn-sm" onclick="rescanBackend('{{ be.name }}', this)" title="Rescan (walk vs DB diff)">
+        <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
+      </button>
       <button class="btn btn-ghost btn-sm" onclick="editBackend('{{ be.name }}', '{{ be.type }}')" title="Edit">
         <i data-lucide="pencil" style="width:14px;height:14px;"></i>
       </button>
@@ -471,6 +474,36 @@
       const result = await App.fetchAPI('/api/backends/' + encodeURIComponent(name) + '/verify?count=10', { method: 'POST' });
       App.Toast.success(name + ': Verified ' + (result.checked_files || 0) + ' files, ' + (result.failed_files || 0) + ' failed');
     } catch (e) {
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  window.rescanBackend = async function(name, btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      const result = await App.fetchAPI('/api/backends/' + encodeURIComponent(name) + '/rescan', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      const summary = 'walk=' + (result.walk_files || 0)
+        + ', db=' + (result.db_paths || 0)
+        + ', missing=' + (result.missing_on_box || []).length + ' (' + (result.missing_bytes || 0) + ' bytes)'
+        + ', extra=' + (result.extra_on_box || []).length
+        + ', size mismatches=' + (result.size_mismatch || []).length;
+      // Red emphasis when the box disagrees with the DB (missing files or
+      // size mismatches = cheap corruption signal).
+      if ((result.missing_on_box || []).length > 0 || (result.size_mismatch || []).length > 0) {
+        App.Toast.error(name + ': ' + summary, 8000);
+      } else {
+        App.Toast.success(name + ': ' + summary, 8000);
+      }
+    } catch (e) {
+      // Error already shown by fetchAPI
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
