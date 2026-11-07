@@ -429,6 +429,16 @@ def ingest_archive(
                 archive_path, len(done_members), est["members"], excluded,
                 oversize_skipped)
 
+        if total > 0 and error_count == total:
+            # Every member failed to upload (backend outage). Committing the
+            # op and moving the archive to .done would strand its data behind
+            # the idempotency skip forever (qa P1). Raise into the failure
+            # path: op marked failed, archive left in the drop root for a
+            # retry — dedup makes the retry cheap for any member that landed.
+            raise RuntimeError(
+                f"all {total} member(s) of {archive_path} failed to upload "
+                "(backend outage) — archive left in place for retry")
+
         payload = {
             "account": account,
             "archive": archive_path,
