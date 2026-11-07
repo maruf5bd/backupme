@@ -175,3 +175,35 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - Backlog P1 code-quality track (B05-B07) is now fully closed. Remaining known work:
   QA-visibility item (errors surfaced in partial responses) satisfied via B07 logging;
   standing user decisions unchanged (gc apply, purges, 2FA.7z, password rotation).
+
+## 2026-11-07 (update 8)
+
+- **Restore-from-search landed (`ad69a1b`)**: the user asked whether search results can
+  be restored — per-file restore existed (Download / Download-to-path via Details), but
+  no bulk option. New `POST /api/restore/files` restores an explicit id set to a
+  server-side folder through the existing background worker + SSE progress card; the
+  Files table header gained "Restore all results to folder…" (shown when a query is
+  active) and "Restore selected to folder…" (also in the bulk bar). Duplicate ids
+  collapse, multiple versions of one path restore once (latest id wins), unknown ids
+  are skipped and reported. Tests: tests/test_web_restore_files.py (5).
+- **D9 — P0 data-correctness bug found and fixed (`cd5361d`)**: a changed re-upload
+  UPDATED the file row in place (index_file matches path+version_seq=1) but the
+  chunk-write sites' `INSERT OR IGNORE` silently kept the stale chunk rows — restores
+  then served the OLD content under the NEW sha and the new blob got a phantom ref.
+  Found by the new feature's "latest version wins" test (real integrity mismatch).
+  Fix: `_replace_file_chunks()` at all 3 chunk-write sites (batch, chunked, donor) +
+  migration.py — delete chunk rows first (FK), unref displaced blobs inside the caller
+  txn (`unref_blob(commit_now=False)`), insert new mapping; no-op when unchanged.
+  Dead shadowed `unref_blob` removed from dedup.py.
+- **Live impact quantified (read-only)**: the 2,183 sha-vs-blob-tail mismatches among
+  single-chunk live files are all 2026-05-era rows and are the legacy member-NAMING
+  convention — restore probes (K:\ hotspot files) sha-match file_sha, so they are NOT
+  damage. A 12-sample restore-probe over the 20,523 refreshed 2026-05 rows found 0
+  additional damage (1 error = the known missing-blob class, id 3105). Exactly 1 proven
+  damaged row: **id=2 (backupme.db's own backup, re-uploaded 2026-05-30)** — healed
+  live by re-backing a consistent sqlite snapshot through the FIXED pipeline
+  (177 MB, 3 chunks, post-fix restore sha-matched). Sample scripts:
+  `stale_chunk_census.py`, `stale_refined_census.py`, `stale_damage_sample.py`,
+  `repair_id2_and_probe3105.py`.
+- **Full suite green at landing** (401 collected via wide runner, 1 pre-existing skip,
+  exit 0) covering feature + fix together.
