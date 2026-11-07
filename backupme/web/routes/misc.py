@@ -1,0 +1,385 @@
+"""Misc API routes (backlog B05): status, logs (list/export), report
+(view/generate), reports history, search, encrypt init/status, activity,
+stats trends, convert, recompress, hash lookup, replication status.
+"""
+import io
+import json
+import sqlite3
+import time
+from pathlib import Path
+
+from fastapi import Body
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from backupme.core import database as db
+from backupme.core import crypto as crypto_mod
+from backupme.core import dedup, index as index_mod, verify
+from backupme.core import hasher as hasher_mod
+
+from .common import (_get_backends, _get_backend, _fts_phrase,
+                     _search_files_like)
+
+
+def register(app, ctx):
+
+    @app.get("/api/status")
+    async def api_status():
+        total_files = index_mod.file_count()
+        savings = dedup.total_dedup_savings()
+        gen = db.get_generation()
+        backends = _get_backends(ctx)
+
+        # Calculate actual stored bytes per backend from DB
+        backend_sizes = {}
+        try:
+            rows = db.execute(
+                "SELECT backend_name, SUM(stored_size) as total_size FROM blob_storage GROUP BY backend_name"
+            ).fetchall()
+            for r in rows:
+                backend_sizes[r["backend_name"]] = r["total_size"]
+        except Exception:
+            pass
+
+        be_full = []
+        for b in backends:
+            be_full.append({
+                "name": b.name,
+                "type": b.type,
+                "connected": b.connected,
+                "stored_bytes": backend_sizes.get(b.name, 0)
+            })
+
+        return JSONResponse({
+            "total_files": total_files,
+            "blob_count": savings.get("total_blobs", 0),
+            "stored_bytes": savings.get("stored_bytes", 0),
+            "dedup_ratio": savings.get("ratio", 1.0),
+            "generation": gen,
+            "backends": be_full,
+        })
+
+    @app.get("/api/logs")
+    async def api_logs(status: str = "", limit: int = 100):
+        if status:
+            rows = db.execute(
+                "SELECT * FROM op_log WHERE status = ? ORDER BY id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM op_log ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return JSONResponse([dict(r) for r in rows])
+
+    @app.get("/api/report")
+    async def api_report():
+        report = verify.get_report()
+        # B09: per-operation skip/failure counters live in each operation's
+        # result payload; op_log is the one place they persist. Surface the
+        # latest completed row per op type so callers see the last
+        # recompress/rebuild/gc/... counters without re-running anything.
+        counters = {}
+        for op_type in ("recompress", "rebuild", "rebalance", "gc", "purge", "report"):
+            try:
+                row = db.execute(
+                    "SELECT status, target_json, completed_at FROM op_log "
+                    "WHERE op_type = ? AND completed_at IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1", (op_type,)).fetchone()
+            except sqlite3.OperationalError:
+                continue
+            if row is None:
+                continue
+            try:
+                payload = json.loads(row["target_json"]) if row["target_json"] else {}
+            except ValueError:
+                payload = {}
+            counters[op_type] = {"status": row["status"],
+                                 "completed_at": row["completed_at"], **payload}
+        report["op_counters"] = counters
+        return JSONResponse(report)
+
+    @app.get("/api/search")
+    async def api_search(q: str = "", scope: str = ""):
+        if not q:
+            return JSONResponse([])
+        if scope == "content":
+            rows = db.execute(
+                "SELECT * FROM files WHERE content_text LIKE ? AND deleted_at IS NULL LIMIT 50",
+                (f"%{q}%",),
+            ).fetchall()
+            return JSONResponse([dict(r) for r in rows])
+        # Quoted-phrase MATCH + LIKE fallback: raw user input must never
+        # surface as a 500 via an fts5 syntax error (qa defect D3).
+        try:
+            rows = db.execute(
+                "SELECT f.* FROM files f INNER JOIN files_fts ON f.id = files_fts.rowid "
+                "WHERE files_fts MATCH ? AND f.deleted_at IS NULL ORDER BY rank LIMIT 50",
+                (_fts_phrase(q),),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return JSONResponse(_search_files_like(q, limit=50))
+        return JSONResponse([dict(r) for r in rows])
+
+    @app.post("/api/report/generate")
+    async def api_report_generate(backend: str = "", count: int = 10):
+        report_key = f"report:{backend}:{int(time.time())}"
+        try:
+            db.execute(
+                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
+                (report_key, "report", json.dumps({"backend": backend, "count": count}), "running"),
+            )
+            db.commit()
+            op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        except Exception:
+            op_id = None
+
+        try:
+            check_type = "random"
+            if backend:
+                check_type = f"backend:{backend}"
+            result = verify.run_integrity_check(check_type, count=count, backend_name=backend or None)
+            if op_id:
+                try:
+                    db.execute(
+                        "UPDATE op_log SET status = 'completed', completed_at = datetime('now'), target_json = ? WHERE id = ?",
+                        (json.dumps({"checked_files": result.get("checked_files", 0), "failed_files": result.get("failed_files", 0)}), op_id),
+                    )
+                    db.commit()
+                except Exception:
+                    pass
+            return JSONResponse({"status": "ok", **result})
+        except Exception as e:
+            if op_id:
+                try:
+                    db.execute(
+                        "UPDATE op_log SET status = 'failed', completed_at = datetime('now'), last_error = ? WHERE id = ?",
+                        (str(e), op_id),
+                    )
+                    db.commit()
+                except Exception:
+                    pass
+            return JSONResponse({"status": "error", "message": str(e)})
+
+    @app.post("/api/encrypt/init")
+    async def api_encrypt_init():
+        try:
+            key = crypto_mod.generate_key()
+            key_path = "backupme.key"
+            crypto_mod.save_key(key, key_path)
+            return JSONResponse({"status": "ok", "message": f"Encryption key saved to {key_path}"})
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)})
+
+    @app.get("/api/activity")
+    async def api_activity(limit: int = 20):
+        rows = db.execute(
+            "SELECT * FROM op_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        if not rows:
+            files = index_mod.get_all_files(limit=limit)
+            return JSONResponse([{
+                "op_type": "upload",
+                "target_json": json.dumps({"file": f["relative_path"], "size": f["size"]}),
+                "status": "completed",
+                "started_at": f["created_at"],
+            } for f in files])
+        return JSONResponse([dict(r) for r in rows])
+
+    @app.get("/api/stats/trend")
+    async def api_stats_trend(days: int = 7):
+        try:
+            rows = db.execute(
+                "SELECT DATE(started_at) as date, COUNT(*) as count "
+                "FROM op_log WHERE started_at IS NOT NULL "
+                "GROUP BY DATE(started_at) ORDER BY date DESC LIMIT ?",
+                (days,),
+            ).fetchall()
+            result = [{"date": r["date"], "count": r["count"]} for r in rows]
+            result.reverse()
+            return JSONResponse(result)
+        except Exception:
+            return JSONResponse([])
+
+    @app.get("/api/reports")
+    async def api_reports(limit: int = 20):
+        try:
+            rows = db.execute(
+                "SELECT * FROM integrity_checks ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return JSONResponse([dict(r) for r in rows])
+        except Exception as e:
+            return JSONResponse([])
+
+    @app.get("/api/reports/{report_id}")
+    async def api_report_detail(report_id: int):
+        try:
+            row = db.execute("SELECT * FROM integrity_checks WHERE id = ?", (report_id,)).fetchone()
+            if not row:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            r = dict(row)
+            if r.get("details"):
+                try:
+                    import json as _json
+                    r["details"] = _json.loads(r["details"])
+                except Exception:
+                    pass
+            return JSONResponse(r)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/convert/{backend_name}")
+    async def api_convert(backend_name: str, prefix: str = "", delete: bool = False, target: str = ""):
+        try:
+            from backupme.core.converter import convert_backend
+            result = convert_backend(
+                backend_name=backend_name,
+                prefix=prefix,
+                target_backend_name=target or None,
+                delete=delete,
+                resume=True,
+            )
+            return JSONResponse({"status": "ok", **result})
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)})
+
+    @app.post("/api/recompress")
+    async def api_recompress():
+        try:
+            from backupme.core import compress as compress_mod
+            import tempfile
+            rows = db.execute(
+                "SELECT bs.blob_id, bs.storage_path, bs.backend_name, bs.stored_size, bs.compression_algo "
+                "FROM blob_storage bs WHERE bs.compression_algo != 'zstd' LIMIT 100"
+            ).fetchall()
+            converted = 0
+            for row in rows:
+                tmp_dir = None
+                try:
+                    be = _get_backend(ctx, row["backend_name"])
+                    if not be:
+                        continue
+                    tmp_dir = Path(tempfile.mkdtemp())
+                    tmp = tmp_dir / "blob"
+                    be.download(row["storage_path"], str(tmp))
+                    if tmp.stat().st_size == 0:
+                        continue
+                    data = tmp.read_bytes()
+                    new_data = compress_mod.compress(data)
+                    del data
+                    tmp.write_bytes(new_data)
+                    new_hash = hasher_mod.sha256_file(str(tmp))
+                    be.upload(str(tmp), row["storage_path"])
+                    db.execute(
+                        "UPDATE blob_storage SET compression_algo = 'zstd', stored_size = ?, stored_sha256 = ? WHERE blob_id = ? AND backend_name = ?",
+                        (len(new_data), new_hash, row["blob_id"], row["backend_name"]),
+                    )
+                    converted += 1
+                except Exception:
+                    continue
+                finally:
+                    if tmp_dir:
+                        import shutil
+                        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+            db.commit()
+            return JSONResponse({"status": "ok", "converted": converted})
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)})
+
+    @app.get("/api/encrypt/status")
+    async def api_encrypt_status():
+        key_path = Path("backupme.key")
+        exists = key_path.exists()
+        return JSONResponse({
+            "key_exists": exists,
+            "key_path": str(key_path),
+            "key_size": key_path.stat().st_size if exists else 0,
+            # B14: cipher/kdf/file-layout capabilities — lets callers tell the
+            # AEAD tag-at-end layout from the legacy tag-after-nonce one.
+            "capabilities": crypto_mod.capabilities(),
+        })
+
+    @app.get("/api/hash/{sha256}")
+    async def api_hash_lookup(sha256: str):
+        try:
+            rows = db.execute(
+                "SELECT f.* FROM files f WHERE f.sha256 = ? AND f.deleted_at IS NULL LIMIT 20",
+                (sha256,),
+            ).fetchall()
+            if not rows:
+                rows = db.execute(
+                    "SELECT f.* FROM files f WHERE f.sha256 LIKE ? AND f.deleted_at IS NULL LIMIT 20",
+                    (f"{sha256}%",),
+                ).fetchall()
+            return JSONResponse([dict(r) for r in rows])
+        except Exception as e:
+            return JSONResponse([])
+
+    @app.get("/api/logs/export")
+    async def api_logs_export(fmt: str = "json", limit: int = 500):
+        rows = db.execute(
+            "SELECT * FROM op_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        logs = [dict(r) for r in rows]
+        if fmt == "csv":
+            import csv
+            buf = io.StringIO()
+            if logs:
+                writer = csv.DictWriter(buf, fieldnames=logs[0].keys())
+                writer.writeheader()
+                writer.writerows(logs)
+            return StreamingResponse(
+                io.BytesIO(buf.getvalue().encode("utf-8")),
+                media_type="text/csv",
+                headers={"Content-Disposition": 'attachment; filename="logs.csv"'},
+            )
+        return StreamingResponse(
+            io.BytesIO(json.dumps(logs, indent=2, default=str).encode("utf-8")),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="logs.json"'},
+        )
+
+    @app.get("/api/stats/storage-trend")
+    async def api_storage_trend(days: int = 30):
+        try:
+            rows = db.execute(
+                "SELECT DATE(started_at) as date, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
+                "COUNT(*) as total FROM op_log WHERE started_at IS NOT NULL "
+                "GROUP BY DATE(started_at) ORDER BY date DESC LIMIT ?",
+                (days,),
+            ).fetchall()
+            result = [{"date": r["date"], "completed": r["completed"], "total": r["total"]} for r in rows]
+            result.reverse()
+            return JSONResponse(result)
+        except Exception:
+            return JSONResponse([])
+
+    @app.get("/api/replication/status")
+    async def api_replication_status():
+        try:
+            rows = db.execute(
+                "SELECT bs.blob_id, bs.backend_name, bs.stored_size, b.ref_count "
+                "FROM blob_storage bs LEFT JOIN blobs b ON bs.blob_id = b.blob_id "
+                "ORDER BY bs.blob_id"
+            ).fetchall()
+            blob_map = {}
+            for r in rows:
+                bid = r["blob_id"]
+                if bid not in blob_map:
+                    blob_map[bid] = {"blob_id": bid, "ref_count": r["ref_count"] or 0, "backends": [], "stored_size": r["stored_size"] or 0}
+                blob_map[bid]["backends"].append(r["backend_name"])
+            total_blobs = len(blob_map)
+            fully_replicated = sum(1 for b in blob_map.values() if len(b["backends"]) >= 2)
+            single_copy = sum(1 for b in blob_map.values() if len(b["backends"]) == 1)
+            backend_counts = {}
+            for b in blob_map.values():
+                for be in b["backends"]:
+                    backend_counts[be] = backend_counts.get(be, 0) + 1
+            return JSONResponse({
+                "total_blobs": total_blobs,
+                "fully_replicated": fully_replicated,
+                "single_copy": single_copy,
+                "per_backend": backend_counts,
+            })
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
