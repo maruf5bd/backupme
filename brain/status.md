@@ -207,3 +207,12 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   `repair_id2_and_probe3105.py`.
 - **Full suite green at landing** (401 collected via wide runner, 1 pre-existing skip,
   exit 0) covering feature + fix together.
+- **Upload destination folder (`186c8b3`)**: the web uploader already had backend +
+  copy-count selection; the missing piece was WHERE IN THE INDEX files land — they were
+  hardcoded to `web_upload/<filename>`. A new optional "Destination folder" input lands
+  uploads at `web_upload/<folder>/<filename>`; `..`/`.`/drive-letter/absolute shapes are
+  rejected with 400 and filenames are reduced to their basename. Verified live
+  (upload → search hit at the chosen path → sha-matched download).
+- **Backlog scoreboard reconciled (`c008a43`)**: B01-B16 ALL DONE (B12/B13 verified
+  end-to-end incl. a live rescan on local_disk: 19,819 walked, 0 missing, 0 mismatch).
+  The improvement queue is empty; remaining items are the standing user decisions.
