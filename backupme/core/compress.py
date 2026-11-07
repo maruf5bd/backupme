@@ -139,6 +139,13 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
     Safe order: recompress locally → upload new variant → verify → INSERT blob_storage
     → DELETE old variant → DELETE old blob_storage row.
     Never lose readable data — can crash between steps and recover.
+
+    Bundle objects are SKIPPED: a parent bundle's members reference it via
+    `<path>@<offset>:<len>` byte ranges in the parent's compressed layout, so
+    re-compressing the parent invalidates every member mapping (qa P1: the
+    rename made all batched files unrestorable). Members are skipped too —
+    their content is recompressed with the parent, and the parent keeps its
+    original compression.
     """
     from backupme.core.database import execute, commit
     import hashlib, tempfile, time
@@ -157,26 +164,54 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
             (algo, level),
         ).fetchall()
 
+    # Resolve backends once through the real config: get_backend(name, {})
+    # with a cold instance cache resolved nothing in a fresh CLI process and
+    # recompress was a silent no-op (qa P1).
+    from backupme.config import load_config
+    from backupme.backends import get_backend
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+
     recompressed = 0
     skipped = 0
     # B09: failures must be counted and reported, never absorbed silently.
     failed = 0
     for row_s in rows:
+        blob_id = None
         try:
             row = dict(row_s)
             blob_id = row["blob_id"]
+            storage_path = row["storage_path"] or ""
 
             if row["encrypted"] and not key:
                 skipped += 1
                 continue
 
-            from backupme.backends import get_backend
-            bk = get_backend(row["backend_name"], {})
+            # Member range rows (parent@off:len) are not standalone objects.
+            if "@" in storage_path:
+                skipped += 1
+                continue
+
+            # Parent bundle objects carry member rows that point into this
+            # exact compressed layout — recompressing them breaks restores.
+            has_members = execute(
+                "SELECT 1 FROM blob_storage WHERE blob_id LIKE ? || '/%' LIMIT 1",
+                (blob_id,),
+            ).fetchone()
+            if has_members:
+                skipped += 1
+                continue
+
+            bk = get_backend(row["backend_name"], cfg)
             if bk is None:
+                log.warning("recompress: backend %s not found; counting as failed", row["backend_name"])
+                failed += 1
                 continue
 
             dl_path = Path(tempfile.mkdtemp()) / "recompress_dl"
-            bk.download(row["storage_path"], str(dl_path))
+            bk.download(storage_path, str(dl_path))
             raw = dl_path.read_bytes()
 
             if row["encrypted"] and key:
