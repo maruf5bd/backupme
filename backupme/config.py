@@ -117,6 +117,12 @@ class IngestConfig:
     max_member_size_gb: float = 5.0      # skip members larger than this
 
 @dataclass
+class GuardConfig:
+    # Off-site DB snapshot guard (DB-loss insurance layer).
+    offsite_snapshots: bool = True       # daily scheduler tick ships a DB snapshot to every backend
+    keep_local_snapshots: int = 14       # advisory only: target local snapshot count (pruning not implemented yet)
+
+@dataclass
 class BackendDef:
     type: str = ""
     name: str = ""
@@ -168,6 +174,7 @@ class Config:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cpanel_ingest: IngestConfig = field(default_factory=IngestConfig)
+    guard: GuardConfig = field(default_factory=GuardConfig)
     web: WebConfig = field(default_factory=WebConfig)
 
 
@@ -275,6 +282,8 @@ def load_config(path: str | None = None) -> Config:
         cfg.notifications = NotificationsConfig(**_filter_fields(NotificationsConfig, raw["notifications"]))
     if "cpanel_ingest" in raw:
         cfg.cpanel_ingest = IngestConfig(**_filter_fields(IngestConfig, raw["cpanel_ingest"]))
+    if "guard" in raw:
+        cfg.guard = GuardConfig(**_filter_fields(GuardConfig, raw["guard"]))
     if "web" in raw:
         cfg.web = WebConfig(**_filter_fields(WebConfig, raw["web"]))
 

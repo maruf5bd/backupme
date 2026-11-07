@@ -72,14 +72,35 @@ def rebuild(ctx, as_json):
 
 
 @db.command()
+@click.option("--offsite", is_flag=True,
+              help="Also ship the snapshot to every reachable backend (off-site guard)")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
-def snapshot(ctx, as_json):
+def snapshot(ctx, offsite, as_json):
     from ..core.snapshot import create_snapshot, prune_snapshots
     result = create_snapshot()
+    ship = None
+    if offsite:
+        from ..core import offsite_guard
+        ship = offsite_guard.ship_snapshot(ctx.obj["config"], snapshot=result)
     prune_snapshots()
     data = {"snapshot": result["snapshot"], "generation": result["generation"]}
-    emit(data, as_json=as_json, human=lambda d: click.echo(f"Snapshot: {d['snapshot']} (gen={d['generation']})"))
+    if ship is not None:
+        data["offsite"] = ship
+
+    def human(d):
+        click.echo(f"Snapshot: {d['snapshot']} (gen={d['generation']})")
+        guard_result = d.get("offsite")
+        if guard_result:
+            click.echo(f"Off-site: {guard_result.get('status')}")
+            for name, entry in (guard_result.get("backends") or {}).items():
+                if entry.get("status") == "ok":
+                    click.echo(f"  {name}: ok {entry.get('remote_path')} "
+                               f"({entry.get('size')} bytes, verify={entry.get('verify')})")
+                else:
+                    click.echo(f"  {name}: error {entry.get('error', 'unknown')}")
+
+    emit(data, as_json=as_json, human=human)
 
 
 @db.command()

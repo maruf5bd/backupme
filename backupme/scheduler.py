@@ -159,12 +159,14 @@ class BackupScheduler:
         self._last_export = 0.0
         self._last_gc = 0.0
         self._last_verify = 0.0
+        self._last_guard = 0.0
         self._last_health: dict | None = None
         self._ingest_lock = threading.Lock()
         self._purge_lock = threading.Lock()
         self._export_lock = threading.Lock()
         self._gc_lock = threading.Lock()
         self._verify_lock = threading.Lock()
+        self._guard_lock = threading.Lock()
 
     def _sched(self) -> dict:
         sc = self.config.get("scheduler", {}) or {}
@@ -228,6 +230,9 @@ class BackupScheduler:
                 if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
                     self._last_verify = now
                     self._run_scheduled_verify()
+                if now - self._last_guard >= _DAY_SECONDS:
+                    self._last_guard = now
+                    self._run_offsite_guard()
             except Exception:
                 # One failed pass must never kill the daemon thread silently.
                 log.exception("scheduler pass crashed — continuing")
@@ -236,6 +241,10 @@ class BackupScheduler:
     def _ingest_enabled(self) -> bool:
         ci = self.config.get("cpanel_ingest", {}) or {}
         return bool(ci.get("enabled", False))
+
+    def _guard_enabled(self) -> bool:
+        g = self.config.get("guard", {}) or {}
+        return bool(g.get("offsite_snapshots", True))
 
     def _run_backups(self):
         for entry in self.config.get("backups", []):
@@ -362,6 +371,27 @@ class BackupScheduler:
             log.exception("cold-export tick failed")
         finally:
             self._export_lock.release()
+
+    def _run_offsite_guard(self):
+        """Off-site guard tick: ship a fresh DB snapshot to every backend.
+
+        The DB is the only map of the vault; this daily tick is the insurance
+        copy. Gated on guard.offsite_snapshots; never deletes anything.
+        """
+        if not self._guard_enabled():
+            return
+        if not self._guard_lock.acquire(blocking=False):
+            log.info("offsite-guard tick skipped — previous guard still running")
+            return
+        try:
+            from backupme.core import offsite_guard
+            result = offsite_guard.ship_snapshot(self.config)
+            log.info("offsite-guard tick: status=%s backends=%s",
+                     result.get("status"), sorted(result.get("backends", {})))
+        except Exception:
+            log.exception("offsite-guard tick failed")
+        finally:
+            self._guard_lock.release()
 
     def _run_scheduled_gc(self):
         if not self._gc_lock.acquire(blocking=False):
