@@ -18,7 +18,6 @@ Route registration itself never lives here — see the domain modules.
 import asyncio
 import json
 import os
-import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -28,8 +27,6 @@ from fastapi.responses import StreamingResponse
 from backupme import config as cfgmod
 from backupme.log import get_logger
 
-from backupme.backends import invalidate_cache
-from backupme.backends import get_all_backends as _raw_get_all_backends
 from backupme.core import database as db
 from backupme.core import index as index_mod
 
@@ -135,21 +132,53 @@ def _config_as_dict(ctx: RouteContext):
 
 # ── Backend helpers ───────────────────────────────────────────
 
+# Name -> (config-entry fingerprint, backend instance). Instances are reused
+# across requests so the dashboard does not open a fresh remote session on
+# every poll — Storage Boxes rate-limit new SSH sessions and the old
+# invalidate-everything behavior tripped that limit into a full outage
+# (defect D10). An entry is rebuilt only when its config actually changes.
+_backend_pool: dict[str, tuple[dict, object]] = {}
+
+
+def _reset_backend_pool():
+    """Drop pooled backend instances (used at registration for per-app
+    test isolation)."""
+    for _, inst in _backend_pool.values():
+        try:
+            inst.disconnect()
+        except Exception:
+            pass
+    _backend_pool.clear()
+
+
 def _get_backends(ctx: RouteContext):
-    invalidate_cache()
     cfg = _config_dict(ctx)
-    connected = _raw_get_all_backends(cfg)
-    connected_names = {b.name for b in connected}
-    all_backends = list(connected)
+    all_backends = []
     for btype in ("local", "ftp", "sftp", "smb", "ssh", "rclone", "ninedrive"):
         for entry in cfg.get(btype, []):
             name = entry.get("name", "")
-            if name and name not in connected_names:
+            if not name:
+                continue
+            cached = _backend_pool.get(name)
+            if cached and cached[0] == entry:
+                inst = cached[1]
+            else:
                 from ...backends import BACKEND_MAP
                 cls = BACKEND_MAP.get(btype)
-                if cls:
-                    inst = cls(name, entry)
-                    all_backends.append(inst)
+                if not cls:
+                    continue
+                if cached:
+                    try:
+                        cached[1].disconnect()
+                    except Exception:
+                        pass
+                inst = cls(name, entry)
+                try:
+                    inst.connect()
+                except Exception as e:
+                    log.warning("backend %s failed to connect; listing as offline: %s", name, e)
+                _backend_pool[name] = (dict(entry), inst)
+            all_backends.append(inst)
     return all_backends
 
 
@@ -378,6 +407,7 @@ def reset_background_state():
     _restore_event.set()
     _restore_event.clear()
     _scan_event.set()
+    _reset_backend_pool()
     _scan_event.clear()
     _health_scan_event.set()
     _health_scan_event.clear()
