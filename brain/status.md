@@ -216,3 +216,11 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - **Backlog scoreboard reconciled (`c008a43`)**: B01-B16 ALL DONE (B12/B13 verified
   end-to-end incl. a live rescan on local_disk: 19,819 walked, 0 missing, 0 mismatch).
   The improvement queue is empty; remaining items are the standing user decisions.
+- **Storage test (all 4 backends) + D10 opened**: locals healthy — local_disk / h local
+  drive / hostraj Gdrive connect + 15/15 sampled restores sha-matched (checks 5-10).
+  storagebox: password VALID; config was on port 22 (box refuses SFTP channels there) —
+  FIXED to port 23 in config.yaml (gitignored) and verified (chunk downloads SHA-MATCH);
+  app-level checks still flake on the box's ~10-connection limit when the dashboard's
+  probes churn sessions (D10). Capacity truth: storagebox holds 3 blobs / 0.03 GiB
+  (essentially empty off-site) and h local drive + hostraj Gdrive are the SAME directory
+  (H:\Backupme) — only 2 distinct physical copies exist. Filling the box = user decision.
