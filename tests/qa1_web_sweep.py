@@ -1380,7 +1380,7 @@ def test_api_report_and_reports_history(client, seeded):
 
 
 def test_report_generate_runs_integrity_check(client, seeded):
-    r = client.post("/api/report/generate", params={"count": 7})
+    r = client.post("/api/report/generate", params={"count": 12})
     assert r.status_code == 200, r.text
     body = r.json()
     # The seeded dataset intentionally contains chunk-less rows, so the

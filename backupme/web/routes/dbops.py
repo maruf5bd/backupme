@@ -5,6 +5,7 @@ restore/rebuild (confirm gates), checkpoint.
 Snapshot delete/prune and db restore/rebuild are destructive and require
 ``confirm: true`` in the body (backlog B03).
 """
+import asyncio
 from pathlib import Path
 
 from fastapi import Body
@@ -24,25 +25,35 @@ def register(app, ctx):
 
     @app.get("/api/db/info")
     async def api_db_info():
-        gen = db.get_generation()
-        instance_id = db.get_instance_id()
-        integrity = db.check_integrity()
-        page_count = db.execute("PRAGMA page_count").fetchone()[0]
-        page_size = db.execute("PRAGMA page_size").fetchone()[0]
-        try:
-            wal = db.execute("PRAGMA journal_mode").fetchone()
-            wal_mode = wal[0].upper() == "WAL" if wal else False
-        except Exception as e:
-            log.warning("journal_mode PRAGMA read failed for /api/db/info: %s", e)
-            wal_mode = False
-        return JSONResponse({
-            "generation": gen,
-            "instance_id": instance_id,
-            "size": page_count * page_size,
-            "integrity_status": "ok" if not integrity else "corrupt",
-            "integrity_errors": integrity,
-            "wal_mode": wal_mode,
-        })
+        def _run_info():
+            # check_integrity() is the PRAGMA integrity_check — the 29s class
+            # on the live DB (qa defect D18). The executor thread always
+            # drops its own SQLite handle so no pooled connection outlives
+            # the request.
+            try:
+                gen = db.get_generation()
+                instance_id = db.get_instance_id()
+                integrity = db.check_integrity()
+                page_count = db.execute("PRAGMA page_count").fetchone()[0]
+                page_size = db.execute("PRAGMA page_size").fetchone()[0]
+                try:
+                    wal = db.execute("PRAGMA journal_mode").fetchone()
+                    wal_mode = wal[0].upper() == "WAL" if wal else False
+                except Exception as e:
+                    log.warning("journal_mode PRAGMA read failed for /api/db/info: %s", e)
+                    wal_mode = False
+                return {
+                    "generation": gen,
+                    "instance_id": instance_id,
+                    "size": page_count * page_size,
+                    "integrity_status": "ok" if not integrity else "corrupt",
+                    "integrity_errors": integrity,
+                    "wal_mode": wal_mode,
+                }
+            finally:
+                db.close_connection()
+
+        return JSONResponse(await asyncio.to_thread(_run_info))
 
     @app.get("/api/db/snapshots")
     async def api_db_snapshots():
@@ -62,7 +73,17 @@ def register(app, ctx):
 
     @app.post("/api/db/check")
     async def api_db_check():
-        errors = db.check_integrity()
+        def _run_check():
+            # PRAGMA integrity_check is the 29-second blocking class on the
+            # live DB — keep it off the event loop (qa defect D18). The
+            # executor thread always drops its own SQLite handle before
+            # returning so no pooled connection outlives the request.
+            try:
+                return db.check_integrity()
+            finally:
+                db.close_connection()
+
+        errors = await asyncio.to_thread(_run_check)
         if errors:
             return JSONResponse({"status": "error", "errors": errors})
         return JSONResponse({"status": "ok"})
@@ -73,7 +94,18 @@ def register(app, ctx):
         snap_key = f"snapshot:{int(time.time())}"
         op_id = op_log_start("snapshot", snap_key, {})
         try:
-            result = snapmod.create_snapshot()
+            def _run_snapshot():
+                # The sqlite backup (VACUUM INTO) + zstd compression take
+                # seconds on a large DB — run the snapshot off the event
+                # loop (qa defect D18). The op_log writes stay inline (fast
+                # single inserts) and the executor thread always drops its
+                # own SQLite handle before returning.
+                try:
+                    return snapmod.create_snapshot()
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_snapshot)
             op_log_finish(op_id, "completed", target_json=result)
             return JSONResponse({"status": "ok", **result})
         except Exception as e:

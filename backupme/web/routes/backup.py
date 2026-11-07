@@ -4,6 +4,7 @@ the drive scan (start + SSE stream + status).
 The scan worker writes progress into the shared _scan_state dict from
 routes/common.py, which /api/backup/scan/status and the SSE stream read.
 """
+import asyncio
 import os
 import stat
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from fastapi import Body
 from fastapi.responses import JSONResponse
 
+from backupme.core import database as db
 from backupme.core import uploader as uploader_mod
 from backupme.log import get_logger
 
@@ -31,50 +33,62 @@ def register(app, ctx):
         backup_key = f"backup:all:{int(time.time())}"
         op_id = op_log_start("backup", backup_key, {"source": "all"})
 
-        results = []
-        from backupme.core.skip import should_skip, should_skip_dir
-        cfg_dict = _config_as_dict(ctx)
-        for entry in _get_backups(ctx):
-            source = entry.get("source", "")
-            if not source or not os.path.exists(source):
-                results.append({"source": source, "status": "skipped"})
-                continue
-            backends = _get_backends(ctx)
+        def _run_backup():
+            # os.walk + the real upload pipeline over every configured source
+            # is potentially minutes of blocking work — keep it off the event
+            # loop (qa defect D18). op_log writes stay in the handler (fast
+            # single inserts) and the executor thread always drops its own
+            # SQLite handle before returning.
             try:
-                if os.path.isfile(source):
-                    skip, reason = should_skip(source)
-                    if skip:
-                        results.append({"source": source, "status": "skipped", "reason": reason})
+                results = []
+                from backupme.core.skip import should_skip, should_skip_dir
+                cfg_dict = _config_as_dict(ctx)
+                for entry in _get_backups(ctx):
+                    source = entry.get("source", "")
+                    if not source or not os.path.exists(source):
+                        results.append({"source": source, "status": "skipped"})
                         continue
-                    r = uploader_mod.upload_file(
-                        source_root=str(Path(source).parent),
-                        relative_path=os.path.basename(source),
-                        local_path=source,
-                        backends=backends,
-                        config=cfg_dict,
-                    )
-                    results.append({"source": source, **r})
-                elif os.path.isdir(source):
-                    count = 0
-                    for root, dirs, files in os.walk(source):
-                        dirs[:] = [d for d in dirs if not should_skip_dir(os.path.join(root, d))]
-                        for fn in files:
-                            fp = os.path.join(root, fn)
-                            skip, reason = should_skip(fp)
+                    backends = _get_backends(ctx)
+                    try:
+                        if os.path.isfile(source):
+                            skip, reason = should_skip(source)
                             if skip:
+                                results.append({"source": source, "status": "skipped", "reason": reason})
                                 continue
-                            rel = os.path.relpath(fp, source)
-                            uploader_mod.upload_file(
-                                source_root=source,
-                                relative_path=rel,
-                                local_path=fp,
+                            r = uploader_mod.upload_file(
+                                source_root=str(Path(source).parent),
+                                relative_path=os.path.basename(source),
+                                local_path=source,
                                 backends=backends,
                                 config=cfg_dict,
                             )
-                            count += 1
-                    results.append({"source": source, "status": "uploaded", "file_count": count})
-            except Exception as e:
-                results.append({"source": source, "status": "error", "error": str(e)})
+                            results.append({"source": source, **r})
+                        elif os.path.isdir(source):
+                            count = 0
+                            for root, dirs, files in os.walk(source):
+                                dirs[:] = [d for d in dirs if not should_skip_dir(os.path.join(root, d))]
+                                for fn in files:
+                                    fp = os.path.join(root, fn)
+                                    skip, reason = should_skip(fp)
+                                    if skip:
+                                        continue
+                                    rel = os.path.relpath(fp, source)
+                                    uploader_mod.upload_file(
+                                        source_root=source,
+                                        relative_path=rel,
+                                        local_path=fp,
+                                        backends=backends,
+                                        config=cfg_dict,
+                                    )
+                                    count += 1
+                            results.append({"source": source, "status": "uploaded", "file_count": count})
+                    except Exception as e:
+                        results.append({"source": source, "status": "error", "error": str(e)})
+                return results
+            finally:
+                db.close_connection()
+
+        results = await asyncio.to_thread(_run_backup)
 
         has_error = any(r.get("status") == "error" for r in results)
         status_str = ("failed" if has_error and all(r.get("status") == "error" for r in results)
@@ -95,42 +109,64 @@ def register(app, ctx):
         from backupme.core.skip import should_skip, should_skip_dir
         cfg_dict = _config_as_dict(ctx)
         backends = _get_backends(ctx)
-        try:
-            if os.path.isfile(source):
-                r = uploader_mod.upload_file(
-                    source_root=str(Path(source).parent),
-                    relative_path=os.path.basename(source),
-                    local_path=source,
-                    backends=backends,
-                    config=cfg_dict,
-                )
-                op_log_finish(op_id, "completed", target_json={
-                    "source": source, "result": "success", "file_count": 1})
-                return JSONResponse({"status": "ok", **r})
-            elif os.path.isdir(source):
-                count = 0
-                for root, dirs, files in os.walk(source):
-                    dirs[:] = [d for d in dirs if not should_skip_dir(os.path.join(root, d))]
-                    for fn in files:
-                        fp = os.path.join(root, fn)
-                        skip, reason = should_skip(fp)
-                        if skip:
-                            continue
-                        rel = os.path.relpath(fp, source)
-                        uploader_mod.upload_file(
-                            source_root=source,
-                            relative_path=rel,
-                            local_path=fp,
-                            backends=backends,
-                            config=cfg_dict,
-                        )
-                        count += 1
-                op_log_finish(op_id, "completed", target_json={
-                    "source": source, "result": "success", "file_count": count})
-                return JSONResponse({"status": "ok", "file_count": count})
-        except Exception as e:
-            op_log_finish(op_id, "failed", last_error=str(e))
-            return JSONResponse({"status": "error", "message": str(e)})
+
+        def _run_source_backup():
+            # os.walk + the real upload pipeline — potentially minutes of
+            # blocking work; keep it off the event loop (qa defect D18).
+            # op_log writes stay in the handler (fast single inserts) and
+            # the executor thread always drops its own SQLite handle before
+            # returning.
+            try:
+                if os.path.isfile(source):
+                    r = uploader_mod.upload_file(
+                        source_root=str(Path(source).parent),
+                        relative_path=os.path.basename(source),
+                        local_path=source,
+                        backends=backends,
+                        config=cfg_dict,
+                    )
+                    return {"kind": "file", "result": r}
+                elif os.path.isdir(source):
+                    count = 0
+                    for root, dirs, files in os.walk(source):
+                        dirs[:] = [d for d in dirs if not should_skip_dir(os.path.join(root, d))]
+                        for fn in files:
+                            fp = os.path.join(root, fn)
+                            skip, reason = should_skip(fp)
+                            if skip:
+                                continue
+                            rel = os.path.relpath(fp, source)
+                            uploader_mod.upload_file(
+                                source_root=source,
+                                relative_path=rel,
+                                local_path=fp,
+                                backends=backends,
+                                config=cfg_dict,
+                            )
+                            count += 1
+                    return {"kind": "dir", "count": count}
+                return {"kind": "none"}
+            except Exception as e:
+                return {"kind": "error", "error": str(e)}
+            finally:
+                db.close_connection()
+
+        outcome = await asyncio.to_thread(_run_source_backup)
+
+        kind = outcome["kind"]
+        if kind == "error":
+            op_log_finish(op_id, "failed", last_error=outcome["error"])
+            return JSONResponse({"status": "error", "message": outcome["error"]})
+        if kind == "file":
+            op_log_finish(op_id, "completed", target_json={
+                "source": source, "result": "success", "file_count": 1})
+            return JSONResponse({"status": "ok", **outcome["result"]})
+        if kind == "dir":
+            op_log_finish(op_id, "completed", target_json={
+                "source": source, "result": "success", "file_count": outcome["count"]})
+            return JSONResponse({"status": "ok", "file_count": outcome["count"]})
+        # Neither a file nor a dir: same fall-through as before the wrap.
+        return None
 
     # ── Scan Drive ───────────────────────────────────────────────
 

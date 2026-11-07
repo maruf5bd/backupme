@@ -17,6 +17,7 @@ from fastapi import Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from backupme.core import data_health
+from backupme.core import database as db
 from backupme.log import get_logger
 
 from .common import (_get_backends, _soft_delete_file,
@@ -34,9 +35,20 @@ def register(app, ctx):
         """Data Health dashboard. Replaced the old JSON ping — the only
         consumers (restart pollers in dashboard/settings) just check r.ok,
         and JSON access to the same data is /api/health/data."""
+        def _run_summary():
+            # summary() is a multi-query scan over the live tables — keep it
+            # off the event loop (qa defect D18). The executor thread always
+            # drops its own SQLite handle so no pooled connection outlives
+            # the request. The SSE scan stream below was already handled.
+            try:
+                return data_health.summary(ctx.config)
+            finally:
+                db.close_connection()
+
+        summary = await asyncio.to_thread(_run_summary)
         return ctx.templates.TemplateResponse("health.html", {
             "request": request,
-            "summary": data_health.summary(ctx.config),
+            "summary": summary,
         })
 
     # DEPRECATED (B04): use /api/health/data — kept as alias for old callers.
@@ -54,8 +66,18 @@ def register(app, ctx):
             finished = _health_scan_state["finished_at"]
             running = _health_scan_state["running"]
         scan_age = max(0.0, time.time() - finished) if finished else None
+
+        def _run_summary():
+            # data_health.summary() runs the multi-query damage scan —
+            # blocking work kept off the event loop (qa defect D18 class).
+            try:
+                return data_health.summary(ctx.config)
+            finally:
+                db.close_connection()
+
+        summary = await asyncio.to_thread(_run_summary)
         return JSONResponse({
-            "summary": data_health.summary(ctx.config),
+            "summary": summary,
             "scan": scan_snapshot,
             "scan_running": running,
             "scan_age_seconds": scan_age,
