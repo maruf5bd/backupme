@@ -38,8 +38,9 @@
           <option value="3">3 Copies</option>
         </select>
       </div>
-      <input type="text" id="upload-dest-folder" placeholder="Destination folder (optional) — e.g. projects/2026"
-             style="font-size:0.75rem; padding:4px 8px; height:32px; width:100%;">
+      <input type="text" id="upload-dest-folder" placeholder="Destination folder (optional) — e.g. projects/2026" list="upload-folder-list"
+             autocomplete="off" style="font-size:0.75rem; padding:4px 8px; height:32px; width:100%;">
+      <datalist id="upload-folder-list"></datalist>
       
       <!-- Progress Bar -->
       <div id="upload-progress-wrap" style="display:none;">
@@ -725,6 +726,27 @@
     document.getElementById('upload-progress-wrap').style.display = 'none';
     document.getElementById('upload-icon').style.color = 'var(--text-muted)';
     document.getElementById('drop-text').innerHTML = 'Drag & drop files here, or <span style="color:var(--accent);text-decoration:underline;">browse</span>';
+  }
+
+  // ── Destination folder suggestions (from the index) ─────
+  const destInput = document.getElementById('upload-dest-folder');
+  const destList = document.getElementById('upload-folder-list');
+  async function refreshFolderSuggestions() {
+    if (!destInput || !destList) return;
+    try {
+      const d = await App.fetchAPI('/api/upload/folders?q=' + encodeURIComponent(destInput.value || ''));
+      destList.innerHTML = '';
+      for (const f of (d.folders || [])) {
+        const opt = document.createElement('option');
+        opt.value = f;
+        destList.appendChild(opt);
+      }
+    } catch (e) { /* suggestions are best-effort */ }
+  }
+  if (destInput) {
+    destInput.addEventListener('input', App.debounce(refreshFolderSuggestions, 300));
+    destInput.addEventListener('focus', refreshFolderSuggestions);
+    refreshFolderSuggestions();
   }
 
   // ── File Content Preview Handlers ───────────────────────

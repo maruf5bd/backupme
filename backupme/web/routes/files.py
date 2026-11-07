@@ -453,6 +453,27 @@ def register(app, ctx):
             tmp.unlink(missing_ok=True)
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
+    @app.get("/api/upload/folders")
+    async def api_upload_folders(q: str = "", limit: int = 20):
+        """Distinct folder prefixes that already exist under web_upload, for
+        the uploader's destination-folder autocomplete (best-effort)."""
+        rows = db.execute(
+            "SELECT relative_path FROM files WHERE source_root = 'web_upload' AND deleted_at IS NULL"
+        ).fetchall()
+        folders = set()
+        for r in rows:
+            parts = (r["relative_path"] or "").replace("\\", "/").split("/")
+            for i in range(1, len(parts)):
+                folders.add("/".join(parts[:i]))
+        prefix_raw = q.strip()
+        under = prefix_raw.endswith(("/", "\\"))  # "a/" means: folders under a
+        prefix = prefix_raw.replace("\\", "/").strip("/").lower()
+        if under:
+            matches = sorted(f for f in folders if f.lower().startswith(prefix) and f != prefix)
+        else:
+            matches = sorted(f for f in folders if not prefix or prefix in f.lower())
+        return JSONResponse({"folders": matches[:max(1, min(limit, 50))]})
+
     @app.post("/api/upload/file")
     async def api_upload_file(
         file: UploadFile = File(...),

@@ -74,3 +74,24 @@ def test_upload_sanitizes_path_components_in_filename(client):
     r = _upload(client, "sub/dir/naughty.txt")
     assert r.status_code == 200, r.text
     assert r.json()["dest"] == "naughty.txt"  # browser-style name only
+
+
+def test_upload_folder_suggestions(client):
+    _upload(client, "one.txt", dest="a/b")
+    _upload(client, "two.txt", dest="a/c")
+    _upload(client, "three.txt", dest="solo")
+
+    r = client.get("/api/upload/folders")
+    assert r.status_code == 200, r.text
+    folders = r.json()["folders"]
+    for expected in ("a", "a/b", "a/c", "solo"):
+        assert expected in folders, folders
+
+    r = client.get("/api/upload/folders", params={"q": "a/"})
+    assert r.json()["folders"] == ["a/b", "a/c"]
+
+    r = client.get("/api/upload/folders", params={"q": "A"})
+    assert "a" in r.json()["folders"]  # case-insensitive
+
+    r = client.get("/api/upload/folders", params={"limit": 1})
+    assert len(r.json()["folders"]) == 1
