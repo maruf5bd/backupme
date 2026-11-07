@@ -4,25 +4,22 @@ the drive scan (start + SSE stream + status).
 The scan worker writes progress into the shared _scan_state dict from
 routes/common.py, which /api/backup/scan/status and the SSE stream read.
 """
-import asyncio
-import json
 import os
 import stat
-import sys
-import threading
 import time
 from pathlib import Path
 
 from fastapi import Body
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
-from backupme.core import database as db
 from backupme.core import uploader as uploader_mod
 from backupme.log import get_logger
 
 from .common import (_get_backends, _get_backups, _config_as_dict,
                      _scan_state, _scan_lock, _reset_scan, _emit_scan,
-                     _safe_stat, _lp)
+                     _safe_stat, _lp,
+                     op_log_start, op_log_finish,
+                     make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.backup")
 
@@ -32,16 +29,7 @@ def register(app, ctx):
     @app.post("/api/backup")
     async def api_trigger_backup():
         backup_key = f"backup:all:{int(time.time())}"
-        try:
-            db.execute(
-                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                (backup_key, "backup", json.dumps({"source": "all"}), "running"),
-            )
-            db.commit()
-            op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception as e:
-            log.warning("op_log insert failed for backup op %s: %s", backup_key, e)
-            op_id = None
+        op_id = op_log_start("backup", backup_key, {"source": "all"})
 
         results = []
         from backupme.core.skip import should_skip, should_skip_dir
@@ -88,17 +76,10 @@ def register(app, ctx):
             except Exception as e:
                 results.append({"source": source, "status": "error", "error": str(e)})
 
-        if op_id:
-            try:
-                has_error = any(r.get("status") == "error" for r in results)
-                status_str = "failed" if has_error and all(r.get("status") == "error" for r in results) else ("completed" if not has_error else "partial")
-                db.execute(
-                    "UPDATE op_log SET status = ?, completed_at = datetime('now'), target_json = ? WHERE id = ?",
-                    (status_str, json.dumps({"results": results}), op_id),
-                )
-                db.commit()
-            except Exception as e:
-                log.warning("op_log completion update failed for backup op id=%s: %s", op_id, e)
+        has_error = any(r.get("status") == "error" for r in results)
+        status_str = ("failed" if has_error and all(r.get("status") == "error" for r in results)
+                      else ("completed" if not has_error else "partial"))
+        op_log_finish(op_id, status_str, target_json={"results": results})
 
         return JSONResponse({"status": "completed", "results": results})
 
@@ -109,16 +90,7 @@ def register(app, ctx):
             return JSONResponse({"status": "error", "message": "Source not found"})
 
         backup_key = f"backup:{source}:{int(time.time())}"
-        try:
-            db.execute(
-                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                (backup_key, "backup", json.dumps({"source": source}), "running"),
-            )
-            db.commit()
-            op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception as e:
-            log.warning("op_log insert failed for backup op %s: %s", backup_key, e)
-            op_id = None
+        op_id = op_log_start("backup", backup_key, {"source": source})
 
         from backupme.core.skip import should_skip, should_skip_dir
         cfg_dict = _config_as_dict(ctx)
@@ -132,15 +104,8 @@ def register(app, ctx):
                     backends=backends,
                     config=cfg_dict,
                 )
-                if op_id:
-                    try:
-                        db.execute(
-                            "UPDATE op_log SET status = 'completed', completed_at = datetime('now'), target_json = ? WHERE id = ?",
-                            (json.dumps({"source": source, "result": "success", "file_count": 1}), op_id),
-                        )
-                        db.commit()
-                    except Exception as exc:
-                        log.warning("op_log completion update failed for backup op id=%s: %s", op_id, exc)
+                op_log_finish(op_id, "completed", target_json={
+                    "source": source, "result": "success", "file_count": 1})
                 return JSONResponse({"status": "ok", **r})
             elif os.path.isdir(source):
                 count = 0
@@ -160,26 +125,11 @@ def register(app, ctx):
                             config=cfg_dict,
                         )
                         count += 1
-                if op_id:
-                    try:
-                        db.execute(
-                            "UPDATE op_log SET status = 'completed', completed_at = datetime('now'), target_json = ? WHERE id = ?",
-                            (json.dumps({"source": source, "result": "success", "file_count": count}), op_id),
-                        )
-                        db.commit()
-                    except Exception as exc:
-                        log.warning("op_log completion update failed for backup op id=%s: %s", op_id, exc)
+                op_log_finish(op_id, "completed", target_json={
+                    "source": source, "result": "success", "file_count": count})
                 return JSONResponse({"status": "ok", "file_count": count})
         except Exception as e:
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'failed', completed_at = datetime('now'), last_error = ? WHERE id = ?",
-                        (str(e), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log failure record update failed for backup op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "failed", last_error=str(e))
             return JSONResponse({"status": "error", "message": str(e)})
 
     # ── Scan Drive ───────────────────────────────────────────────
@@ -211,16 +161,7 @@ def register(app, ctx):
         _emit_scan()
 
         scan_key = f"scan:{path}:{int(time.time())}"
-        try:
-            db.execute(
-                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                (scan_key, "scan", json.dumps({"path": path, "backend": backend_name}), "running"),
-            )
-            db.commit()
-            scan_op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception as e:
-            log.warning("op_log insert failed for scan op %s: %s", scan_key, e)
-            scan_op_id = None
+        scan_op_id = op_log_start("scan", scan_key, {"path": path, "backend": backend_name})
 
         all_files = []  # list of (display_path, fs_path) tuples
         abs_src = os.path.abspath(path)
@@ -339,15 +280,10 @@ def register(app, ctx):
         errs = _scan_state["files_error"]
         skip = _scan_state["files_skipped"]
         detail = f"{done - errs - skip} uploaded, {errs} errors, {skip} skipped"
-        if scan_op_id:
-            try:
-                db.execute(
-                    "UPDATE op_log SET status = ?, completed_at = datetime('now'), last_error = ? WHERE id = ?",
-                    ("completed" if errs == 0 else "partial", detail, scan_op_id),
-                )
-                db.commit()
-            except Exception as e:
-                log.warning("op_log completion update failed for scan op id=%s: %s", scan_op_id, e)
+        # The summary line rides in last_error — the monolith stored it in
+        # that column (not in target_json), so the column mapping is kept.
+        op_log_finish(scan_op_id, "completed" if errs == 0 else "partial",
+                      last_error=detail)
         _emit_scan()
 
     @app.post("/api/backup/scan")
@@ -368,35 +304,13 @@ def register(app, ctx):
         delete_source = bool(data.get("delete_source", False))
 
         _reset_scan()
-        t = threading.Thread(
-            target=_scan_worker,
-            args=(path, backend_name, redundancy, excludes, delete_source),
-            daemon=True,
-        )
-        t.start()
+        start_daemon_thread(_scan_worker, path, backend_name, redundancy,
+                            excludes, delete_source)
         return JSONResponse({"status": "started", "path": path})
 
     @app.get("/api/backup/scan/stream")
     async def api_backup_scan_stream():
-        async def event_generator():
-            last_snapshot = ""
-            while True:
-                with _scan_lock:
-                    snapshot = json.dumps(_scan_state)
-                if snapshot != last_snapshot:
-                    yield f"data: {snapshot}\n\n"
-                    last_snapshot = snapshot
-                with _scan_lock:
-                    if _scan_state["completed"] and not _scan_state["running"]:
-                        yield f"data: {snapshot}\n\n"
-                        break
-                await asyncio.sleep(0.5)
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return make_sse_stream(_scan_state, _scan_lock)
 
     @app.get("/api/backup/scan/status")
     async def api_backup_scan_status():

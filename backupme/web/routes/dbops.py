@@ -5,7 +5,6 @@ restore/rebuild (confirm gates), checkpoint.
 Snapshot delete/prune and db restore/rebuild are destructive and require
 ``confirm: true`` in the body (backlog B03).
 """
-import json
 from pathlib import Path
 
 from fastapi import Body
@@ -16,7 +15,7 @@ from backupme.core import recover as recover_mod
 from backupme.core import snapshot as snapmod
 from backupme.log import get_logger
 
-from .common import _config_as_dict, _get_backends
+from .common import _config_as_dict, _get_backends, op_log_start, op_log_finish
 
 log = get_logger("web.routes.dbops")
 
@@ -72,39 +71,13 @@ def register(app, ctx):
     async def api_db_snapshot():
         import time
         snap_key = f"snapshot:{int(time.time())}"
-        try:
-            db.execute(
-                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                (snap_key, "snapshot", json.dumps({}), "running"),
-            )
-            db.commit()
-            op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception as e:
-            log.warning("op_log insert failed for snapshot op %s: %s", snap_key, e)
-            op_id = None
-
+        op_id = op_log_start("snapshot", snap_key, {})
         try:
             result = snapmod.create_snapshot()
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'completed', completed_at = datetime('now'), target_json = ? WHERE id = ?",
-                        (json.dumps(result), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log completion update failed for snapshot op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "completed", target_json=result)
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'failed', completed_at = datetime('now'), last_error = ? WHERE id = ?",
-                        (str(e), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log failure record update failed for snapshot op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "failed", last_error=str(e))
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/db/replicate")

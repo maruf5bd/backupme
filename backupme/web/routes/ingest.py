@@ -6,22 +6,21 @@ routes/common.py. The pause Event is the single source of truth for "paused"
 and is injected into every SSE snapshot (never stored in the state dict —
 a stale copy would mislead consumers mid-pause).
 """
-import asyncio
 import json
 import os
-import threading
 import time
 from pathlib import Path
 
 from fastapi import Body
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from backupme.core import database as db
 from backupme.core import state
 from backupme.log import get_logger
 
 from .common import (_get_backends, _config_as_dict,
-                     _ingest_state, _ingest_lock, _ingest_paused, _reset_ingest)
+                     _ingest_state, _ingest_lock, _ingest_paused, _reset_ingest,
+                     make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.ingest")
 
@@ -169,7 +168,7 @@ def register(app, ctx):
                 {"error": "ingest is paused — POST /api/ingest/resume to allow scans"},
                 status_code=409)
         _reset_ingest()
-        threading.Thread(target=_ingest_worker, args=(drop_root,), daemon=True).start()
+        start_daemon_thread(_ingest_worker, drop_root)
         return JSONResponse({"status": "started", "drop_root": drop_root})
 
     @app.post("/api/ingest/pause")
@@ -184,31 +183,17 @@ def register(app, ctx):
 
     @app.get("/api/ingest/stream")
     async def api_ingest_stream():
-        async def event_generator():
-            last_snapshot = ""
-            while True:
-                with _ingest_lock:
-                    snap = dict(_ingest_state)
-                # The pause Event is the single source of truth; the state
-                # dict never stores it (a stale copy would mislead SSE
-                # consumers into reading "paused": false mid-pause).
-                snap["paused"] = _ingest_paused.is_set()
-                snapshot = json.dumps(snap)
-                if snapshot != last_snapshot:
-                    yield f"data: {snapshot}\n\n"
-                    last_snapshot = snapshot
-                with _ingest_lock:
-                    done = _ingest_state["completed"] and not _ingest_state["running"]
-                if done:
-                    yield f"data: {snapshot}\n\n"
-                    break
-                await asyncio.sleep(0.5)
+        # The pause Event is the single source of truth; the state dict never
+        # stores it (a stale copy would mislead SSE consumers into reading
+        # "paused": false mid-pause). Injected into every SSE snapshot.
+        def _ingest_snapshot():
+            with _ingest_lock:
+                snap = dict(_ingest_state)
+            snap["paused"] = _ingest_paused.is_set()
+            return json.dumps(snap)
 
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return make_sse_stream(_ingest_state, _ingest_lock,
+                               snapshot_fn=_ingest_snapshot)
 
     @app.get("/api/ingest/generations")
     async def api_ingest_generations(account: str = ""):

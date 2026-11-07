@@ -5,14 +5,12 @@ The restore-all worker writes its progress into the shared _restore_state
 dict from routes/common.py, which /api/restore/status and the SSE stream read.
 """
 import asyncio
-import json
 import os
-import threading
 import time
 from pathlib import Path
 
 from fastapi import Body, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse
 from starlette.background import BackgroundTask
 
 from backupme.core import database as db
@@ -24,7 +22,9 @@ from backupme.log import get_logger
 
 from .common import (_search_files_safe, _soft_delete_file,
                      _get_backends, _config_as_dict,
-                     _restore_state, _restore_lock, _emit_restore)
+                     _restore_state, _restore_lock, _emit_restore,
+                     op_log_start, op_log_finish,
+                     make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.files")
 
@@ -285,30 +285,12 @@ def register(app, ctx):
                 "total": 0, "done": 0, "errors": 0, "current": "", "error_list": [], "completed": False,
             })
 
-        t = threading.Thread(target=_restore_worker, args=(source_root, dest_path, path_filter), daemon=True)
-        t.start()
+        start_daemon_thread(_restore_worker, source_root, dest_path, path_filter)
         return JSONResponse({"status": "started", "source_root": source_root, "dest_path": dest_path})
 
     @app.get("/api/restore/stream")
     async def api_restore_stream():
-        async def event_generator():
-            last = ""
-            while True:
-                with _restore_lock:
-                    snap = json.dumps(_restore_state)
-                if snap != last:
-                    yield f"data: {snap}\n\n"
-                    last = snap
-                with _restore_lock:
-                    if _restore_state["completed"] and not _restore_state["running"]:
-                        yield f"data: {snap}\n\n"
-                        break
-                await asyncio.sleep(0.5)
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return make_sse_stream(_restore_state, _restore_lock)
 
     @app.get("/api/restore/status")
     async def api_restore_status():
@@ -430,16 +412,8 @@ def register(app, ctx):
     ):
         import tempfile
         upload_key = f"upload:{file.filename}:{int(time.time())}"
-        try:
-            db.execute(
-                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                (upload_key, "upload", json.dumps({"filename": file.filename, "backend": backend}), "running"),
-            )
-            db.commit()
-            op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception as e:
-            log.warning("op_log insert failed for upload op %s: %s", upload_key, e)
-            op_id = None
+        op_id = op_log_start("upload", upload_key,
+                             {"filename": file.filename, "backend": backend})
 
         tmp_path = None
         try:
@@ -465,28 +439,13 @@ def register(app, ctx):
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
 
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'completed', completed_at = datetime('now'), target_json = ? WHERE id = ?",
-                        (json.dumps({"filename": file.filename, "result": "success", "size": len(content)}), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log completion update failed for upload op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "completed", target_json={
+                "filename": file.filename, "result": "success", "size": len(content)})
             return JSONResponse({"status": "ok", "filename": file.filename, **r})
         except Exception as e:
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'failed', completed_at = datetime('now'), last_error = ? WHERE id = ?",
-                        (str(e), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log failure record update failed for upload op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "failed", last_error=str(e))
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
     @app.delete("/api/files/{file_id}")

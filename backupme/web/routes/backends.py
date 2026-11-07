@@ -6,20 +6,18 @@ BEFORE GET /api/backends/{name} so "usage" is not captured by the path
 parameter. The verify/rescan/onboard/rebalance/drain group keeps the exact
 relative order the monolith had.
 """
-import asyncio
-import json
-import threading
 from pathlib import Path
 
 from fastapi import Body
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from backupme.core import database as db
 from backupme.core import verify
 from backupme.log import get_logger
 
 from .common import (_get_backend, _get_backends, _config_as_dict,
-                     _rebalance_state, _rebalance_lock, _reset_rebalance)
+                     _rebalance_state, _rebalance_lock, _reset_rebalance,
+                     make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.backends")
 
@@ -281,7 +279,7 @@ def register(app, ctx):
         from backupme.core import rebalance as rb
         result["plan"] = rb.plan_rebalance(name)
         _reset_rebalance("rebalance", name)
-        threading.Thread(target=_rebalance_worker, args=("rebalance", name), daemon=True).start()
+        start_daemon_thread(_rebalance_worker, "rebalance", name)
         return JSONResponse({"status": "started", **result})
 
     @app.post("/api/backends/{name}/rebalance")
@@ -293,7 +291,7 @@ def register(app, ctx):
                 return JSONResponse({"error": "a rebalance operation is already running"}, status_code=409)
         limit = data.get("limit")
         _reset_rebalance("rebalance", name)
-        threading.Thread(target=_rebalance_worker, args=("rebalance", name), daemon=True).start()
+        start_daemon_thread(_rebalance_worker, "rebalance", name)
         return JSONResponse({"status": "started", "backend": name, "limit": limit})
 
     @app.post("/api/backends/{name}/drain")
@@ -304,28 +302,9 @@ def register(app, ctx):
             if _rebalance_state["running"]:
                 return JSONResponse({"error": "a rebalance operation is already running"}, status_code=409)
         _reset_rebalance("drain", name)
-        threading.Thread(target=_rebalance_worker, args=("drain", name), daemon=True).start()
+        start_daemon_thread(_rebalance_worker, "drain", name)
         return JSONResponse({"status": "started", "backend": name})
 
     @app.get("/api/backends/rebalance/stream")
     async def api_backends_rebalance_stream():
-        async def event_generator():
-            last_snapshot = ""
-            while True:
-                with _rebalance_lock:
-                    snapshot = json.dumps(_rebalance_state)
-                if snapshot != last_snapshot:
-                    yield f"data: {snapshot}\n\n"
-                    last_snapshot = snapshot
-                with _rebalance_lock:
-                    done = _rebalance_state["completed"] and not _rebalance_state["running"]
-                if done:
-                    yield f"data: {snapshot}\n\n"
-                    break
-                await asyncio.sleep(0.5)
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return make_sse_stream(_rebalance_state, _rebalance_lock)

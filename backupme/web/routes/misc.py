@@ -13,12 +13,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from backupme.core import database as db
 from backupme.core import crypto as crypto_mod
+from backupme.core import compress as compress_mod
 from backupme.core import dedup, index as index_mod, verify
-from backupme.core import hasher as hasher_mod
 from backupme.log import get_logger
 
-from .common import (_get_backends, _get_backend, _fts_phrase,
-                     _search_files_like)
+from .common import (_get_backends, _fts_phrase, _search_files_like,
+                     op_log_start, op_log_finish)
 
 log = get_logger("web.routes.misc")
 
@@ -128,42 +128,19 @@ def register(app, ctx):
     @app.post("/api/report/generate")
     async def api_report_generate(backend: str = "", count: int = 10):
         report_key = f"report:{backend}:{int(time.time())}"
-        try:
-            db.execute(
-                "INSERT INTO op_log (idempotency_key, op_type, target_json, status, started_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                (report_key, "report", json.dumps({"backend": backend, "count": count}), "running"),
-            )
-            db.commit()
-            op_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception as e:
-            log.warning("op_log insert failed for report op %s: %s", report_key, e)
-            op_id = None
-
+        op_id = op_log_start("report", report_key,
+                             {"backend": backend, "count": count})
         try:
             check_type = "random"
             if backend:
                 check_type = f"backend:{backend}"
             result = verify.run_integrity_check(check_type, count=count, backend_name=backend or None)
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'completed', completed_at = datetime('now'), target_json = ? WHERE id = ?",
-                        (json.dumps({"checked_files": result.get("checked_files", 0), "failed_files": result.get("failed_files", 0)}), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log completion update failed for report op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "completed", target_json={
+                "checked_files": result.get("checked_files", 0),
+                "failed_files": result.get("failed_files", 0)})
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
-            if op_id:
-                try:
-                    db.execute(
-                        "UPDATE op_log SET status = 'failed', completed_at = datetime('now'), last_error = ? WHERE id = ?",
-                        (str(e), op_id),
-                    )
-                    db.commit()
-                except Exception as exc:
-                    log.warning("op_log failure record update failed for report op id=%s: %s", op_id, exc)
+            op_log_finish(op_id, "failed", last_error=str(e))
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/encrypt/init")
@@ -253,47 +230,31 @@ def register(app, ctx):
 
     @app.post("/api/recompress")
     async def api_recompress():
+        # B06 rework: the per-blob inline loop is gone — core
+        # compress.recompress_blobs owns the migration now (write-new →
+        # hash-verify → commit → GC-old, encrypted blobs skipped and
+        # counted). Defaults match the old inline behavior: zstd level 3,
+        # every backend (the endpoint has no backend param today —
+        # settings.html POSTs without a body).
+        op_id = op_log_start("recompress", f"recompress:{int(time.time())}",
+                             {"algo": "zstd", "level": 3})
         try:
-            from backupme.core import compress as compress_mod
-            import tempfile
-            rows = db.execute(
-                "SELECT bs.blob_id, bs.storage_path, bs.backend_name, bs.stored_size, bs.compression_algo "
-                "FROM blob_storage bs WHERE bs.compression_algo != 'zstd' LIMIT 100"
-            ).fetchall()
-            converted = 0
-            for row in rows:
-                tmp_dir = None
-                try:
-                    be = _get_backend(ctx, row["backend_name"])
-                    if not be:
-                        continue
-                    tmp_dir = Path(tempfile.mkdtemp())
-                    tmp = tmp_dir / "blob"
-                    be.download(row["storage_path"], str(tmp))
-                    if tmp.stat().st_size == 0:
-                        continue
-                    data = tmp.read_bytes()
-                    new_data = compress_mod.compress(data)
-                    del data
-                    tmp.write_bytes(new_data)
-                    new_hash = hasher_mod.sha256_file(str(tmp))
-                    be.upload(str(tmp), row["storage_path"])
-                    db.execute(
-                        "UPDATE blob_storage SET compression_algo = 'zstd', stored_size = ?, stored_sha256 = ? WHERE blob_id = ? AND backend_name = ?",
-                        (len(new_data), new_hash, row["blob_id"], row["backend_name"]),
-                    )
-                    converted += 1
-                except Exception as e:
-                    log.warning("blob recompress failed for blob_id=%s on %s: %s",
-                                row["blob_id"], row["backend_name"], e)
-                    continue
-                finally:
-                    if tmp_dir:
-                        import shutil
-                        shutil.rmtree(str(tmp_dir), ignore_errors=True)
-            db.commit()
-            return JSONResponse({"status": "ok", "converted": converted})
+            # Warm the backend instance cache: recompress_blobs resolves each
+            # row's backend by name through it (same warm-up the CLI does).
+            _get_backends(ctx)
+            result = compress_mod.recompress_blobs()
+            counters = {
+                "recompressed": result.get("recompressed", 0),
+                "total_scanned": result.get("total_scanned", 0),
+                "skipped_encrypted": result.get("skipped_encrypted", 0),
+                "failed": result.get("failed", 0),
+            }
+            op_log_finish(op_id, "completed", target_json=counters)
+            # "converted" stays as the legacy alias — settings.html reads it.
+            return JSONResponse({"status": "ok", **counters,
+                                 "converted": counters["recompressed"]})
         except Exception as e:
+            op_log_finish(op_id, "failed", last_error=str(e))
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.get("/api/encrypt/status")
