@@ -3,6 +3,47 @@
 {% block breadcrumb %}Activity{% endblock %}
 
 {% block content %}
+<style>
+  .logs-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .logs-toolbar .topbar-search { flex: 1; min-width: 200px; max-width: 360px; }
+  .status-chip {
+    border: 1px solid var(--border, rgba(255,255,255,.08));
+    background: transparent; color: var(--text-secondary);
+    border-radius: 999px; padding: 4px 12px; font-size: 12px;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    transition: all .15s ease;
+  }
+  .status-chip:hover { color: var(--text-primary); }
+  .status-chip.active { background: var(--accent, #3b82f6); color: #fff; border-color: transparent; }
+  .status-chip .chip-count { opacity: .75; font-weight: 600; }
+  .log-row {
+    border-bottom: 1px solid var(--border, rgba(255,255,255,.06));
+    padding: 10px 14px; cursor: pointer; transition: background .12s ease;
+  }
+  .log-row:hover { background: rgba(127,127,127,.07); }
+  .log-row.expanded { background: rgba(127,127,127,.09); }
+  .log-row:last-child { border-bottom: none; }
+  .log-row-main { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .log-time { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .log-duration { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+  .log-summary { font-size: 13px; color: var(--text-secondary); flex: 1; min-width: 200px; }
+  .log-summary.has-error { color: #ef4444; }
+  .log-detail { display: none; margin-top: 10px; }
+  .log-row.expanded .log-detail { display: block; }
+  .log-detail-grid {
+    display: grid; grid-template-columns: 130px 1fr; gap: 4px 14px;
+    font-size: 12px; margin-bottom: 10px;
+  }
+  .log-detail-grid dt { color: var(--text-muted); }
+  .log-detail-grid dd { margin: 0; font-family: var(--font-mono, monospace); word-break: break-all; }
+  .log-json {
+    background: rgba(127,127,127,.1); border-radius: 8px; padding: 10px 12px;
+    font-family: var(--font-mono, monospace); font-size: 12px;
+    max-height: 260px; overflow: auto; white-space: pre; margin: 0 0 8px 0;
+  }
+  .logs-loadmore { text-align: center; padding: 10px; }
+</style>
+
 <div class="page-header">
   <h1><i data-lucide="activity" style="width:28px;height:28px;"></i> Activity Log</h1>
   <div class="page-header-actions">
@@ -22,71 +63,56 @@
   </div>
 </div>
 
+<!-- Status overview -->
+<div class="stat-grid grid-4 mb-4" id="log-stats">
+  <div class="stat-card"><div class="stat-value" id="stat-total">–</div><div class="stat-label">Total events</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-completed" style="color:#22c55e;">–</div><div class="stat-label">Completed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-failed" style="color:#ef4444;">–</div><div class="stat-label">Failed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-running" style="color:#eab308;">–</div><div class="stat-label">Running</div></div>
+</div>
+
 <!-- Filters -->
 <div class="card mb-4">
-  <div class="flex gap-3 items-center" style="flex-wrap: wrap;">
+  <div class="card-body logs-toolbar">
+    <div style="display:flex; gap:6px; flex-wrap:wrap;" id="status-chips">
+      <button class="status-chip active" data-status="">All <span class="chip-count" id="chip-all">0</span></button>
+      <button class="status-chip" data-status="completed">Completed <span class="chip-count" id="chip-completed">0</span></button>
+      <button class="status-chip" data-status="failed">Failed <span class="chip-count" id="chip-failed">0</span></button>
+      <button class="status-chip" data-status="running">Running <span class="chip-count" id="chip-running">0</span></button>
+    </div>
     <select id="op-filter" style="min-width: 160px;">
       <option value="">All operations</option>
       {% for op in op_types %}
       <option value="{{ op }}" {% if current_op == op %}selected{% endif %}>{{ op }}</option>
       {% endfor %}
     </select>
-    <select id="status-filter" style="min-width: 140px;">
-      <option value="">All statuses</option>
-      <option value="completed" {% if current_status == 'completed' %}selected{% endif %}>Completed</option>
-      <option value="error" {% if current_status == 'error' %}selected{% endif %}>Error</option>
-      <option value="pending" {% if current_status == 'pending' %}selected{% endif %}>Pending</option>
-    </select>
-    <div class="topbar-search" style="flex: 1; min-width: 180px; max-width: 320px;">
+    <div class="topbar-search">
       <i data-lucide="search" class="search-icon" style="width:16px;height:16px;"></i>
-      <input type="search" id="log-search" placeholder="Filter logs..." autocomplete="off">
+      <input type="search" id="log-search" placeholder='Filter logs ( "/" to focus )' autocomplete="off">
     </div>
+    <span class="text-xs text-muted" id="shown-count"></span>
   </div>
 </div>
 
-<!-- Log Timeline -->
+<!-- Log rows -->
 <div class="card">
   <div class="card-header">
     <span class="card-title">Events</span>
     <span class="badge badge-gray" id="log-count">{{ logs|length }}</span>
   </div>
-  <div class="card-body">
-    <div class="timeline" id="log-timeline">
-      {% for log in logs %}
-      <div class="timeline-item log-entry" data-op="{{ log.op_type or log.operation }}" data-status="{{ log.status or '' }}">
-        <div class="timeline-dot {% if log.status == 'error' %}red{% elif log.status in ['completed', 'done'] %}green{% elif log.status == 'pending' %}yellow{% else %}blue{% endif %}"></div>
-        <div class="timeline-time">{{ log.started_at[:19] if log.started_at else '' }}</div>
-        <div class="timeline-content">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="badge {% if log.status == 'error' %}badge-red{% elif log.status in ['completed', 'done'] %}badge-green{% elif log.status == 'pending' %}badge-yellow{% else %}badge-gray{% endif %}">
-              {{ log.op_type or log.operation }}
-            </span>
-            <span class="badge {% if log.status == 'error' %}badge-red{% elif log.status in ['completed', 'done'] %}badge-green{% elif log.status == 'pending' %}badge-yellow{% else %}badge-gray{% endif %}">
-              {% if log.status == 'error' %}
-                <i data-lucide="x-circle" style="width:10px;height:10px;"></i>
-              {% elif log.status in ['completed', 'done'] %}
-                <i data-lucide="check-circle-2" style="width:10px;height:10px;"></i>
-              {% elif log.status == 'pending' %}
-                <i data-lucide="loader" style="width:10px;height:10px;"></i>
-              {% endif %}
-              {{ log.status or 'unknown' }}
-            </span>
-          </div>
-          {% if log.target_json or log.last_error %}
-          <div class="text-sm text-secondary log-details" style="cursor:pointer;" onclick="this.classList.toggle('expanded')">
-            <span class="truncate" style="max-width: 500px; display: inline-block; vertical-align: bottom;">{{ log.last_error or log.target_json }}</span>
-          </div>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
-      {% if not logs %}
+  <div class="card-body" style="padding: 0;">
+    <div id="log-timeline"></div>
+    <div class="logs-loadmore">
+      <button class="btn btn-ghost btn-sm" id="load-more" onclick="loadOlder()" style="display:none;">
+        <i data-lucide="chevron-down" style="width:14px;height:14px;"></i> Load older events
+      </button>
+    </div>
+    <div id="log-empty" style="display:none;">
       <div class="empty-state">
         <i data-lucide="activity" style="width:48px;height:48px;"></i>
-        <h3>No activity yet</h3>
-        <p>Activity will appear here as backups and operations run.</p>
+        <h3>No matching events</h3>
+        <p>Adjust the filters, or run a backup / ingest / verify operation.</p>
       </div>
-      {% endif %}
     </div>
   </div>
 </div>
@@ -95,55 +121,270 @@
 {% block scripts %}
 <script>
 (function() {
-  const opFilter = document.getElementById('op-filter');
-  const statusFilter = document.getElementById('status-filter');
-  const logSearch = document.getElementById('log-search');
+  'use strict';
+
+  // ── Bootstrap: server-rendered first paint data, then live polling ──
+  const BOOT_LOGS = {{ logs | tojson }};
+  const PAGE_SIZE = 50;
+  const FETCH_LIMIT_STEPS = [500, 2000, 5000];
+
+  let allLogs = Array.isArray(BOOT_LOGS) ? BOOT_LOGS : [];
+  let fetchStep = 0;          // index into FETCH_LIMIT_STEPS for "load older"
+  let statusFilter = '';
+  const expanded = new Set(); // op_log ids currently expanded (survive re-render)
+
+  const el = (id) => document.getElementById(id);
+  const esc = (s) => App.escapeHtml(String(s == null ? '' : s));
+
+  // op_log statuses are completed / failed / running (+ legacy synonyms)
+  function bucket(status) {
+    const s = (status || '').toLowerCase();
+    if (s === 'failed' || s === 'error') return 'failed';
+    if (s === 'running' || s === 'pending') return 'running';
+    if (s === 'completed' || s === 'done') return 'completed';
+    return 'other';
+  }
+
+  function parseTs(v) {
+    if (!v) return null;
+    const d = new Date(String(v).replace(' ', 'T'));
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function fmtDuration(started, completed) {
+    const a = parseTs(started);
+    if (!a) return '';
+    const b = parseTs(completed) || new Date();  // still running -> elapsed
+    const elapsed = b - a;
+    if (!completed && elapsed > 86400000) {
+      return 'stale — never finished';   // zombie row from a dead process
+    }
+    let ms = Math.max(0, elapsed);
+    let txt;
+    if (ms < 1000) txt = '<1s';
+    else if (ms < 60000) txt = (ms / 1000).toFixed(1) + 's';
+    else if (ms < 3600000) {
+      const m = Math.floor(ms / 60000), s = Math.round((ms % 60000) / 1000);
+      txt = m + 'm ' + s + 's';
+    } else {
+      const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+      txt = h + 'h ' + m + 'm';
+    }
+    return completed ? txt : txt + ' elapsed';
+  }
+
+  // Friendly one-line summary per known op shape; generic key=value fallback
+  function summarize(row) {
+    if (row.last_error) return String(row.last_error);
+    let t = row.target_json;
+    if (!t) return row.idempotency_key || '';
+    if (typeof t === 'string') {
+      try { t = JSON.parse(t); } catch (e) { return String(t).slice(0, 120); }
+    }
+    if (t && typeof t === 'object') {
+      const known = [
+        ['requested', 'requested'], ['ok', 'ok'], ['skipped', 'skipped'],
+        ['checked_files', 'verified'], ['failed_files', 'failed'],
+        ['recompressed', 'recompressed'], ['skipped_encrypted', 'enc-skipped'],
+        ['members_done', 'members'], ['members_total', 'total'],
+        ['archives_done', 'archives'], ['archives_total', 'of'],
+        ['files_done', 'files'], ['files_total', 'total'],
+        ['file_count', 'files'], ['count', 'count'], ['backend', 'backend'],
+        ['generation', 'gen'],
+      ];
+      const parts = [];
+      for (const [k, label] of known) {
+        if (t[k] !== undefined && t[k] !== '') parts.push(label + ' ' + t[k]);
+      }
+      // a snapshot/result name, short size, and source basename read better than raw JSON
+      const name = t.snapshot || t.snapshot_name;
+      if (name) parts.unshift('snapshot ' + String(name).replace(/^snapshot-?/, '').slice(0, 24));
+      if (t.size) parts.push('size ' + App.formatBytes(Number(t.size) || 0));
+      if (t.source) {
+        const base = String(t.source).split(/[\\/]/).filter(Boolean).pop();
+        if (base) parts.unshift('from ' + base);
+      }
+      if (t.result && t.result !== 'success') parts.unshift('result ' + t.result);
+      if (parts.length) return parts.join(' · ');
+      try { return JSON.stringify(t).slice(0, 120); } catch (e) { return ''; }
+    }
+    return String(t).slice(0, 120);
+  }
+
+  function statusBadgeClass(b) {
+    return b === 'failed' ? 'badge-red' : b === 'running' ? 'badge-yellow'
+         : b === 'completed' ? 'badge-green' : 'badge-gray';
+  }
+  function statusIcon(b) {
+    return b === 'failed' ? 'x-circle' : b === 'running' ? 'loader'
+         : b === 'completed' ? 'check-circle-2' : 'help-circle';
+  }
+
+  function matches(row) {
+    if (statusFilter && bucket(row.status) !== statusFilter) return false;
+    const opSel = el('op-filter').value;
+    if (opSel && (row.op_type || '') !== opSel) return false;
+    const q = el('log-search').value.trim().toLowerCase();
+    if (!q) return true;
+    const hay = [row.op_type, row.status, row.idempotency_key, row.target_json,
+                 row.last_error, summarize(row)]
+      .join(' ').toLowerCase();
+    return hay.includes(q);
+  }
+
+  function render() {
+    // stats + chip counts (over the whole loaded set, not the filtered view)
+    const counts = { completed: 0, failed: 0, running: 0, other: 0 };
+    allLogs.forEach(r => counts[bucket(r.status)]++);
+    el('stat-total').textContent = allLogs.length;
+    el('stat-completed').textContent = counts.completed;
+    el('stat-failed').textContent = counts.failed;
+    el('stat-running').textContent = counts.running;
+    el('chip-all').textContent = allLogs.length;
+    el('chip-completed').textContent = counts.completed;
+    el('chip-failed').textContent = counts.failed;
+    el('chip-running').textContent = counts.running;
+
+    const visible = allLogs.filter(matches);
+    // display order: newest started_at first (id order != time order — rows
+    // can be inserted out of chronological order by retries/backfills)
+    visible.sort((a, b) => {
+      const ta = parseTs(a.started_at), tb = parseTs(b.started_at);
+      if (ta && tb && ta.getTime() !== tb.getTime()) return tb - ta;
+      return (b.id || 0) - (a.id || 0);
+    });
+    const shown = visible.slice(0, PAGE_SIZE);
+
+    el('log-count').textContent = visible.length;
+    el('shown-count').textContent =
+      'showing ' + shown.length + ' of ' + visible.length + ' loaded';
+
+    const wrap = el('log-timeline');
+    wrap.innerHTML = '';
+
+    if (!shown.length) {
+      el('log-empty').style.display = '';
+      el('load-more').style.display = 'none';
+      return;
+    }
+    el('log-empty').style.display = 'none';
+
+    const frag = document.createDocumentFragment();
+    shown.forEach(row => {
+      const b = bucket(row.status);
+      const item = document.createElement('div');
+      item.className = 'log-row' + (expanded.has(row.id) ? ' expanded' : '');
+      item.dataset.id = row.id;
+
+      const hasErr = !!row.last_error;
+      const summary = summarize(row);
+      item.innerHTML = `
+        <div class="log-row-main">
+          <span class="log-time">${esc((row.started_at || '').slice(0, 19))}</span>
+          <span class="log-duration">${esc(fmtDuration(row.started_at, row.completed_at))}</span>
+          <span class="badge badge-gray">${esc(row.op_type || 'unknown')}</span>
+          <span class="badge ${statusBadgeClass(b)}">
+            <i data-lucide="${statusIcon(b)}" style="width:10px;height:10px;"></i>
+            ${esc(row.status || 'unknown')}
+          </span>
+          <span class="log-summary${hasErr ? ' has-error' : ''}">${esc(summary)}</span>
+        </div>
+        <div class="log-detail">
+          <dl class="log-detail-grid">
+            <dt>Op</dt><dd>${esc(row.op_type || '')}</dd>
+            <dt>Status</dt><dd>${esc(row.status || '')}</dd>
+            <dt>Started</dt><dd>${esc(row.started_at || '–')}</dd>
+            <dt>Completed</dt><dd>${esc(row.completed_at || '– (still running)')}</dd>
+            <dt>Idempotency key</dt><dd>${esc(row.idempotency_key || '–')}</dd>
+            ${hasErr ? `<dt style="color:#ef4444;">Last error</dt><dd style="color:#ef4444;">${esc(row.last_error)}</dd>` : ''}
+          </dl>
+          <pre class="log-json" id="json-${row.id}"></pre>
+          <button class="btn btn-secondary btn-xs" onclick="copyRowJson(${row.id})">
+            <i data-lucide="copy" style="width:12px;height:12px;"></i> Copy JSON
+          </button>
+        </div>`;
+
+      // pretty target_json into the detail pane
+      let pretty = '–';
+      const t = row.target_json;
+      if (t) {
+        try { pretty = JSON.stringify(typeof t === 'string' ? JSON.parse(t) : t, null, 2); }
+        catch (e) { pretty = String(t); }
+      }
+      const pre = item.querySelector('.log-json');
+      if (pre) pre.textContent = pretty;
+      window['__rowjson_' + row.id] = pretty;  // copy source
+
+      item.addEventListener('click', (ev) => {
+        if (ev.target.closest('button')) return;
+        item.classList.toggle('expanded');
+        if (item.classList.contains('expanded')) expanded.add(row.id);
+        else expanded.delete(row.id);
+      });
+      frag.appendChild(item);
+    });
+    wrap.appendChild(frag);
+    App.initIcons();
+
+    // "load older" appears when the current fetch window is saturated
+    el('load-more').style.display =
+      (allLogs.length >= (FETCH_LIMIT_STEPS[fetchStep] || FETCH_LIMIT_STEPS[0]))
+        ? '' : 'none';
+  }
+
+  function normalize(rows) {
+    return (Array.isArray(rows) ? rows : []).map(r => {
+      if (typeof r.target_json === 'string') {
+        try { r.target_json = JSON.parse(r.target_json); } catch (e) { /* keep raw */ }
+      }
+      return r;
+    });
+  }
+
+  async function fetchLogs(limit) {
+    const resp = await fetch('/api/logs?limit=' + limit);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return normalize(await resp.json());
+  }
+
+  window.loadOlder = async function() {
+    if (fetchStep >= FETCH_LIMIT_STEPS.length - 1) {
+      App.Toast.info('All loaded events shown (limit reached)');
+      return;
+    }
+    fetchStep += 1;
+    try {
+      allLogs = await fetchLogs(FETCH_LIMIT_STEPS[fetchStep]);
+      render();
+    } catch (e) {
+      fetchStep -= 1;
+      App.Toast.error('Could not load older events');
+    }
+  };
+
+  window.copyRowJson = async function(id) {
+    const ok = await App.copyToClipboard(window['__rowjson_' + id] || '');
+    App.Toast[ok === false ? 'error' : 'success'](ok === false ? 'Copy failed' : 'JSON copied');
+  };
+
+  // ── Live polling (real DOM updates now, not a discarded fetch) ──
   let liveEnabled = true;
   let pollerId = null;
 
-  // Filter handlers
-  opFilter.addEventListener('change', () => {
-    const op = opFilter.value;
-    const status = statusFilter.value;
-    let url = '/logs?';
-    if (op) url += 'op=' + encodeURIComponent(op) + '&';
-    if (status) url += 'status=' + encodeURIComponent(status);
-    window.location.href = url;
-  });
-
-  statusFilter.addEventListener('change', () => {
-    const op = opFilter.value;
-    const status = statusFilter.value;
-    let url = '/logs?';
-    if (op) url += 'op=' + encodeURIComponent(op) + '&';
-    if (status) url += 'status=' + encodeURIComponent(status);
-    window.location.href = url;
-  });
-
-  // Client-side text search
-  logSearch.addEventListener('input', App.debounce(() => {
-    const q = logSearch.value.toLowerCase();
-    document.querySelectorAll('.log-entry').forEach(entry => {
-      const text = entry.textContent.toLowerCase();
-      entry.style.display = !q || text.includes(q) ? '' : 'none';
-    });
-  }, 200));
-
-  // Live polling
   function startLive() {
-    pollerId = App.Poller.start('/api/logs?limit=50', (data) => {
-      if (!liveEnabled) return;
-      // We'll let the page refresh handle updates for now
-      // Full real-time timeline updates would need more complex DOM diffing
-    }, 5000);
+    pollerId = App.Poller.start('/api/logs?limit=' + (FETCH_LIMIT_STEPS[fetchStep] || 500),
+      (data) => {
+        if (!liveEnabled) return;
+        allLogs = normalize(data);
+        render();
+      }, 5000, { onError: () => {} });
   }
 
   window.toggleLive = function() {
     liveEnabled = !liveEnabled;
-    const btn = document.getElementById('live-toggle');
-    const dot = document.getElementById('live-dot');
-    const label = document.getElementById('live-label');
-
+    const btn = el('live-toggle');
+    const dot = el('live-dot');
+    const label = el('live-label');
     if (liveEnabled) {
       btn.innerHTML = '<i data-lucide="pause" style="width:14px;height:14px;"></i> Pause';
       dot.classList.add('dot-pulse');
@@ -157,8 +398,6 @@
     }
     App.initIcons();
   };
-
-  startLive();
 
   window.exportLogs = async function(fmt) {
     try {
@@ -176,6 +415,31 @@
       App.Toast.error('Export failed');
     }
   };
+
+  // ── Wiring ──
+  el('status-chips').addEventListener('click', (ev) => {
+    const chip = ev.target.closest('.status-chip');
+    if (!chip) return;
+    statusFilter = chip.dataset.status;
+    document.querySelectorAll('.status-chip').forEach(c =>
+      c.classList.toggle('active', c === chip));
+    render();
+  });
+
+  el('op-filter').addEventListener('change', render);
+  el('log-search').addEventListener('input', App.debounce(render, 200));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && !/input|textarea|select/i.test(document.activeElement.tagName)) {
+      e.preventDefault();
+      el('log-search').focus();
+    }
+  });
+
+  // First paint from server data, then start live updates.
+  allLogs = normalize(allLogs);
+  render();
+  startLive();
 })();
 </script>
 {% endblock %}
