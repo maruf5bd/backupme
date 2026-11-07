@@ -71,6 +71,17 @@ never lost.
   rule. DB manifest always records everything.
 - Purpose: if the DB is corrupted/lost, blobs + manifests alone can identify
   and reassemble every archive's content.
+- **NAMESPACE NOTE (live-verified 2026-11-08 on K)**: `manifests/` on the
+  backends ALREADY carried per-FILE receipts from `core/manifest.py`
+  (`<32hex>.manifest.json`, format v2) — those receipts drive the EXISTING
+  `rebuild_database_from_manifests` (the `db rebuild` recovery path), so the
+  owner's DB-loss insurance existed at file level before this feature. The
+  archive sidecars (64-hex names) coexist in the same tree; consumers must
+  shape-filter (recover-from-manifests accepts only 64-hex stems with
+  `fingerprint`+`members` keys; a receipt-rebuild counts sidecars as
+  unreadable noise — harmless). First live run proved the sidecars are
+  mostly NESTED archives: the first 3 sidecars on K are zips found INSIDE
+  the WHMCS tar.gz files, each with its own fingerprint.
 
 ## Off-site DB snapshot shipping (assistant's add-on, same insurance layer)
 
