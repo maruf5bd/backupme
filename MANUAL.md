@@ -291,6 +291,16 @@ curl http://localhost:8080/api/report
 curl -H "Authorization: Bearer $DASHBOARD_TOKEN" http://localhost:8080/api/status
 ```
 
+**Destructive endpoints require explicit confirmation.** Server restart, DB restore/rebuild,
+backend removal, and snapshot delete/prune reject requests (HTTP 400) unless the JSON body
+carries `"confirm": true` — the dashboard sends this automatically after its confirm dialog,
+and scripts must send it explicitly:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"confirm": true}' http://localhost:8080/api/db/rebuild
+```
+
 ---
 
 ## 6. Backend Configuration
