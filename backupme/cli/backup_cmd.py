@@ -46,6 +46,12 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, a
         entry = {"source": path, "status": status}
         entry.update(extra)
         payload["sources"].append(entry)
+        return entry
+
+    # Direct file sources keep a handle on their sources entry so the archive
+    # hook can upgrade it in place (archive_ingested / stored_whole) instead
+    # of emitting a second entry for the same path.
+    direct_source_entries: dict = {}
 
     def fail(message: str, path: str):
         """Source-level error: same exit code in both modes; --json additionally
@@ -87,7 +93,7 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, a
                     if not as_json:
                         _safe_echo(f"  Skipped {os.path.basename(path)} ({reason})")
                     continue
-            note_source(path, "ok")
+            direct_source_entries[path] = note_source(path, "ok")
             files_to_backup.append({
                 "local_path": path,
                 "source_root": os.path.dirname(path),
@@ -114,6 +120,113 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, a
             # Silent ignore made `backup missing.txt` exit 0 with empty
             # output (qa P1) — a nonexistent path is an error.
             fail(f"Error: {path} does not exist", path)
+
+    # ------------------------------------------------------------------
+    # Extract-first archives (Phase 1): files detected as archives by magic
+    # bytes are ingested member-wise so members dedup against the whole
+    # index; anything that cannot be extracted (corrupt/encrypted/unsupported
+    # or over a cap) falls back to the whole-blob path with an explicit
+    # reason. Non-archives take the unchanged path below.
+    # ------------------------------------------------------------------
+    archive_error_count = 0
+
+    def emit_archive_report(item, status, fields, human_line):
+        """One report per processed archive: the sources entry is upgraded
+        in place for a direct file source; a recursive candidate gets a
+        files entry."""
+        path = item["local_path"]
+        entry = direct_source_entries.get(path)
+        if entry is not None:
+            entry["status"] = status
+            entry.update(fields)
+        else:
+            source_root = item.get("source_root") or path
+            rel = os.path.relpath(path, source_root)
+            payload["files"].append(
+                {"relative_path": rel, "status": status, **fields})
+        if not as_json:
+            _safe_echo(human_line)
+
+    def delete_source_if_moving(path):
+        if move:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    if files_to_backup:
+        from ..core import archives as archives_mod
+
+        deferred_items = []
+        for item in list(files_to_backup):
+            path = item["local_path"]
+            basename = os.path.basename(path)
+            archive_fmt = archives_mod.detect_archive_format(path)
+            if archive_fmt is None:
+                unsupported_fmt = archives_mod.unsupported_archive_format(path)
+                if unsupported_fmt:
+                    # Unsupported archive (rar/7z in Phase 1): reported as
+                    # stored_whole; the whole-blob upload happens in the
+                    # normal flow below (counted there, exactly as today).
+                    reason = (f"unsupported archive format ({unsupported_fmt})"
+                              " — stored whole")
+                    emit_archive_report(
+                        item, "stored_whole",
+                        {"reason": reason, "stored_whole": True},
+                        f"  Archive {basename}: stored whole ({reason})")
+                deferred_items.append(item)
+                continue
+
+            result = archives_mod.ingest_archive_file(
+                path, targets, cfg, redundancy,
+                source_root=item.get("source_root"),
+                relative_path=item.get("relative_path"),
+            )
+            result_status = result.get("status")
+            if result_status == "archive_ingested":
+                payload["counts"]["ok"] += 1
+                payload["bytes"] += result.get("original_size") or 0
+                fields = {
+                    "fingerprint": result.get("fingerprint"),
+                    "member_count": result.get("member_count"),
+                    "stored_whole": False,
+                }
+                if result.get("dedup"):
+                    fields["dedup"] = True
+                fingerprint = result.get("fingerprint", "")
+                dedup_tag = " [dedup]" if result.get("dedup") else ""
+                emit_archive_report(
+                    item, "archive_ingested", fields,
+                    f"  Archive {basename}: fingerprint={fingerprint[:16]} "
+                    f"members={result.get('member_count', 0)}{dedup_tag}")
+                delete_source_if_moving(path)
+            elif result_status == "stored_whole":
+                # The whole-blob upload already happened inside the archive
+                # engine; this file never reaches the normal flow below.
+                payload["counts"]["ok"] += 1
+                try:
+                    payload["bytes"] += os.path.getsize(path)
+                except OSError:
+                    pass
+                reason = result.get("reason", "unknown")
+                fields = {"reason": reason, "stored_whole": True}
+                if result.get("file_id") is not None:
+                    fields["file_id"] = result.get("file_id")
+                if result.get("sha256"):
+                    fields["sha256"] = result.get("sha256")
+                emit_archive_report(
+                    item, "stored_whole", fields,
+                    f"  Archive {basename}: stored whole ({reason})")
+                delete_source_if_moving(path)
+            else:
+                archive_error_count += 1
+                error = (result.get("error")
+                         or result.get("reason")
+                         or "archive ingest failed")
+                emit_archive_report(
+                    item, "error", {"error": error},
+                    f"  Archive {basename}: ERROR {error}")
+        files_to_backup = deferred_items
 
     if files_to_backup:
         try:
@@ -181,7 +294,7 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, a
                     except OSError:
                         pass
             if as_json:
-                payload["counts"]["error"] = errors
+                payload["counts"]["error"] = errors + archive_error_count
                 payload["counts"]["partial"] = partials
             elif errors or partials:
                 _safe_echo(f"Summary: {errors} failed, {partials} partial "

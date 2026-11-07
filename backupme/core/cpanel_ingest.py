@@ -27,6 +27,7 @@ from backupme.core import hasher as hasher_mod
 from backupme.core import index as index_mod
 from backupme.core import op_log as op_log_mod
 from backupme.core import state as state_mod
+from backupme.core.archives import sanitize_member
 from backupme.core.database import execute
 from backupme.core.uploader import upload_bundle, upload_file
 
@@ -130,44 +131,6 @@ def discover(drop_root: str) -> list[dict]:
                 out.append({"path": os.path.abspath(full), "account": account,
                             "type": "file"})
     return out
-
-
-def sanitize_member(name: str) -> str | None:
-    """Return an archive member name safe to write under the staging root.
-
-    Rejects absolute paths, drive letters, traversal (``..``) and empty names.
-    Backslashes are normalized to forward slashes first; the ORIGINAL name is
-    checked for traversal before normalization so ``..\\..`` cannot smuggle
-    through. Returns None for anything rejected.
-    """
-    if not name or not name.strip():
-        return None
-    original = name
-    normalized = name.replace("\\", "/").strip()
-    if not normalized:
-        return None
-    # Reject absolute / drive-letter forms on the ORIGINAL and the normalized name.
-    if original.startswith(("/", "\\")):
-        return None
-    stripped = normalized.lstrip("/")
-    if stripped == normalized and re.match(r"^[A-Za-z]:", stripped):
-        return None
-    if re.match(r"^[A-Za-z]:", original):
-        return None
-    # Traversal check against the ORIGINAL components (both separators).
-    for token in original.replace("\\", "/").split("/"):
-        if token == "..":
-            return None
-    # Traversal check post-strip as well (belt and braces).
-    for token in stripped.split("/"):
-        if token == "..":
-            return None
-    if not stripped or stripped == ".":
-        return None
-    parts = [p for p in stripped.split("/") if p not in ("", ".")]
-    if not parts:
-        return None
-    return "/".join(parts)
 
 
 def estimate_archive(archive_path: str) -> dict:

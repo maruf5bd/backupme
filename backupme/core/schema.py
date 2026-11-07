@@ -91,6 +91,29 @@ CREATE TABLE IF NOT EXISTS op_log (
     last_error      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS archives (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint        TEXT UNIQUE NOT NULL,
+    format             TEXT,
+    original_name      TEXT,
+    original_size      INTEGER,
+    member_count       INTEGER,
+    total_uncompressed INTEGER,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS archive_members (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    archive_id     INTEGER NOT NULL REFERENCES archives(id) ON DELETE CASCADE,
+    relative_path  TEXT NOT NULL,
+    file_id        INTEGER NOT NULL REFERENCES files(id),
+    member_sha256  TEXT NOT NULL,
+    member_size    INTEGER NOT NULL,
+    mtime          REAL,
+    nested_archive TEXT,
+    UNIQUE(archive_id, relative_path)
+);
+
 CREATE TABLE IF NOT EXISTS integrity_checks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     check_type    TEXT NOT NULL,
@@ -127,6 +150,8 @@ CREATE INDEX IF NOT EXISTS idx_storage_blob      ON blob_storage(blob_id);
 CREATE INDEX IF NOT EXISTS idx_storage_backend   ON blob_storage(backend_name);
 CREATE INDEX IF NOT EXISTS idx_oplog_status      ON op_log(status);
 CREATE INDEX IF NOT EXISTS idx_oplog_started     ON op_log(started_at);
+CREATE INDEX IF NOT EXISTS idx_archives_fp       ON archives(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_arch_members_arc  ON archive_members(archive_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
     relative_path, content_text,
@@ -145,8 +170,35 @@ PRAGMA wal_autocheckpoint = 1000;
 PRAGMA cache_size = -64000;
 """
 
-MIGRATIONS: dict[int, str] = {
+MIGRATIONS: dict[int, str | list[str]] = {
     2: "ALTER TABLE files ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0",
+    # Extract-first archives (Phase 1): virtual archive manifests + members.
+    # A list value runs statement-by-statement (sqlite3 executes one at a time).
+    3: [
+        """CREATE TABLE IF NOT EXISTS archives (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint        TEXT UNIQUE NOT NULL,
+    format             TEXT,
+    original_name      TEXT,
+    original_size      INTEGER,
+    member_count       INTEGER,
+    total_uncompressed INTEGER,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+)""",
+        """CREATE TABLE IF NOT EXISTS archive_members (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    archive_id     INTEGER NOT NULL REFERENCES archives(id) ON DELETE CASCADE,
+    relative_path  TEXT NOT NULL,
+    file_id        INTEGER NOT NULL REFERENCES files(id),
+    member_sha256  TEXT NOT NULL,
+    member_size    INTEGER NOT NULL,
+    mtime          REAL,
+    nested_archive TEXT,
+    UNIQUE(archive_id, relative_path)
+)""",
+        "CREATE INDEX IF NOT EXISTS idx_archives_fp       ON archives(fingerprint)",
+        "CREATE INDEX IF NOT EXISTS idx_arch_members_arc  ON archive_members(archive_id)",
+    ],
 }
 
 
@@ -182,6 +234,11 @@ def apply_migrations(db):
         return
     for ver in sorted(MIGRATIONS):
         if ver > current:
-            db.execute(MIGRATIONS[ver])
+            migration = MIGRATIONS[ver]
+            # A migration may carry several statements (sqlite3 executes one
+            # statement per call); strings stay single-statement for brevity.
+            statements = [migration] if isinstance(migration, str) else list(migration)
+            for stmt in statements:
+                db.execute(stmt)
             db.execute("INSERT INTO schema_version (version) VALUES (?)", (ver,))
     db.commit()

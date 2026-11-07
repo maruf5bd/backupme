@@ -143,6 +143,8 @@ backupme backup report.docx -b my_usb_drive
 # Output: report.docx: file_id=142, dedup=True  ← No upload needed!
 ```
 
+Archive files (tar/tar.gz/tar.bz2/tar.xz/zip) are extracted instead of stored whole — every member is deduplicated against your index, corrupt or encrypted archives fall back to the whole-blob path, and a manifest sidecar is written to every backend (skipped when encryption is enabled). See §7.7.
+
 ---
 
 ## 3. Restoring Files
@@ -539,6 +541,52 @@ backups:
 
 Deletions are highly secure: they are executed strictly after a successful database commit and verification signature check.
 
+### 7.7 Archives (Extract-First Ingest)
+
+When `backupme backup` sees an archive file (tar, tar.gz, tar.bz2, tar.xz, zip — detected by magic bytes, not just the extension), it does not store the archive as an opaque blob. Instead BackupMe extracts it, uploads every member through the normal pipeline (so members deduplicate against your whole index), and records the archive as a virtual manifest. The archive itself is never stored — it is re-constructible from its members.
+
+- **Fingerprint** — archive identity is a sha256 over its sorted member manifest. The same archive content twice costs nothing (archive-level dedup).
+- **Members are first-class files** — each member lives under `archive/<fingerprint>` in the index, so `list`, `search`, `verify` and per-file restore work on members like on any other file.
+- **Nested archives** — a member that is itself an archive (up to 5 levels deep) gets its own fingerprint and manifest; its members dedup too.
+- **Safety** — corrupt or password-protected archives, unsupported formats (rar/7z) and oversized archives (cap: 200,000 members or 20 GiB uncompressed) are stored whole through the normal path instead; the backup output reports them as `stored_whole` with the reason.
+- **Manifest sidecars** — after each successful archive ingest, a JSON restore recipe is written to every backend under `manifests/<fp[0:2]>/<fp[2:4]>/<fp>.json`, so archives can be re-manifested even if the database is lost. Sidecars are skipped when encryption is enabled (plaintext member names must not leak to backends).
+
+Inspect and restore virtual archives:
+
+```bash
+backupme archive list                          # all archives (id, fingerprint, members, ...)
+backupme archive list --json
+backupme archive show <FINGERPRINT>            # full member list (prefix accepted)
+backupme archive restore <FINGERPRINT> -o ./restored/
+                                               # writes every member, sha-verified
+```
+
+`archive restore` accepts the full fingerprint or a unique prefix. A nested archive member is restored as a directory at its path containing the nested archive's own members.
+
+### 7.8 Off-Site DB Snapshot Guard (`guard` section)
+
+The SQLite database is the only map of the backup vault, so BackupMe can ship every
+snapshot to your storage backends under a guarded prefix (`guard/snapshots/`). Files are
+named `<UTC timestamp>-gen<generation>.db.zst`, so remote listings sort chronologically.
+Each upload is size-verified after the put. The guard never deletes anything (remote and
+local retention pruning are not implemented yet).
+
+```yaml
+guard:
+  offsite_snapshots: true       # daily daemon tick ships a fresh DB snapshot to every reachable backend
+  keep_local_snapshots: 14      # advisory only: target number of local snapshots (pruning deferred)
+```
+
+Manual run:
+
+- `backupme db snapshot --offsite` — create the local snapshot as usual, then also upload it
+  to every reachable backend; JSON output (`--json`) carries a per-backend result map and an
+  overall status of `ok`, `partial` (some backends failed) or `failed` (none reachable).
+- The daemon runs the same shipping once per day; disable it with `guard.offsite_snapshots: false`.
+
+Restoring from a guarded copy: download `guard/snapshots/<name>.db.zst` from any backend,
+decompress it with Zstandard, and replace `backupme.db` while the app is stopped.
+
 ---
 
 ## 7b. cPanel Ingest
@@ -876,6 +924,7 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 | `backupme upload-bundle DIR` | Batch-upload small files (1KB–64KB) as a bundle | `backupme upload-bundle ~/Photos -b local` |
 | `backupme download FILE_ID` | Restore one file by index id | `backupme download 142 -o ./restored/` |
 | `backupme restore-cpanel ACC GEN` | Restore a cPanel account generation | `backupme restore-cpanel mysite 3 --out ./restored/` |
+| `backupme archive restore FP` | Restore a virtual archive's members by fingerprint | `backupme archive restore 9f2c… -o ./restored/` |
 | `backupme list` | List backed-up files | `backupme list --backend local --json` |
 | `backupme search QUERY` | Search the index (path search; punctuation-safe) | `backupme search "report-2026"` |
 | `backupme stats` | Totals: files, blobs, dedup savings | `backupme stats --json` |
@@ -967,6 +1016,14 @@ backupme ingest-cpanel DROP_ROOT [-n N] [--keep-raw N] [--dry-run] [--progress]
 backupme ingest-status [--account NAME] [--drop-root PATH] [--json]
 backupme restore-cpanel ACCOUNT GENERATION [--member-filter GLOB] [--out DIR]
                            [--retar FILE] [--json]
+backupme archive list [--json]
+backupme archive show FINGERPRINT [--json]
+                             # full member list; accepts a unique hex prefix
+backupme archive restore FINGERPRINT --output DIR [--json]
+                             # writes every member (sha-verified); a nested
+                             # archive member restores as a directory at its
+                             # path; exit 1 on unknown/ambiguous fingerprint
+                             # or any failed member
 backupme recompress [--algo] [--level] [--backend]
 backupme daemon                      # foreground scheduler; no start/stop/status
 backupme web [--host 127.0.0.1] [--port 8080] [--token TOKEN]
