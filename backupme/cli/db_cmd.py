@@ -20,7 +20,8 @@ def check(ctx, full, repair, as_json):
     errors = dbmod.check_integrity()
     from ..backends import get_all_backends
     from ..core import migration
-    result = migration.run_migrations(get_all_backends(ctx.obj["config"]), repair=repair)
+    result = migration.run_migrations(
+        get_all_backends(ctx.obj["config"]), repair=repair, reconcile=repair)
     data = {
         "integrity": "ok" if not errors else "failed",
         "errors": errors,

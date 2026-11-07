@@ -7,13 +7,18 @@ from backupme.core.database import execute, commit, get_connection
 from backupme.core import dedup as dedup_mod
 
 
-def run_migrations(backends: list, repair: bool = False) -> dict:
-    """Idempotent maintenance migrations. Safe to run on every startup/check."""
+def run_migrations(backends: list, repair: bool = False, reconcile: bool = True) -> dict:
+    """Idempotent maintenance migrations. Safe to run on every startup/check.
+
+    reconcile=False makes the run strictly read-only (no refcount writes) —
+    a plain check command must not mutate the database (qa P2: `db check`
+    repaired rows without --repair).
+    """
     from backupme.core.schema import apply_migrations
     apply_migrations(get_connection())
 
     result: dict = {}
-    result["refcounts_repaired"] = dedup_mod.reconcile_refcounts()
+    result["refcounts_repaired"] = dedup_mod.reconcile_refcounts() if reconcile else 0
     if repair:
         result["inline_migrated"] = migrate_inline_files(backends)
     else:

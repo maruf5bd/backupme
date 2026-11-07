@@ -70,6 +70,7 @@ SWEEP_PATHS = {
     "/api/backends/{name}",
     "/api/backends/test/{name}",
     "/api/files",
+    "/api/upload/folders",
     "/api/browse",
     "/api/tree",
     "/api/files/{file_id}",

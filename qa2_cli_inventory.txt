@@ -1,0 +1,148 @@
+QA2 CLI INVENTORY — BackupMe command surface (generated from source, click 8.3.1)
+Source of truth: backupme/cli/*.py. Cross-checked against MANUAL.md section 10
+(lines 861-920) and all other sections that mention commands.
+
+================================================================================
+A. GLOBAL OPTIONS (backupme/cli/base.py, group `cli`)
+================================================================================
+  --config, -c PATH      Config file path (default: config.yaml)
+  --db-path, --db PATH   Database path (default: backupme.db)
+  --verbose, -V          Verbose (debug) logging
+
+================================================================================
+B. TOP-LEVEL COMMANDS (15)
+================================================================================
+backup                    backup_cmd.py
+  args: SOURCES... (variadic, required)
+  opts: -b/--backend NAME, -n/--redundancy INT (=1), -r/--recursive,
+        --no-skip, --force, -m/--move
+upload-bundle             encrypt_cmd.py
+  args: DIRECTORY (must exist)
+  opts: -b/--backend NAME, -n/--redundancy INT (=1)
+download                  download_cmd.py
+  args: FILE_ID (int)
+  opts: -o/--output DIR (=.), -v/--version INT, --backend NAME
+list                      list_cmd.py
+  opts: -b/--backend NAME, --hash SHA256, --source-root ROOT,
+        -l/--limit INT (=50), -o/--offset INT (=0), --json
+stats                     list_cmd.py
+  opts: --json
+backends                  list_cmd.py
+  opts: --json
+search                    search_cmd.py
+  args: QUERY
+  opts: --content, --source ROOT
+select-backend            search_cmd.py
+  args: QUERY
+hash-lookup               search_cmd.py
+  args: SHA256
+convert                   convert_cmd.py
+  args: BACKEND_NAME
+  opts: --prefix PATH, --delete, --target BACKEND, --resume
+daemon                    daemon_cmd.py
+  opts: none. BLOCKS FOREVER (runs scheduler in foreground; Ctrl+C to stop).
+  NOTE: MANUAL documents `daemon start|stop|status` — no such subcommands.
+verify                    verify_cmd.py
+  opts: --count INT, --backend NAME, --file ID (int)
+gc                        gc_cmd.py
+  opts: --apply (DESTRUCTIVE; default dry run)
+health                    health_cmd.py
+  opts: --json, --purge-candidates, --limit INT (=20)
+ingest-cpanel             ingest_cmd.py
+  args: DROP_ROOT (existing dir)
+  opts: -n/--redundancy INT, --keep-raw INT, --dry-run, --progress,
+        --watch, --interval INT (=300), --json
+restore-cpanel            ingest_cmd.py
+  args: ACCOUNT, GENERATION (int)
+  opts: --member-filter GLOB, --out DIR, --retar FILE, --json
+ingest-status             ingest_cmd.py
+  opts: --account NAME, --drop-root PATH, --json
+recompress                encrypt_cmd.py
+  opts: --algo (=zstd), --level INT (=3), -b/--backend NAME
+web                       web_cmd.py
+  opts: --host (=127.0.0.1), --port INT (=8080), --token TOKEN
+  (starts uvicorn server; NOT invoked in QA beyond --help)
+
+================================================================================
+C. COMMAND GROUPS
+================================================================================
+backend (backend_cmd.py)
+  add        args: [BACKEND_TYPE] choice(local,ftp,sftp,smb,ssh,rclone,ninedrive)
+             opts: --name --host --port INT --username --password --key-file
+                   --path --share --remote --base-url --api-key --email
+                   --refresh-token --folder --bwlimit --quota --priority INT
+                   --weight INT --test/--no-test (default: --test)
+             NOTE: --test/--no-test is accepted but NEVER USED in the body;
+                   "Test connection now?" confirm always prompts.
+  list       opts: --json
+  remove     args: NAME
+  test       args: NAME; opts: --json  (exit 0 even when backend not found)
+  onboard    args: NAME; opts: --rebalance, --dry-run, --json
+             (unknown name -> exit 2)
+  rebalance  args: NAME; opts: --limit INT, --dry-run, --json
+  drain      args: NAME; opts: --dry-run, --json
+  rescan     args: NAME; opts: --json
+             (unknown name -> exit 1; missing/mismatch on box -> exit 1)
+
+db (db_cmd.py)
+  check        opts: --full, --repair, --json
+  restore      opts: --json  (NO --from / --snapshot; MANUAL documents both)
+  rebuild      opts: --json
+  snapshot     opts: --json
+  info         opts: --json
+  cold-export  opts: --dry-run, --json
+  purge        opts: --grace-days INT, --json   (DESTRUCTIVE; not run in QA)
+  history      args: SQL; opts: --json (is_flag default=True: human output
+               unreachable; effectively always JSON)
+  vacuum       opts: none
+  prune-oplog  opts: --days INT (=30), --json
+  oplog        opts: --pending, --json
+
+encrypt (encrypt_cmd.py)
+  init    writes key to ~/.backupme/key.enc (REAL user home — not isolated!)
+  status  reads ~/.backupme/key.enc
+
+report (report_cmd.py)
+  list        no opts
+  get         args: REPORT_ID (int)   (unknown id -> "Report not found", exit 0)
+  verify      opts: --count INT (=5), --backend NAME
+  integrity   no opts (JSON to stdout)
+
+Leaf command count: 15 top-level + 8 backend + 11 db + 2 encrypt + 4 report = 40.
+
+================================================================================
+D. DOC DRIFT vs MANUAL (details in qa_report_cli.md)
+================================================================================
+Documented in MANUAL but NOT in code (phantom commands/options):
+  - backupme status                          (quick table, §8.1, §9, Tips)
+  - backupme restore --source/--dest         (quick table, §3, All Options)
+  - backupme check-consistency               (quick table, §8.4, All Options)
+  - backupme scrub --backend                 (All Options)
+  - backupme encrypt change-password         (§1.2, §9.4, All Options)
+  - backupme daemon start|stop|status        (quick table, §7.3, All Options)
+        -> actual `daemon` is a single blocking command
+  - backupme report --format html|json|text  (quick table, §8.5, All Options)
+        -> actual `report` is a group: list/get/verify/integrity
+  - backupme db restore --from B --snapshot F(quick table, §9.3, All Options)
+  - backupme download <id|path> --from --dest(§3, §9.2, All Options)
+        -> actual: int FILE_ID only; options are --output, --version, --backend
+  - backupme verify --all / --recent         (§8.3, §9.1, All Options)
+  - backupme logs --op cpanel_ingest         (§7b, line 631)
+  - backupme convert --recursive             (§7.4 lines 484-490; not an option)
+  - backupme list --source ROOT              (All Options; actual --source-root;
+        click prefix matching makes --source work by accident)
+
+In code but NOT documented anywhere in MANUAL:
+  - stats, backends, select-backend
+  - backend add / list / remove / test / onboard / rebalance / drain
+    (§6 documents backend YAML config only; `backend rescan` IS documented)
+  - db vacuum, db prune-oplog
+  - report list / get / verify / integrity
+  - backup --no-skip / --force; web --token; db check --repair; verify --file
+    (verify --file documented in §8.2 but missing from All Options block)
+
+Documented and accurate: backup, upload-bundle, search, hash-lookup, convert
+(minus --recursive), db check, db snapshot, db rebuild, db oplog, db info,
+encrypt init/status, recompress, web (host/port), gc, health, verify
+(count/backend), ingest-cpanel, ingest-status, restore-cpanel, db cold-export,
+db purge, db history, backend rescan.
