@@ -224,3 +224,26 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   probes churn sessions (D10). Capacity truth: storagebox holds 3 blobs / 0.03 GiB
   (essentially empty off-site) and h local drive + hostraj Gdrive are the SAME directory
   (H:\Backupme) — only 2 distinct physical copies exist. Filling the box = user decision.
+
+## 2026-11-07 (update 10)
+
+- **QA campaign (3 subagents, 2-concurrent cap)**: web/API (132 tests, 106 routes),
+  CLI (83 tests, 40 commands), core engine (37 scenarios + full-suite baseline).
+  34 defects found (1 P0 / 11 P1 / 22 P2), each verified twice; all pinned as
+  xfail(strict=False) in the landed suites. Reports: qa_report_web.md,
+  qa_report_cli.md, qa_report_core.md.
+- **P0 fixed (`2d69c99`)**: CLI search crashed on hyphenated queries — quoting +
+  LIKE fallback moved into index.search_files (shared by web + CLI).
+- **P1s fixed**: backend pool (D10 root cause: _get_backends invalidated the cache
+  EVERY request → fresh Storage Box SSH sessions per poll → box limit → dashboard
+  outage; now fingerprint-keyed instance reuse, `498029a`); recompress_blobs no longer
+  renames parent bundles (made ALL batched files unrestorable) and resolves backends
+  via real config (CLI no-op, `2594967`); 0-byte files restorable + verify reports
+  real failure reasons (`526794c`); ingest archives whose members ALL failed stay in
+  the drop root for retry instead of being stranded via .done (`208203b`); restore
+  worker: forward-slash path filter, absolute-path escape guard, soft-failure
+  truthfulness, thread-local SQLite close (locked-DB flake source); upload route:
+  unknown backend 400, honest op_log, no temp-path leak; download serves the indexed
+  filename; to-path answers 400/404/500; report/generate counters real; `db check`
+  read-only without --repair. Full suite 438 tests exit 0 (qa_final run).
+- **Dashboard restored**: the outage was D10; restarted serving all fixes.
