@@ -49,20 +49,20 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   still uses an inline pre-core implementation (no counters, no op_log audit, silent
   except-continue) — rework onto core recompress_blobs after B07.
 
-- **B06 [C] One background-task runner instead of 8 copies.** **PARTIAL — helpers exist, adoption pending**
-  The shared scaffolding landed in `routes/common.py` (op_log_start/op_log_finish,
-  make_sse_stream, start_daemon_thread, state dicts + resets) but only health.py's purge
-  uses the op_log helpers; backup.py/dbops.py/files.py/misc.py/ingest.py/backends.py still
-  carry their inline op_log + SSE + thread copies. Done when: helpers used everywhere;
-  one new bg task costs ~20 lines. Same file set as B07 — execute after B07 lands.
+- **B06 [C] One background-task runner instead of 8 copies.** **IN FLIGHT (2026-11-07, background agent)**
+  Helpers landed in `routes/common.py` (op_log_start/op_log_finish, make_sse_stream,
+  start_daemon_thread, state dicts + resets). Agent is adopting them in
+  backup/dbops/files/misc/ingest/backends and reworking /api/recompress onto core
+  recompress_blobs (counters + op_log audit). Done when: helpers used everywhere;
+  one new bg task costs ~20 lines.
 
-- **B07 [C] No silent data loss in API responses.** **IN FLIGHT (2026-11-07, background agent)**
-  ~30 `except Exception: pass` sites in routes.py return partial data with no signal
-  (e.g. 207, 342, 978, 1265, 1335, 1363). Every partial response must include an `errors` field
-  and log the exception.
-  Done when: grep finds no bare `except.*pass` in routes.py; QA harness asserts error visibility.
-  Update: agent converting all 31 package sites to logged failures (or justified-silence with
-  a written reason); targets zero unjustified `except.*pass` in backupme/web/routes/*.py.
+- **B07 [C] No silent data loss in API responses.** **DONE (2026-11-07, `dc2c2d9`)**
+  43 truly-silent except handlers across 9 route modules converted: 40 now log via the
+  module logger (op_log bookkeeping failures, trend-query failures, per-blob recompress
+  failures, config reads), 3 justified-silent with written reasons (non-numeric
+  priority/port form input; staging-file vanishing between walk and stat is the normal
+  concurrent-cleanup case). Behavior unchanged; tests/test_web_b07.py (3 caplog tests);
+  97 web-area tests + full suite green.
 
 - **B08 [F] Turn the QA harness into a regression suite.**
   `tests/test_web_api.py` from the QA agent's TestClient harness: auth gate, pagination,

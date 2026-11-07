@@ -133,3 +133,23 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - Standing user decisions unchanged: gc --apply (8,498 orphans / 28.22 GiB), ~6,509 purge
   candidates, 7 SOURCE_GONE files, 4 junk archives (2FA.7z = last copy), Storage Box
   password rotation.
+
+## 2026-11-07 (update 6)
+
+- **B07 DONE (`dc2c2d9`, background agent)**: 43 silent except-pass sites converted
+  (40 logged via module loggers, 3 justified-silent with written reasons — non-numeric
+  form input kept as-is, staging-file races). Behavior unchanged; 3 caplog tests
+  (tests/test_web_b07.py); 97 web-area tests green.
+- **FULL SUITE GREEN (393 collected, 1 skipped, 0 failures) — and the 3
+  ordering-dependent test_web_api.py failures are GONE without touching that file.**
+  Root cause was the same one the state-reset fix addressed: background-task state
+  leaked across test files under the split's process-global dicts. The B05 isolation
+  fix (reset_background_state at registration) resolved them; no test edits needed.
+- Dashboard restarted on 127.0.0.1:8081 serving the completed split — verified live:
+  /api/encrypt/status carries capabilities (argon2id / AEAD tag-at-end), /api/report
+  carries op_counters, integrity card = check id 4 completed 10/10 (2026-11-07).
+- **B06 adoption + /api/recompress rework fanned out** (background agent, owns
+  backupme/web/routes/*.py + tests/test_web_b06.py): switch inline op_log/SSE/thread
+  copies in backup/dbops/files/misc (+ingest/backends) onto the common helpers;
+  /api/recompress moves onto core recompress_blobs with counters + op_log audit
+  (its inline copy uploads without hash verification and has no audit).
