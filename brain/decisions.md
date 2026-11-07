@@ -42,3 +42,24 @@
 - **Gdrive GC coverage deferred** — the `hostraj Gdrive` backend was unreachable during the
   2026-11-05 scan, so its orphan picture is unknown; GC must be re-run there once the root
   is mounted (old-generation junk likely exists there too).
+
+## 2026-11-08
+
+- **Extract-first archives APPROVED (owner)** — archives are extracted on backup, every
+  member hashed + uploaded through the real pipeline, the archive lives only as a DB
+  manifest (fingerprint = hash of its member list → archive-level dedup on top of file
+  and chunk dedup), members are ordinary `files` rows under `archive/<fp>/`, nested
+  archives recurse with caps, corrupt/encrypted/unsupported → whole-file fallback.
+  Owner's insurance add-on accepted: manifest sidecars WITH chunk recipes written to
+  every backend (`manifests/<2>/<2>/<fp>.json`, skipped when encryption is enabled) so
+  blobs survive DB loss; plus daily off-site DB snapshot shipping (`guard/snapshots/`,
+  `db snapshot --offsite`, scheduler tick; no remote deletes in v1). Full plan with
+  phases and open decisions: `brain/plan_archives.md`.
+- **Repacked-archive caveat accepted** — restores rebuild archives from DB data with the
+  same files/structure but non-identical compression bytes; "keep original too" stays a
+  future exception flag, default OFF.
+- **Phase 3 re-ingest authorized in principle** — the 20 Softaculous .tar.gz archives on
+  `k backupme-data` (stored as whole blobs, 1.0% saved) will be re-processed through the
+  extractor once Phase 1 lands; the whole-blob rows get unref'd only after members
+  verify. Actual deletion of displaced blobs still goes through the normal gc/purge
+  approval gates.
