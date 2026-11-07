@@ -92,3 +92,24 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   3rd agent: B05 split + B12 op_log remainder + B09/B14 endpoint wiring (spec in BACKLOG).
 - Storage Box walk residual: 128 walk_errors on the box (rate-limit transients on the
   provider's own jetbackup tree; not backupme data — no follow-up needed).
+
+## 2026-11-07 (update 4)
+
+- **Dashboard integrity card: was stale-failed (2026-09-06 check id 3), now PASSED today.**
+  Triage of that check's 5 files: 4/5 restore with sha match (repairs landed since
+  September); the 5th (id 37423) exposed the real D8 shape.
+- **D8 RESOLVED — legacy objects were recoverable all along (`d7cb9e6`)**: the 2026-05-era
+  uploader wrote 10,853 blob_storage rows with blob_id `bundle/xx/yy/<sha>` but a
+  standalone-object storage_path (`<sha>.zstd`, no `@offset:len`) — 9,671 on hostraj
+  Gdrive + 1,182 on local_disk — blocking restore of 2,170 live latest-version files.
+  Object format reverse-engineered: a 52-byte dedup envelope (`bndl/objects/<2>/<2>/<13-hex
+  content-sha prefix>` header + real content), blob named after the WHOLE envelope.
+  Fix: `downloader.py` downloads the object directly, gates sha256(object) == blob tail,
+  strips the header via file_chunks.pt_size arithmetic cross-checked against the header's
+  embedded sha prefix. 7 downloader tests (restore/missing/wrong-content/envelope/tampered).
+- **Verification**: 37423 + 15-file random cohort sweep = 16/16 real downloads with sha
+  match; fresh integrity check recorded (`report verify --count 10` -> check id 4,
+  10/10 completed 2026-11-07). Dashboard restarted on 127.0.0.1:8081 with the fix; its
+  per-file verify returns match:true for 37423 end-to-end.
+- **Launcher**: `dashboard.bat` (one-click, reuses running instance) committed `50c2839`;
+  index.bat menu #23 now opens the port actually passed.

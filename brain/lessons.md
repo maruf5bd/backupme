@@ -59,3 +59,21 @@
   (here 15,607 = 15,607); (2) sweep every orphan path across ALL referencing tables
   (`blobs`, `file_chunks`, `blob_storage`) — on this DB all 8,498 orphans had zero rows in
   every table, i.e. leftovers of an earlier DB generation that no restore path can address.
+
+## Legacy formats (2026-11-07, D8)
+
+- **"Malformed legacy metadata" can be an undocumented format.** The no-`@` bundle rows
+  looked like garbage (three successive mis-diagnoses: member-id mismatch -> malformed
+  blob_ids -> finally the truth). Reverse-engineer the bytes before declaring data dead:
+  the objects turned out to be 52-byte dedup envelopes (`bndl/objects/...` header + real
+  content, blob named after the whole envelope) and 2,170 live files became restorable
+  with ~30 lines of downloader code.
+- **Envelope naming subtlety**: the blob's sha gate passes on the FULL envelope, while the
+  header points at the content's sha. Slice only AFTER the envelope-level gate, size the
+  content from `file_chunks.pt_size` arithmetic (`len(data) - pt_size`), and cross-check
+  the slice against the header's embedded sha prefix. Never slice first and then try to
+  pass the content through a gate that expects the envelope's sha.
+- **Header-scan ordering trap**: hexdump first, find the content offset by locating the
+  known-good source bytes (`pt.find(src[:256])`), then decode the header around it —
+  reading structure off the first bytes alone sent the investigation down a "pointer
+  object" path that was half wrong.
