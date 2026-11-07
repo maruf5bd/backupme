@@ -126,3 +126,20 @@ Append-only update; every entry above stays exactly as written.
   B06 (one background-task runner), B07 (no silent except-pass in API responses), B08 (QA
   harness -> regression suite), B09 (count/report skips), B12 (purge approval workflow e2e),
   B14 (crypto capability introspection).
+
+## 2026-11-08 (update 3) — archive + guard wiring
+
+- **Extract-first archives LANDED (`6cd6691`)**: `core/archives.py` (magic-byte detect,
+  fingerprint = manifest hash, two-pass ingest, nested recursion, whole-blob fallback,
+  manifest sidecars to every backend); `core/schema.py` base tables + `MIGRATIONS[3]`
+  (`apply_migrations` runs multi-statement migrations now); `cli/backup_cmd.py` archive
+  hook; `cli/archive_cmd.py` (`archive list|show|restore`) registered via `cli/__init__.py`;
+  `sanitize_member` moved verbatim to archives.py, cpanel_ingest imports it.
+- **Off-site guard LANDED (`912bb2f`)**: `core/offsite_guard.py::ship_snapshot` →
+  `guard/snapshots/<UTC ts>-gen<gen>.db.zst` on every backend (size-verified);
+  `scheduler.py` daily tick gated on the new `guard.offsite_snapshots` config
+  (`GuardConfig`, unknown-key-warns); `db snapshot --offsite` CLI flag.
+- **In flight**: Phase 2 agents — G: 7z/rar in core/archives.py (+ py7zr dependency);
+  H: `web/routes/archives.py` + template + `core/manifest_recover.py` +
+  `db recover-from-manifests` subcommand. Phase 3 re-ingest of the 20 Softaculous
+  archives running on the main thread (single live-DB writer).

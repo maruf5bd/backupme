@@ -117,9 +117,32 @@ never lost.
   daily scheduler tick + `db snapshot --offsite` + `guard` config + MANUAL
   7.8 + tests/test_offsite_guard.py (16). Remote path
   `guard/snapshots/<UTC ts>-gen<gen>.db.zst`, size-verified per backend.
-- **Phase 2 — PENDING**: 7z via py7zr, rar via external unrar/7z when
-  present, dashboard "Archives" page (list archives, browse members, restore
-  buttons), `db recover-from-manifests`, manifest retention pruning design.
+- **Phase 2 — IN FLIGHT (two agents, 2026-11-08)**:
+  - Agent G (formats): 7z via py7zr (lazy import; missing package → stays
+    unsupported with a named reason), rar via external unrar/7z tool when
+    present (PATH + WinRAR/7-Zip install paths, cached once per process;
+    subprocess without shell=True, staging walk, timeout 600s), encrypted/
+    corrupt → ArchiveFallback → stored whole. Files: core/archives.py,
+    dependency file, tests/test_archive_formats.py.
+  - Agent H (surface): dashboard Archives page (GET /archives +
+    /api/archives[/id] + confirm-gated POST /api/archives/restore via
+    to_thread), `backupme db recover-from-manifests BACKEND --into PATH
+    [--verify full|none] [--dry-run]` (rebuilds a complete vault map into a
+    NEW sqlite file from manifest sidecars; never opens the live DB; full
+    verify = decompress-hash per blob per the D8 lesson; unverifiable
+    members are reported as problems and get NO file rows). Files:
+    web/routes/archives.py, template, routes/__init__.py, nav,
+    core/manifest_recover.py, cli/db_cmd.py, MANUAL.
+- **Phase 3 — IN FLIGHT (2026-11-08, main thread)**: re-ingesting the 20
+  Softaculous .tar.gz archives from their source files through
+  `ingest_archive_file` (targets = K only), three gated phases: A ingest
+  (abort unless every archive returns archive_ingested), B sha-verify
+  (ALL members of the 2 smallest archives + first/last member of every
+  other archive), C soft-delete the 20 old whole-blob rows via
+  `_soft_delete_file()` + op_log audit (core op_log API: append /
+  mark_committed / mark_failed — the web-layer op_log_start/finish wrappers
+  do NOT exist in core). Zero-ref blobs remain physically on K until the
+  user approves `gc --apply`.
 - **Phase 3 — PENDING (user-visible win)**: re-process the 20 Softaculous
   .tar.gz archives already stored on `k backupme-data` (2,258,329,053 B
   stored, saved only 1.0% as whole blobs) through the extractor; unref the
