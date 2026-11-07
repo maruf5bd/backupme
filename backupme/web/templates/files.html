@@ -423,6 +423,9 @@
       <button class="btn btn-secondary btn-sm" onclick="bulkDownload()">
         <i data-lucide="download" style="width:14px;height:14px;"></i> Download All
       </button>
+      <button class="btn btn-secondary btn-sm" onclick="restoreSelected()">
+        <i data-lucide="folder-down" style="width:14px;height:14px;"></i> Restore selected to folder…
+      </button>
       <button class="btn btn-danger btn-sm" onclick="bulkDelete()">
         <i data-lucide="trash-2" style="width:14px;height:14px;"></i> Delete All
       </button>
@@ -435,6 +438,22 @@
 
 <!-- Files Table -->
 <div class="card">
+  <div class="flex items-center justify-between" style="padding:0.6rem 1rem;border-bottom:1px solid var(--border-subtle);flex-wrap:wrap;gap:0.5rem;">
+    <div class="flex items-center gap-2">
+      <i data-lucide="list" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="font-semibold text-sm">{{ files|length }} shown{% if q %} for &ldquo;{{ q }}&rdquo;{% endif %}</span>
+    </div>
+    <div class="flex gap-2">
+      {% if q %}
+      <button class="btn btn-secondary btn-sm" onclick="restoreAllResults()" title="Restore every listed result to a folder on the server">
+        <i data-lucide="folder-down" style="width:14px;height:14px;"></i> Restore all results to folder…
+      </button>
+      {% endif %}
+      <button class="btn btn-secondary btn-sm" onclick="restoreSelected()" title="Restore the checked rows to a folder on the server">
+        <i data-lucide="folder-down" style="width:14px;height:14px;"></i> Restore selected to folder…
+      </button>
+    </div>
+  </div>
   <div class="table-wrapper">
     <table>
       <thead>
@@ -1218,6 +1237,47 @@
       await new Promise(r => setTimeout(r, 500));
     }
   };
+
+  // ── Restore from the list view (search results / selection) ──
+  const SEARCH_RESULT_IDS = {{ files | map(attribute='id') | list | tojson }};
+
+  window.restoreFileIds = async function(ids, label) {
+    ids = [...new Set(ids.filter(Boolean))];
+    if (!ids.length) { App.Toast.error('Nothing selected to restore'); return; }
+    const dest = prompt('Restore ' + ids.length + ' file(s) to folder path:',
+                        'restore_out/' + (label || 'selection'));
+    if (!dest) return;
+    try {
+      const r = await App.fetchAPI('/api/restore/files', {
+        method: 'POST',
+        body: JSON.stringify({ file_ids: ids, dest_path: dest })
+      });
+      if (r.error) { App.Toast.error(r.error); return; }
+      const card = document.getElementById('restore-progress-card');
+      card.style.display = 'block';
+      document.getElementById('restore-progress-fill').style.width = '0%';
+      document.getElementById('restore-files-count').textContent = '0 / ' + r.restoring;
+      document.getElementById('restore-error-count').textContent = '0';
+      document.getElementById('restore-errors-list').innerHTML = '';
+      document.getElementById('restore-current-path').textContent = 'Starting restore...';
+      connectRestoreSSE();
+      App.Toast.show('Restoring ' + r.restoring + ' file(s) to ' + dest +
+                     (r.skipped ? ' (' + r.skipped + ' skipped)' : ''), 'success');
+    } catch (e) {
+      App.Toast.error('Failed to start restore: ' + e.message);
+    }
+  };
+
+  window.restoreAllResults = function() {
+    restoreFileIds(SEARCH_RESULT_IDS, {{ (q or '') | tojson }});
+  };
+
+  window.restoreSelected = function() {
+    restoreFileIds(
+      [...document.querySelectorAll('.file-checkbox:checked')].map(cb => parseInt(cb.dataset.id, 10)),
+      'selection');
+  };
+
 
   // ── View Mode Toggle ──────────────────────────────────
   let _viewMode = 'list';

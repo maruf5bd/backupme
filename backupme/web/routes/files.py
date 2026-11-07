@@ -1,7 +1,8 @@
-"""File routes (backlog B05): listing, browse, tree, restore-all, download,
-preview, upload, delete, versions, verify, replication detail.
+"""File routes (backlog B05): listing, browse, tree, restore-all,
+restore-by-ids, download, preview, upload, delete, versions, verify,
+replication detail.
 
-The restore-all worker writes its progress into the shared _restore_state
+The restore workers write their progress into the shared _restore_state
 dict from routes/common.py, which /api/restore/status and the SSE stream read.
 """
 import asyncio
@@ -197,25 +198,42 @@ def register(app, ctx):
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
-    # ── Restore All Files ────────────────────────────────────
+    # ── Restore ──────────────────────────────────────────────
 
-    def _restore_worker(source_root: str, dest_path: str, path_filter: str):
+    def _select_restore_rows(source_root: str, path_filter: str):
+        """Index rows under a source root (optionally one subfolder), with
+        the subfolder prefix stripped so the worker restores relative to it."""
         rows = db.execute(
             "SELECT id, relative_path, sha256, size FROM files WHERE source_root = ? AND deleted_at IS NULL ORDER BY relative_path",
             (source_root,),
         ).fetchall()
-
-        # Filter to specific subfolder if given
-        files = []
         sep = os.sep
+        files = []
         for r in rows:
             rel = r["relative_path"]
             if path_filter:
                 # Match exact directory: "DCIM" should match "DCIM/photo.jpg" but not "DCIM2/photo.jpg"
                 if not (rel == path_filter or rel.startswith(path_filter + sep) or rel.startswith(path_filter + "\\")):
                     continue
-            files.append(dict(r))
+                if rel.startswith(path_filter + sep) or rel.startswith(path_filter + "\\"):
+                    rel = rel[len(path_filter)+1:].lstrip("\\/")
+                elif rel == path_filter:
+                    rel = os.path.basename(rel)
+            files.append({"id": r["id"], "relative_path": rel})
+        return files
 
+    def _start_restore(files: list, dest_path: str, source_label: str):
+        with _restore_lock:
+            _restore_state.update({
+                "running": False, "source_root": source_label, "dest_path": dest_path,
+                "total": len(files), "done": 0, "errors": 0, "current": "",
+                "error_list": [], "completed": False,
+            })
+        start_daemon_thread(_restore_worker, files, dest_path)
+        return {"status": "started", "source_root": source_label,
+                "dest_path": dest_path, "restoring": len(files)}
+
+    def _restore_worker(files: list, dest_path: str):
         with _restore_lock:
             _restore_state["total"] = len(files)
             _restore_state["running"] = True
@@ -224,12 +242,6 @@ def register(app, ctx):
         dest = Path(dest_path)
         for f in files:
             rel = f["relative_path"]
-            # If path_filter, strip the prefix so files restore relative to the subfolder
-            if path_filter:
-                if rel.startswith(path_filter + sep) or rel.startswith(path_filter + "\\"):
-                    rel = rel[len(path_filter)+1:].lstrip("\\/")
-                elif rel == path_filter:
-                    rel = os.path.basename(rel)
             # Defense in depth: the index is expected to hold clean relative
             # paths (scan + sanitize_member enforce this), but a poisoned or
             # legacy row must not write outside the restore destination.
@@ -278,15 +290,52 @@ def register(app, ctx):
             if _restore_state["running"]:
                 return JSONResponse({"error": "A restore is already running"}, status_code=409)
 
-        # Reset state
-        with _restore_lock:
-            _restore_state.update({
-                "running": False, "source_root": source_root, "dest_path": dest_path,
-                "total": 0, "done": 0, "errors": 0, "current": "", "error_list": [], "completed": False,
-            })
+        files = _select_restore_rows(source_root, path_filter)
+        return JSONResponse(_start_restore(files, dest_path, source_root))
 
-        start_daemon_thread(_restore_worker, source_root, dest_path, path_filter)
-        return JSONResponse({"status": "started", "source_root": source_root, "dest_path": dest_path})
+    @app.post("/api/restore/files")
+    async def api_restore_files(data: dict = Body(...)):
+        """Restore an explicit set of file ids (e.g. search results) to a
+        server-side folder. Duplicate ids collapse; multiple versions of the
+        same relative_path restore once with the latest version winning;
+        unknown or soft-deleted ids are skipped and reported."""
+        dest_path = data.get("dest_path", "").strip()
+        raw_ids = data.get("file_ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return JSONResponse(
+                {"error": "file_ids (non-empty list) and dest_path required"}, status_code=400)
+        try:
+            ids = sorted({int(x) for x in raw_ids})
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "file_ids must be integers"}, status_code=400)
+        if not dest_path:
+            return JSONResponse({"error": "dest_path required"}, status_code=400)
+
+        with _restore_lock:
+            if _restore_state["running"]:
+                return JSONResponse({"error": "A restore is already running"}, status_code=409)
+
+        # Chunked IN() keeps the query under SQLite's variable limit for
+        # arbitrary user-selected id sets; latest id per path wins.
+        best = {}
+        for chunk_start in range(0, len(ids), 500):
+            chunk = ids[chunk_start:chunk_start + 500]
+            marks = ",".join("?" for _ in chunk)
+            rows = db.execute(
+                f"SELECT id, relative_path FROM files WHERE id IN ({marks}) AND deleted_at IS NULL",
+                chunk,
+            ).fetchall()
+            for r in rows:
+                prev = best.get(r["relative_path"])
+                if prev is None or r["id"] > prev["id"]:
+                    best[r["relative_path"]] = {"id": r["id"], "relative_path": r["relative_path"]}
+        files = sorted(best.values(), key=lambda d: d["relative_path"])
+        if not files:
+            return JSONResponse(
+                {"error": f"none of the {len(ids)} id(s) are live files"}, status_code=400)
+        payload = _start_restore(files, dest_path, f"{len(files)} file(s) by id")
+        payload["skipped"] = len(ids) - len(files)
+        return JSONResponse(payload)
 
     @app.get("/api/restore/stream")
     async def api_restore_stream():
