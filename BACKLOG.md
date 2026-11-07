@@ -38,11 +38,26 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
 
 ## P1 — codebase quality
 
-- **B05 [C] Split `web/routes.py` (2,727 lines) into domain routers.**
-  Group by files / backends / db / ingest / backup / scheduler / health / config, keeping the
-  current specific-before-generic route ORDER (regression: `/api/backends/usage` before
-  `/api/backends/{name}`).
-  Done when: routes.py is a thin registrar (<400 lines), full suite + QA suite green.
+- **B05 [C] Split `web/routes.py` (2,700+ lines) into domain routers.** **SPEC (execute after routes.py is free)**
+  Goal: routes.py becomes a thin registrar (<400 lines). Split by domain into
+  `backupme/web/routes/` package: `pages.py` (GET / HTML), `files.py` (files, download,
+  preview, restore, upload), `backends.py` (backends incl. verify/onboard/rebalance/drain/
+  rescan + usage BEFORE {name} — ORDER CRITICAL), `dbops.py` (db check/snapshot/restore/
+  rebuild/checkpoint + snapshots delete/prune with their B03 confirm gates), `ingest.py`,
+  `backup.py` (backup + backup/source + scan), `scheduler.py` (daemon + scheduler config),
+  `health.py` (the /api/health/* family + scan SSE), `config_api.py` (config get/set/import/
+  export/sources), `misc.py` (activity, trends, encrypt, hash, search, reports, convert,
+  recompress, logs). Shared helpers (`_get_backends`, `_soft_delete_file`, `_fts_phrase`,
+  `_search_files_safe`, module-state dicts for background tasks) go to
+  `backupme/web/routes/common.py`; B06's task-runner helper lands there too.
+  Hard constraints: preserve EXACT route ORDER for same-path-prefix routes (usage before
+  {name}; specific before generic); keep `register_routes(app, config)` as the single public
+  entry (it calls each module's register(app, ctx) with a shared ctx object); full suite +
+  tests/test_web_api.py green after. Also fold in: op_log audit entry in POST /api/health/purge
+  (B12 remainder — op_log_mod.append("health_purge", {...ids...}, idempotency_key=f"purge_<ids-hash>")),
+  `crypto.capabilities()` into /api/encrypt/status (B14 remainder), and B09 counters
+  (recompress_blobs `failed`, rebuild `walk_failed_backends`/`unreadable_manifests`) surfaced
+  in /api/report + /api/recompress responses.
 
 - **B06 [C] One background-task runner instead of 8 copies.**
   The `op_id = None` + try/except + module-state-dict + SSE scaffolding is copy-pasted across

@@ -71,3 +71,24 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   `blob_storage` — leftovers of an earlier DB generation that no restore path can address;
   the 15,607 live blobs on the same drive matched DB rows exactly, so the GC matcher is
   healthy. `gc --apply` awaits explicit user approval (added to pending decisions above).
+
+## 2026-11-07 (update 3)
+
+- **D6 fully closed**: sampled remote-backend verification landed (`8a27d40`) — the health
+  scan existence-checks 25 random paths on every REMOTE backend and the dashboard shows a
+  "phantom rows likely" badge instead of silently skipping remotes; root cause recorded
+  (undetermined second writer in the 11-04/05 repair window; all current write paths verify;
+  the 16 vmdk rows carry zstd level 3 vs level 1 on healthy twins — `a7ced81`).
+- **Phantom-row cleanup EXECUTED (user-approved)**: 323 storagebox rows deleted with
+  pre-flight re-verification, restorable backup
+  (`diagnostics/phantom_storagebox_rows_20261105_131934.json/.sql`), post-check clean
+  (blobs-with-zero-storage unchanged at 31,045) — `0864d49`.
+- **B03 landed** (`01036ab`): confirm:true gate on 6 destructive endpoints (server/restart,
+  db/restore, db/rebuild, backends/remove, snapshots delete + prune) + all 7 frontend
+  callers updated + 7 tests.
+- **B09/B14 core halves landed** (`43d7a8b`): recompress `failed` counter, rebuild
+  `walk_failed_backends`/`unreadable_manifests`, `crypto.capabilities()`.
+- **Running**: agent B04+B13 (routes/templates), agent B08 (QA regression suite). Queued
+  3rd agent: B05 split + B12 op_log remainder + B09/B14 endpoint wiring (spec in BACKLOG).
+- Storage Box walk residual: 128 walk_errors on the box (rate-limit transients on the
+  provider's own jetbackup tree; not backupme data — no follow-up needed).
