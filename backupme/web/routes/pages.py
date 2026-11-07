@@ -3,6 +3,7 @@
 GET / HTML pages: dashboard, files, backends, ingest, logs, database,
 report, settings. JSON APIs live in the sibling domain modules.
 """
+import asyncio
 from pathlib import Path
 
 from fastapi import Request
@@ -167,38 +168,54 @@ def register(app, ctx):
             "current_status": status,
         })
 
+    def _collect_database_page_info() -> dict:
+        """All blocking work behind the /database page: PRAGMA
+        integrity_check alone ran 29s on the live DB, plus the journal_mode /
+        page_count / page_size PRAGMAs, the recovery-events query, and the
+        snapshot directory glob+stat. Extracted as a plain sync helper so the
+        async handler can run it via asyncio.to_thread instead of wedging the
+        event loop (qa defect D18). This worker thread always closes its own
+        SQLite handle so no pooled connection outlives the request."""
+        try:
+            gen = db.get_generation()
+            instance_id = db.get_instance_id()
+            integrity = db.check_integrity()
+            try:
+                wal_row = db.execute("PRAGMA journal_mode").fetchone()
+                wal_mode = bool(wal_row and wal_row[0].upper() == "WAL")
+            except Exception as e:
+                log.warning("journal_mode PRAGMA read failed for database page: %s", e)
+                wal_mode = False
+            page_count = db.execute("PRAGMA page_count").fetchone()[0]
+            page_size = db.execute("PRAGMA page_size").fetchone()[0]
+            recovery = db.execute(
+                "SELECT * FROM recovery_events ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+            snaps = sorted(Path(".").glob("snapshot-*.db.zst"))
+            snapshots = [{"name": p.name, "size": p.stat().st_size} for p in snaps]
+            return {
+                "db_info": {
+                    "generation": gen,
+                    "instance_id": instance_id,
+                    "size": page_count * page_size,
+                    "integrity_status": "ok" if not integrity else "corrupt",
+                    "integrity_errors": integrity,
+                    "wal_mode": wal_mode,
+                    "page_count": page_count,
+                    "page_size": page_size,
+                },
+                "snapshots": snapshots,
+                "recovery": [dict(r) for r in recovery],
+            }
+        finally:
+            db.close_connection()
+
     @app.get("/database", response_class=HTMLResponse)
     async def database_page(request: Request):
-        gen = db.get_generation()
-        instance_id = db.get_instance_id()
-        integrity = db.check_integrity()
-        try:
-            wal_row = db.execute("PRAGMA journal_mode").fetchone()
-            wal_mode = wal_row and wal_row[0].upper() == "WAL"
-        except Exception as e:
-            log.warning("journal_mode PRAGMA read failed for database page: %s", e)
-            wal_mode = False
-        page_count = db.execute("PRAGMA page_count").fetchone()[0]
-        page_size = db.execute("PRAGMA page_size").fetchone()[0]
-        recovery = db.execute(
-            "SELECT * FROM recovery_events ORDER BY id DESC LIMIT 20"
-        ).fetchall()
-        snaps = sorted(Path(".").glob("snapshot-*.db.zst"))
-        snapshots = [{"name": p.name, "size": p.stat().st_size} for p in snaps]
+        info = await asyncio.to_thread(_collect_database_page_info)
         return ctx.templates.TemplateResponse("database.html", {
             "request": request,
-            "db_info": {
-                "generation": gen,
-                "instance_id": instance_id,
-                "size": page_count * page_size,
-                "integrity_status": "ok" if not integrity else "corrupt",
-                "integrity_errors": integrity,
-                "wal_mode": wal_mode,
-                "page_count": page_count,
-                "page_size": page_size,
-            },
-            "snapshots": snapshots,
-            "recovery": [dict(r) for r in recovery],
+            **info,
         })
 
     @app.get("/report", response_class=HTMLResponse)

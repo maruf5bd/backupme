@@ -22,12 +22,24 @@ def index_file(
         (source_root, relative_path, version_seq),
     ).fetchone()
     if row:
-        execute(
-            "UPDATE files SET sha256 = ?, size = ?, mtime = ?, chunked = ?, updated_at = datetime('now') WHERE id = ?",
-            (sha256, size, mtime, 1 if chunked else 0, row[0]),
-        )
+        # content_text is written on every update so a changed re-upload
+        # replaces (or clears) the snippet of the previous version — a stale
+        # text must never survive under a row whose sha256 now describes
+        # different content (qa defect D17).
+        #
+        # FTS order matters: files_fts is an EXTERNAL-CONTENT table
+        # (content='files'), so the DELETE reads the row's terms from the
+        # files table itself. Deleting AFTER the UPDATE would remove the NEW
+        # terms (not yet indexed) and orphan the OLD ones in the index —
+        # stale terms surviving a changed re-upload (probe-verified). Delete
+        # first, while the files row still holds the old values.
         execute(
             "DELETE FROM files_fts WHERE rowid = ?", (row[0],)
+        )
+        execute(
+            "UPDATE files SET sha256 = ?, size = ?, mtime = ?, chunked = ?, content_text = ?, "
+            "updated_at = datetime('now') WHERE id = ?",
+            (sha256, size, mtime, 1 if chunked else 0, content_text, row[0]),
         )
         execute(
             "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
@@ -163,16 +175,15 @@ def next_version_seq(source_root: str, relative_path: str) -> int:
 def rebuild_fts() -> int:
     """Repopulate files_fts from the files table. Returns the number of rows
     indexed. Used after a manifest-based rebuild (FTS5 has no triggers)."""
-    execute("DELETE FROM files_fts")
-    rows = execute(
-        "SELECT id, relative_path, content_text FROM files WHERE deleted_at IS NULL"
-    ).fetchall()
-    executemany(
-        "INSERT INTO files_fts(rowid, relative_path, content_text) VALUES (?, ?, ?)",
-        [(r[0], r[1], r[2]) for r in rows],
-    )
+    # The native 'rebuild' command re-derives the whole index from the content
+    # table in one statement. A manual DELETE + re-INSERT cannot clear drifted
+    # terms: deleting an external-content row removes the terms the CONTENT
+    # table currently holds, so terms indexed under older row values survive
+    # the delete (probe-verified). 'rebuild' is the only drift-proof path.
+    execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
+    row = execute("SELECT COUNT(*) FROM files_fts").fetchone()
     commit()
-    return len(rows)
+    return row[0] if row else 0
 
 
 def hard_delete_file(file_id: int):

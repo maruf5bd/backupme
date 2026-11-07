@@ -37,9 +37,39 @@ _chunk_size = 64 * 1024 * 1024
 _vault_max = 10 * 1024 * 1024
 _no_compress_max = 256
 _bundle_target_size = 64 * 1024 * 1024
+_content_text_max_bytes = 65536
 _circuit_breaker = retry_mod.CircuitBreaker()
 
 _BUNDLE_HEADER_FMT = struct.Struct(">32sQQI")
+
+
+def _extract_content_text(data: bytes | None, config: dict) -> str | None:
+    """Best-effort plaintext snippet for the content-search index.
+
+    qa defect D17: content_text was only ever populated by legacy rows, so
+    content search could never match new uploads. Extraction is deliberately
+    conservative:
+    - encrypted backups never leak plaintext into the index (always NULL),
+    - only small files whose bytes are already in memory are considered
+      (chunked/large files pass data=None),
+    - only strict UTF-8 content is indexed (binary -> NULL),
+    - any failure only loses the snippet — it must never fail the upload.
+    """
+    try:
+        if not data:
+            return None
+        enc_cfg = config.get("encryption", {}) or {}
+        if enc_cfg.get("enabled", False):
+            return None
+        if len(data) > _content_text_max_bytes:
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    except Exception as e:
+        log.warning("content_text extraction failed (snippet skipped): %s", e)
+        return None
 
 
 def _make_blob_id(plaintext_sha256: str) -> str:
@@ -398,6 +428,9 @@ def upload_bundle(
         offset = 0
         entries: list[tuple[dict, Manifest, dict]] = []
         for item_info, manifest, data in batch:
+            # Content-search snippet comes from the NEW upload every time, so
+            # a changed re-upload can never carry the previous version's text.
+            item_info["content_text"] = _extract_content_text(data, config)
             hdr_len = _BUNDLE_HEADER_FMT.size
             entry = {
                 "member_sha": hashlib.sha256(data).hexdigest(),
@@ -431,7 +464,8 @@ def upload_bundle(
                         item_info["source_root"], item_info["relative_path"], item_info["sha256"],
                         item_info["size"], mtime=item_info["mtime"], chunked=False,
                         redundancy=redundancy, version_seq=item_info["version_seq"],
-                        version_group=item_info["version_group"], auto_commit=False,
+                        version_group=item_info["version_group"],
+                        content_text=item_info.get("content_text"), auto_commit=False,
                     )
                     item_info["file_id"] = file_id
                     member_id = f"{bundle_blob_id}/{entry['member_sha']}"
@@ -519,9 +553,12 @@ def upload_bundle(
 
             # Content dedup: some live file already has this content. Copy the
             # chunk mapping from ONE donor file — multiple donors would
-            # multiply refs and duplicate chunk rows.
+            # multiply refs and duplicate chunk rows. The donor's content_text
+            # rides along: same sha256 means same content, so its snippet (or
+            # its NULL for binary/encrypted/oversized content) is authoritative.
             donor = execute(
-                "SELECT id FROM files WHERE sha256 = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT 1",
+                "SELECT id, content_text FROM files WHERE sha256 = ? AND deleted_at IS NULL "
+                "ORDER BY id ASC LIMIT 1",
                 (file_sha256,),
             ).fetchone()
             prior_chunks = (
@@ -539,6 +576,7 @@ def upload_bundle(
                         mtime=mtime, chunked=False, redundancy=redundancy,
                         version_seq=version_seq,
                         version_group=version_group or file_sha256[:16],
+                        content_text=donor["content_text"],
                         auto_commit=False,
                     )
                     _replace_file_chunks(file_id, [
@@ -603,6 +641,10 @@ def upload_bundle(
                         source_root, relative_path, file_sha256, file_size,
                         mtime=mtime, chunked=True, redundancy=redundancy,
                         version_seq=version_seq, version_group=manifest.version_group,
+                        # Chunked/large files never get a snippet: their bytes
+                        # were never held in memory whole. NULL also clears a
+                        # stale snippet on a changed re-upload.
+                        content_text=None,
                         auto_commit=False,
                     )
                     # Blob rows first (FK for the chunk mapping), then replace

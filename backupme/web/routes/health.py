@@ -21,7 +21,8 @@ from backupme.log import get_logger
 
 from .common import (_get_backends, _soft_delete_file,
                      _health_scan_state, _health_scan_lock, _health_scan_event,
-                     _safe_stat, op_log_start, op_log_finish)
+                     _safe_stat, mark_op_started, _op_ever_started,
+                     op_log_start, op_log_finish)
 
 log = get_logger("web.routes.health")
 
@@ -86,6 +87,10 @@ def register(app, ctx):
                 "running": True, "started_at": time.time(), "finished_at": 0.0,
                 "completed": False, "results": {}, "remote": [], "errors": [],
             })
+        # Op actually launched: its SSE stream polls to completion instead
+        # of closing after one idle snapshot (same contract as
+        # make_sse_stream's ops).
+        mark_op_started(_health_scan_state)
         threading.Thread(target=_health_scan_worker, daemon=True).start()
         return JSONResponse({"status": "started"})
 
@@ -93,16 +98,22 @@ def register(app, ctx):
     async def api_health_scan_stream():
         async def event_generator():
             last_snapshot = ""
+            emitted_any = False
             while True:
                 with _health_scan_lock:
                     snapshot = json.dumps(_health_scan_state)
                 if snapshot != last_snapshot:
                     yield f"data: {snapshot}\n\n"
                     last_snapshot = snapshot
+                    emitted_any = True
                 with _health_scan_lock:
                     done = _health_scan_state["completed"] and not _health_scan_state["running"]
                 if done:
                     yield f"data: {snapshot}\n\n"
+                    break
+                if emitted_any and not _op_ever_started(_health_scan_state):
+                    # Never-started op: emit the one idle snapshot and close
+                    # (pre-first-op termination, matches make_sse_stream).
                     break
                 await asyncio.sleep(0.5)
 

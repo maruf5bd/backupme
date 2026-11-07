@@ -17,7 +17,7 @@ from backupme.log import get_logger
 
 from .common import (_get_backends, _get_backups, _config_as_dict,
                      _scan_state, _scan_lock, _reset_scan, _emit_scan,
-                     _safe_stat, _lp,
+                     _safe_stat, _lp, mark_op_started,
                      op_log_start, op_log_finish,
                      make_sse_stream, start_daemon_thread)
 
@@ -304,6 +304,9 @@ def register(app, ctx):
         delete_source = bool(data.get("delete_source", False))
 
         _reset_scan()
+        # Op actually launched: its SSE stream polls to completion instead
+        # of closing after one idle snapshot.
+        mark_op_started(_scan_state)
         start_daemon_thread(_scan_worker, path, backend_name, redundancy,
                             excludes, delete_source)
         return JSONResponse({"status": "started", "path": path})

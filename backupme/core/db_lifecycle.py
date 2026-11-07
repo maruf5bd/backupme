@@ -247,12 +247,21 @@ def hard_purge_versions(grace_days: int | None = None, config=None) -> dict:
         (f"-{grace_days} days", watermark),
     ).fetchall()
 
+    # The candidate query already constrains id <= watermark, so the old
+    # in-loop `if fid > watermark: skipped += 1` branch was dead code. Honest
+    # accounting instead: one COUNT of soft-deleted, grace-expired rows that
+    # sit ABOVE the watermark and are therefore kept (not yet safely in the
+    # Parquet history). The purge loop never touches them.
+    above_watermark = execute(
+        "SELECT COUNT(*) FROM files "
+        "WHERE deleted_at IS NOT NULL "
+        "AND deleted_at < datetime('now', ?) "
+        "AND id > ?",
+        (f"-{grace_days} days", watermark),
+    ).fetchone()[0]
+
     purged = 0
-    skipped = 0
     for (fid,) in rows:
-        if fid > watermark:
-            skipped += 1
-            continue
         chunks = execute(
             "SELECT blob_id FROM file_chunks WHERE file_id = ?", (fid,)
         ).fetchall()
@@ -267,8 +276,10 @@ def hard_purge_versions(grace_days: int | None = None, config=None) -> dict:
     if purged:
         commit()
 
-    return {"purged": purged, "skipped": skipped, "watermark": watermark,
-            "grace_days": grace_days}
+    # `skipped` is kept for backward compatibility (scheduler.py logs it);
+    # it is always 0 now that above-watermark rows are reported separately.
+    return {"purged": purged, "skipped": 0, "above_watermark": above_watermark,
+            "watermark": watermark, "grace_days": grace_days}
 
 
 # ---------------------------------------------------------------------------

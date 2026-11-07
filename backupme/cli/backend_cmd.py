@@ -406,6 +406,13 @@ def backend_drain(ctx, name, dry_run, as_json):
 
     cfg = load_config(ctx.obj.get("config_path", "config.yaml"))
     backends = get_all_backends(cfg)
+    # P2: an unknown name used to fall through to an empty dry-run plan
+    # (silently planning 0 blobs). Fail like `backend onboard` does, but with
+    # exit 1 (documented in MANUAL.md section 10).
+    if not any(b.name == name for b in backends):
+        out = {"status": "error", "error": f"backend '{name}' not found"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
     out = rb.drain_backend(name, backends, cfg, dry_run=dry_run)
 
     def human(d):

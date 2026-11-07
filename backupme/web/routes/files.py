@@ -24,10 +24,45 @@ from backupme.log import get_logger
 from .common import (_search_files_safe, _soft_delete_file,
                      _get_backends, _config_as_dict,
                      _restore_state, _restore_lock, _emit_restore,
+                     mark_op_started,
                      op_log_start, op_log_finish,
                      make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.files")
+
+_HEX_DIGITS = set("0123456789abcdefABCDEF")
+
+
+def _looks_like_sha256(q: str) -> bool:
+    """True when a query is a pure hex string of >= 8 chars — such a query is
+    treated as a sha256 (or its prefix) by /api/files, mirroring the /files
+    page's mode=hash (qa defect D15: the API had no hash search mode)."""
+    return len(q) >= 8 and all(c in _HEX_DIGITS for c in q)
+
+
+def _search_files_by_hash(q: str, limit: int) -> list[dict]:
+    """Exact sha256 match first, then prefix — the same shape the /files page
+    uses for mode=hash, capped with the same limit logic."""
+    rows = db.execute(
+        "SELECT * FROM files WHERE sha256 = ? AND deleted_at IS NULL LIMIT ?",
+        (q, limit),
+    ).fetchall()
+    files = [dict(r) for r in rows]
+    if len(files) >= limit:
+        return files
+    seen = {f["id"] for f in files}
+    prefix_rows = db.execute(
+        "SELECT * FROM files WHERE sha256 LIKE ? AND deleted_at IS NULL LIMIT ?",
+        (f"{q}%", limit),
+    ).fetchall()
+    for r in prefix_rows:
+        if r["id"] in seen:
+            continue
+        files.append(dict(r))
+        seen.add(r["id"])
+        if len(files) >= limit:
+            break
+    return files
 
 
 def register(app, ctx):
@@ -35,7 +70,10 @@ def register(app, ctx):
     @app.get("/api/files")
     async def api_files(q: str = "", backend: str = "", limit: int = 100, offset: int = 0):
         if q:
-            all_files = _search_files_safe(q, limit=limit)
+            if _looks_like_sha256(q):
+                all_files = _search_files_by_hash(q, limit)
+            else:
+                all_files = _search_files_safe(q, limit=limit)
         else:
             all_files = index_mod.get_all_files(limit=limit, offset=offset, backend=backend or None)
         if backend and q:
@@ -233,6 +271,10 @@ def register(app, ctx):
                 "total": len(files), "done": 0, "errors": 0, "current": "",
                 "error_list": [], "completed": False,
             })
+        # Mark the op as actually launched: the SSE stream must keep polling
+        # to a completed frame instead of closing after one idle snapshot
+        # (a fresh idle stream closes immediately by design).
+        mark_op_started(_restore_state)
         start_daemon_thread(_restore_worker, files, dest_path)
         return {"status": "started", "source_root": source_label,
                 "dest_path": dest_path, "restoring": len(files)}
@@ -404,7 +446,17 @@ def register(app, ctx):
                 status_code=404,
             )
         try:
-            result = downloader_mod.download_file(file_id, str(tmp))
+            def _run_download():
+                # download_file fetches + decrypts blobs from the backends —
+                # network-bound blocking work, kept off the event loop
+                # (qa defect D18); the executor thread always drops its own
+                # SQLite handle before returning.
+                try:
+                    return downloader_mod.download_file(file_id, str(tmp))
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_download)
             if result["status"] != "ok":
                 tmp.unlink(missing_ok=True)
                 return JSONResponse({"error": result.get("message", "download failed")}, status_code=500)
@@ -443,7 +495,13 @@ def register(app, ctx):
                 status_code=404,
             )
         try:
-            result = downloader_mod.download_file(file_id, str(tmp))
+            def _run_download():
+                try:
+                    return downloader_mod.download_file(file_id, str(tmp))
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_download)
             if result["status"] != "ok":
                 tmp.unlink(missing_ok=True)
                 return JSONResponse({"error": result.get("message", "failed to read file")}, status_code=500)
@@ -549,13 +607,24 @@ def register(app, ctx):
                         status_code=400)
 
             cfg_dict = _config_as_dict(ctx)
-            r = uploader_mod.upload_file(
-                source_root="web_upload",
-                relative_path=relative_path,
-                local_path=tmp_path,
-                backends=backends,
-                config=cfg_dict,
-            )
+
+            def _run_upload():
+                # The real upload pipeline (hash, dedup, backend I/O, DB rows)
+                # is multi-second blocking work — run it off the event loop
+                # (qa defect D18). The executor thread always drops its own
+                # SQLite handle so no pooled connection outlives the request.
+                try:
+                    return uploader_mod.upload_file(
+                        source_root="web_upload",
+                        relative_path=relative_path,
+                        local_path=tmp_path,
+                        backends=backends,
+                        config=cfg_dict,
+                    )
+                finally:
+                    db.close_connection()
+
+            r = await asyncio.to_thread(_run_upload)
 
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -662,7 +731,14 @@ def register(app, ctx):
         try:
             dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            result = downloader_mod.download_file(file_id, str(dest_path))
+
+            def _run_download():
+                try:
+                    return downloader_mod.download_file(file_id, str(dest_path))
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_download)
             if result["status"] != "ok":
                 return JSONResponse(
                     {"status": "error", "message": result.get("message", "download failed")},

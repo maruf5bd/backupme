@@ -499,16 +499,15 @@ def test_api_search_basic_and_empty(client, seeded):
 
 
 def test_api_search_content_scope(client, seeded):
-    # content_text is only ever NULL from the live pipeline (qa finding: the
-    # content-search surface can never match fresh uploads), so seed a
-    # legacy inline-content row by hand and verify the search path itself.
     r = client.get("/api/search", params={"q": "qa1 needle", "scope": "content"})
     assert r.status_code == 200, r.text
     assert seeded["content_id"] in [f["id"] for f in r.json()], r.json()
-    # fresh pipeline uploads (content_text NULL) can never be found by
-    # content search — documented limitation, not asserted as broken here
+    # D17 fixed: the real pipeline now populates content_text for small
+    # unencrypted strict-UTF-8 uploads, so content search matches fresh
+    # uploads too (previously only hand-seeded legacy rows were findable).
     r2 = client.get("/api/search", params={"q": "delta content 123", "scope": "content"})
-    assert r2.status_code == 200 and r2.json() == [], r2.json()
+    assert r2.status_code == 200, r2.text
+    assert seeded["file_id"] in [f["id"] for f in r2.json()], r2.json()
 
 
 def test_api_files_hash_and_punctuation_never_500(client, seeded):
@@ -520,12 +519,9 @@ def test_api_files_hash_and_punctuation_never_500(client, seeded):
         assert r2.status_code == 200, f"/api/search q={q!r} -> {r2.status_code}"
 
 
-@pytest.mark.xfail(reason="qa defect D15: /api/files?q=<sha256> always "
-                          "returns [] — the API search only hits "
-                          "relative_path/content_text (FTS + LIKE), it has "
-                          "no hash mode, although the /files PAGE does "
-                          "(mode=hash queries sha256 directly)", strict=False)
 def test_api_files_finds_by_exact_sha256(client, seeded):
+    # D15 fixed: /api/files now has a hash mode (pure-hex q of >= 8 chars
+    # matches sha256 exact first, then prefix) — pin unconverted from xfail.
     ok = client.get("/api/files", params={"q": seeded["sha256"]})
     assert ok.status_code == 200
     assert seeded["file_id"] in [f["id"] for f in ok.json()], ok.json()

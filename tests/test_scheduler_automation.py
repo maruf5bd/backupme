@@ -109,7 +109,8 @@ def test_purge_and_export_ticks_gated_and_single_flight(env, backends):
 
     def fake_purge(config=None):
         calls["purge"] += 1
-        return {"purged": 0, "skipped": 0, "watermark": 0, "grace_days": 14}
+        return {"purged": 0, "skipped": 0, "above_watermark": 0,
+                "watermark": 0, "grace_days": 14}
 
     def fake_export(config=None):
         calls["export"] += 1

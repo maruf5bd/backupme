@@ -156,19 +156,55 @@ def purge(ctx, grace_days, as_json):
     from ..core import db_lifecycle as lc
     result = lc.hard_purge_versions(grace_days)
     emit(result, as_json=as_json, human=lambda d: click.echo(
-        f"purged: {d['purged']} (skipped {d['skipped']} not exported, watermark {d['watermark']}, grace {d['grace_days']}d)"))
+        f"purged: {d['purged']} (above watermark: {d['above_watermark']} kept, "
+        f"watermark {d['watermark']}, grace {d['grace_days']}d)"))
 
 
 @db.command("history")
 @click.argument("sql")
-@click.option("--json", "as_json", is_flag=True, default=True, help="JSON output (default)")
+@click.option("--json/--no-json", "as_json", default=True,
+              help="JSON output (default); --no-json renders a human table")
 @click.pass_context
 def history(ctx, sql, as_json):
     """Run read-only DuckDB SQL over the parquet partitions (view: files)."""
     from ..core import db_lifecycle as lc
     rows = lc.query_history_duckdb(sql)
-    emit({"rows": rows, "count": len(rows)}, as_json=as_json,
-         human=lambda d: [click.echo(str(r)) for r in d["rows"]] or click.echo("(no rows)"))
+    payload = {"rows": rows, "count": len(rows)}
+
+    _MAX_RENDER_ROWS = 100
+    _MAX_CELL_WIDTH = 40
+
+    def _render_history_table(rows):
+        columns = []
+        for row in rows:
+            for key in row:
+                if key not in columns:
+                    columns.append(key)
+        cells = [
+            {key: _truncate(row.get(key)) for key in columns}
+            for row in rows
+        ]
+        widths = {key: max(len(key), *(len(row[key]) for row in cells)) for key in columns}
+        click.echo("  ".join(key.ljust(widths[key]) for key in columns))
+        click.echo("  ".join("-" * widths[key] for key in columns))
+        for row in cells:
+            click.echo("  ".join(row[key].ljust(widths[key]) for key in columns))
+
+    def _truncate(value) -> str:
+        text = "None" if value is None else str(value)
+        return text if len(text) <= _MAX_CELL_WIDTH else text[:_MAX_CELL_WIDTH - 3] + "..."
+
+    def human(d):
+        rows = d["rows"]
+        if not rows:
+            click.echo("(no rows)")
+        else:
+            _render_history_table(rows[:_MAX_RENDER_ROWS])
+            if len(rows) > _MAX_RENDER_ROWS:
+                click.echo(f"... {len(rows) - _MAX_RENDER_ROWS} more row(s) not shown")
+        click.echo(f"{d['count']} row(s)")
+
+    emit(payload, as_json=as_json, human=human)
 
 
 @db.command("vacuum")
@@ -215,3 +251,48 @@ def oplog(ctx, pending, as_json):
         click.echo(f"\nStats: {json.dumps(d['stats'])}")
 
     emit(data, as_json=as_json, human=human)
+
+
+@db.command("backfill-content")
+@click.option("--limit", type=int, default=500, show_default=True,
+              help="Max files to process in this run")
+@click.option("--max-size", "max_size", type=int, default=65536, show_default=True,
+              help="Only files up to this many bytes are indexed")
+@click.option("--backend", "backend_name", default=None,
+              help="Only files with at least one chunk copy on this backend")
+@click.option("--dry-run", is_flag=True,
+              help="Count candidates only; no downloads, no updates")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def backfill_content_cmd(ctx, limit, max_size, backend_name, dry_run, as_json):
+    """Backfill content_text for existing rows (small UTF-8 text files only).
+
+    Makes content search work on historical data. Small text files only;
+    never runs when encryption is enabled; resumable — re-run until
+    'remaining' is 0.
+    """
+    cfg = ctx.obj["config"]
+    names = {b.name for blist in cfg.backends.values() for b in blist}
+    if backend_name and backend_name not in names:
+        # An unknown backend would otherwise silently plan/process nothing
+        # (same validation the verify command applies).
+        click.echo(f"Error: backend '{backend_name}' not found")
+        ctx.exit(1)
+    if not names:
+        click.echo("Error: no backends configured")
+        ctx.exit(1)
+    from ..core.content_backfill import backfill_content
+    result = backfill_content(cfg, limit=limit, max_size=max_size,
+                              backend=backend_name, dry_run=dry_run)
+
+    def human(d):
+        line = (f"status: {d['status']}  scanned: {d['scanned']}  "
+                f"updated: {d['updated']}  binary skipped: {d['skipped_binary']}  "
+                f"too large: {d['too_large']}  errors: {d['errors']}  "
+                f"remaining: {d['remaining']}")
+        if "candidates" in d:
+            line += f"  candidates: {d['candidates']}"
+        click.echo(line)
+
+    emit(result, as_json=as_json, human=human)
+    ctx.exit(0)

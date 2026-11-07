@@ -222,6 +222,14 @@ backupme search --content "budget 2026"
 
 Searches inside `.txt`, `.md`, `.py`, `.js`, `.html`, `.csv`, `.json`, `.xml`, `.yaml` files.
 
+New uploads are indexed automatically: every unencrypted file of up to 64 KiB
+whose bytes decode as UTF-8 (any extension, including cPanel-ingested members)
+gets a `files.content_text` snippet at upload time, so content search matches
+fresh data without a backfill; binary and encrypted backups are never indexed,
+and re-uploading a file replaces the snippet with the new content's. Use
+`backupme db backfill-content` to index rows that predate upload-time indexing
+(see §10).
+
 ### 4.3 Search Within a Specific Source
 
 ```bash
@@ -234,7 +242,12 @@ backupme search "photo" --source C:/Users/Maruf/Pictures
 backupme hash-lookup a1b2c3d4...
 ```
 
-Finds all files that match a given SHA-256 hash.
+Resolves a SHA-256 hash to what is stored: a storage blob id, or the content
+hash of one or more backed-up files (exact match first, then a hex prefix if
+it uniquely identifies one file). File results show each version's id, path,
+size, deleted status and the chunk-to-blob mapping with every backend copy.
+An unknown or ambiguous hash prints `Hash not found` and exits 1; add `--json`
+for a machine-readable payload.
 
 ---
 
@@ -885,13 +898,16 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 ```bash
 # files & backup
 backupme backup [PATHS]... [-b/--backend NAME] [-n/--redundancy N] [-r/--recursive]
-                             [--no-skip] [--force] [-m/--move]
+                             [--no-skip] [--force] [-m/--move] [--json]
 backupme upload-bundle DIRECTORY [-b/--backend NAME] [-n/--redundancy N]
-backupme download FILE_ID [-o/--output DIR] [-v/--version N] [--backend NAME]
+backupme download FILE_ID [-o/--output DIR] [-v/--version N] [--backend NAME] [--json]
 backupme list [-b/--backend NAME] [--hash SHA256] [--source-root ROOT]
               [-l/--limit N] [-o/--offset N] [--json]
-backupme search QUERY [--content] [--source ROOT]
-backupme hash-lookup SHA256
+backupme search QUERY [--content] [--source ROOT] [--json]
+backupme hash-lookup SHA256 [--json]
+                             # resolves blob ids AND file sha256 (exact match,
+                             # or a unique hex prefix); exit 1 if not found or
+                             # the prefix is ambiguous
 backupme select-backend QUERY
 
 # monitoring & verification
@@ -905,9 +921,9 @@ backupme report verify [--count N] [--backend NAME]
 backupme report integrity                # JSON summary of the last check
 
 # maintenance
-backupme convert BACKEND_NAME [--prefix PATH] [--delete] [--target BACKEND] [--resume]
+backupme convert BACKEND_NAME [--prefix PATH] [--delete] [--target BACKEND] [--resume] [--json]
 backupme recompress [--algo zstd] [--level 3] [-b/--backend NAME]
-backupme gc [--apply]                # DESTRUCTIVE with --apply; default dry run
+backupme gc [--apply] [--json]       # DESTRUCTIVE with --apply; default dry run
 backupme db check [--full] [--repair] [--json]
 backupme db snapshot [--json]
 backupme db restore [--json]         # no options; consensus from replicas
@@ -915,10 +931,19 @@ backupme db rebuild [--json]
 backupme db oplog [--pending] [--json]
 backupme db info [--json]
 backupme db cold-export [--dry-run] [--json]
-backupme db purge [--grace-days N] [--json]   # DESTRUCTIVE
-backupme db history "SQL" [--json]
+backupme db purge [--grace-days N] [--json]
+                                     # DESTRUCTIVE; soft-deleted rows above the
+                                     # watermark are kept and reported as
+                                     # above_watermark
+backupme db history "SQL" [--json/--no-json]
+                                     # JSON is the default; --no-json renders a
+                                     # table plus a row-count summary
 backupme db vacuum
 backupme db prune-oplog [--days N] [--json]
+backupme db backfill-content [--limit N] [--max-size BYTES] [--backend NAME]
+                             [--dry-run] [--json]
+                                     # small text files only; never runs when
+                                     # encryption is enabled; resumable
 
 # backends
 backupme backend add [TYPE] [--name --host --port --username --password --key-file
@@ -931,6 +956,7 @@ backupme backend test NAME [--json]  # exit 1 on unknown name or failed connect
 backupme backend onboard NAME [--rebalance] [--dry-run] [--json]
 backupme backend rebalance NAME [--limit N] [--dry-run] [--json]
 backupme backend drain NAME [--dry-run] [--json]
+                                     # exit 1 on unknown name; never deletes
 backupme backend rescan NAME [--json]
 
 # encryption, ingest, servers
@@ -945,6 +971,13 @@ backupme recompress [--algo] [--level] [--backend]
 backupme daemon                      # foreground scheduler; no start/stop/status
 backupme web [--host 127.0.0.1] [--port 8080] [--token TOKEN]
 ```
+
+### Content-Index Backfill
+
+`backupme db backfill-content` fills `files.content_text` for rows that predate
+upload-time indexing: small strict-UTF-8 text files only (default cap 64 KB), and
+a no-op (`skipped_encrypted`) when encryption is enabled. It is non-destructive
+and resumable — re-run until `remaining` is 0; `--dry-run` only counts candidates.
 
 ---
 

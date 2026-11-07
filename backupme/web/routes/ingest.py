@@ -20,6 +20,7 @@ from backupme.log import get_logger
 
 from .common import (_get_backends, _config_as_dict,
                      _ingest_state, _ingest_lock, _ingest_paused, _reset_ingest,
+                     mark_op_started,
                      make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.ingest")
@@ -168,6 +169,9 @@ def register(app, ctx):
                 {"error": "ingest is paused — POST /api/ingest/resume to allow scans"},
                 status_code=409)
         _reset_ingest()
+        # Op actually launched: its SSE stream polls to completion instead
+        # of closing after one idle snapshot.
+        mark_op_started(_ingest_state)
         start_daemon_thread(_ingest_worker, drop_root)
         return JSONResponse({"status": "started", "drop_root": drop_root})
 

@@ -1,6 +1,7 @@
 import click
 
 from .base import cli
+from ..cli.output import emit
 
 
 @cli.command()
@@ -9,8 +10,9 @@ from .base import cli
 @click.option("--delete", is_flag=True, help="Delete original after conversion")
 @click.option("--target", help="Target backend to store converted blobs")
 @click.option("--resume", is_flag=True, help="Resume from last checkpoint")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
-def convert(ctx, backend_name, prefix, delete, target, resume):
+def convert(ctx, backend_name, prefix, delete, target, resume, as_json):
     from ..core.converter import convert_backend
     try:
         result = convert_backend(
@@ -22,6 +24,8 @@ def convert(ctx, backend_name, prefix, delete, target, resume):
         )
     except ValueError as e:
         # Unknown backend / bad arguments: clean error, not a traceback.
-        click.echo(f"Error: {e}")
+        emit({"status": "error", "error": str(e)}, as_json=as_json,
+             human=lambda d: click.echo(f"Error: {d['error']}"))
         raise SystemExit(1)
-    click.echo(f"Converted {result['completed']} files, {result['errors']} errors, {result['skipped']} skipped")
+    emit(result, as_json=as_json, human=lambda d: click.echo(
+        f"Converted {d['completed']} files, {d['errors']} errors, {d['skipped']} skipped"))

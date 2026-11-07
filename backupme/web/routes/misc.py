@@ -2,6 +2,7 @@
 (view/generate), reports history, search, encrypt init/status, activity,
 stats trends, convert, recompress, hash lookup, replication status.
 """
+import asyncio
 import io
 import json
 import sqlite3
@@ -134,7 +135,19 @@ def register(app, ctx):
             check_type = "random"
             if backend:
                 check_type = f"backend:{backend}"
-            result = verify.run_integrity_check(check_type, count=count, backend_name=backend or None)
+
+            def _run_check():
+                # The integrity check downloads + hashes blobs over the
+                # network — run it off the event loop (qa defect D18); the
+                # op_log writes stay inline (fast single inserts) and the
+                # executor thread always drops its own SQLite handle.
+                try:
+                    return verify.run_integrity_check(
+                        check_type, count=count, backend_name=backend or None)
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_check)
             # run_integrity_check returns 'checked'/'failed' — the old
             # 'checked_files' keys recorded always-zero counters (qa D16).
             op_log_finish(op_id, "completed", target_json={
@@ -219,13 +232,24 @@ def register(app, ctx):
     async def api_convert(backend_name: str, prefix: str = "", delete: bool = False, target: str = ""):
         try:
             from backupme.core.converter import convert_backend
-            result = convert_backend(
-                backend_name=backend_name,
-                prefix=prefix,
-                target_backend_name=target or None,
-                delete=delete,
-                resume=True,
-            )
+
+            def _run_convert():
+                # convert_backend copies a whole backend's blobs — the single
+                # longest operation in the dashboard; keep it off the event
+                # loop (qa defect D18) and always drop the executor thread's
+                # SQLite handle before returning.
+                try:
+                    return convert_backend(
+                        backend_name=backend_name,
+                        prefix=prefix,
+                        target_backend_name=target or None,
+                        delete=delete,
+                        resume=True,
+                    )
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_convert)
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
@@ -244,7 +268,17 @@ def register(app, ctx):
             # Warm the backend instance cache: recompress_blobs resolves each
             # row's backend by name through it (same warm-up the CLI does).
             _get_backends(ctx)
-            result = compress_mod.recompress_blobs()
+
+            def _run_recompress():
+                # Full-blob scan (and possible re-upload) — blocking work off
+                # the event loop (qa defect D18); the executor thread always
+                # drops its SQLite handle before returning.
+                try:
+                    return compress_mod.recompress_blobs()
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_recompress)
             counters = {
                 "recompressed": result.get("recompressed", 0),
                 "total_scanned": result.get("total_scanned", 0),

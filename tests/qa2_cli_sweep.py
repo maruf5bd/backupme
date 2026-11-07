@@ -263,12 +263,17 @@ def test_search_content_flag_runs(runner, env):
 
 def test_hash_lookup_known_and_unknown(runner, env):
     import hashlib
-    # A bundle member's FILE sha is not a blob id -> "Hash not found" (P2 note).
+    # Fixed (P2-2): a bundle member's FILE sha now resolves through the
+    # files table (with chunk->blob mapping), not "Hash not found".
     _, data = seed_one(env)
     file_sha = hashlib.sha256(data).hexdigest()
-    r0 = invoke(runner, env, "hash-lookup", file_sha)
+    r0 = invoke(runner, env, "hash-lookup", file_sha, "--json")
     assert r0.exit_code == 0, r0.output
-    assert "Hash not found" in r0.output
+    payload = json.loads(r0.stdout)
+    assert payload["resolved"] is True
+    assert payload["match_type"] == "file"
+    assert payload["files"], "expected at least one matching file row"
+    assert payload["files"][0]["chunks"], "expected chunk->blob mapping"
     # Chunked files get content-addressed chunk blob ids (64-hex shas).
     # Default chunking min_size is 10 MB, so shrink it in this isolated config
     # to force the chunked path for a small file.
@@ -291,9 +296,13 @@ def test_hash_lookup_known_and_unknown(runner, env):
     assert r1.exit_code == 0, r1.output
     payload = json.loads(r1.stdout)
     assert payload
+    # Fixed (P2-1): an unknown hash exits 1, human and JSON modes alike.
     r2 = invoke(runner, env, "hash-lookup", "f" * 64)
-    assert r2.exit_code == 0
+    assert r2.exit_code == 1
     assert "not found" in r2.output.lower()
+    r3 = invoke(runner, env, "hash-lookup", "e" * 64, "--json")
+    assert r3.exit_code == 1
+    assert json.loads(r3.stdout)["resolved"] is False
 
 
 def test_select_backend_fuzzy(runner, env):
@@ -674,12 +683,14 @@ def test_backend_drain_single_backend_exit_1(runner, env):
     assert "no other healthy backend" in parse_json(r)["error"]
 
 
-def test_backend_drain_unknown_name_silent_noop(runner, env):
-    """Documents P2: drain of an unknown backend reports an empty dry-run plan
-    instead of an unknown-backend error."""
+def test_backend_drain_unknown_name_exit_1(runner, env):
+    """Fixed (P2-6): drain of an unknown backend is a clean error (exit 1),
+    not an empty dry-run plan planning 0 blobs."""
     r = invoke(runner, env, "backend", "drain", "ghost_backend", "--dry-run", "--json")
-    assert r.exit_code == 0, r.output
-    assert parse_json(r)["status"] == "dry-run"
+    assert r.exit_code == 1, r.output
+    data = parse_json(r)
+    assert data["status"] == "error"
+    assert "not found" in data["error"]
 
 
 @pytest.mark.xfail(reason="qa defect 6: backend remove of an unknown name claims "

@@ -1,8 +1,10 @@
 import hashlib
 import io
 import os
+import socket
 import stat
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -226,85 +228,116 @@ class SFTPBackend(StorageBackend):
         self.base_path = config.get("path", "/")
         self._sftp = None
         self._transport = None
+        # Single-flight connect: concurrent callers (dashboard poll + upload
+        # worker) used to stampede the server with parallel SSH sessions —
+        # that session churn was the root cause of the Storage Box
+        # rate-limit outage (defect D10).
+        self._connect_lock = threading.Lock()
 
     def connect(self) -> bool:
         """Connect to the SFTP server.
 
         Tries key-based authentication first (if ``key_file`` is set), then
-        password authentication. Hetzner Storage Boxes rate-limit new sessions,
-        so a short retry loop absorbs transient "Unable to open channel"
-        failures right after a previous connection was closed.
+        password authentication. Hetzner Storage Boxes rate-limit new SSH
+        sessions, so the connect path is hardened (defect D10 follow-up):
+        - a per-instance lock single-flights concurrent connects, and an
+          already-connected instance is reused as-is;
+        - TRANSIENT errors (paramiko.SSHException such as "Unable to open
+          channel", EOFError, socket.timeout, generic OSError) retry 3
+          attempts total with 0.5s then 1.5s backoff;
+        - DEFINITIVE failures fail immediately — retrying cannot succeed and
+          only hammers the host: AuthenticationException / BadHostKeyException
+          (bad credentials), ConnectionRefusedError (a reachable peer
+          authoritatively declined the port — not a rate limit), and
+          socket.gaierror (bad host name).
         """
-        import time
-        import paramiko
-
-        def _open_transport() -> paramiko.Transport:
-            # A bare Transport has no TCP timeout; create a pre-configured
-            # socket and cap the SSH banner/auth exchanges too — without
-            # banner_timeout a blackholed server hangs transport.connect()
-            # forever (it waits on a threading.Event, not on the socket).
-            import socket
-            sock = socket.create_connection((self.host, self.port), timeout=15)
-            t = paramiko.Transport(sock)
-            # Older paramiko versions don't take these as constructor kwargs;
-            # they are plain instance attributes on Transport.
-            t.banner_timeout = 15
-            t.auth_timeout = 15
-            return t
-
-        def _open_channel(transport) -> None:
-            # SFTPClient.from_transport opens the session channel; retry the
-            # whole open because a rate-limited server rejects new channels
-            # for a few seconds.
-            last_exc: Exception | None = None
-            for attempt in range(4):
+        with self._connect_lock:
+            if self._connected and self._sftp is not None:
+                return True
+            import paramiko
+            # Order matters: AuthenticationException / BadHostKeyException
+            # subclass SSHException, so they are matched first (no retry).
+            immediate_fail = (paramiko.AuthenticationException,
+                              paramiko.BadHostKeyException,
+                              ConnectionRefusedError, socket.gaierror)
+            transient = (paramiko.SSHException, EOFError, socket.timeout, OSError)
+            last_transient: Exception | None = None
+            for attempt in range(3):
                 try:
-                    self._sftp = paramiko.SFTPClient.from_transport(transport)
-                    return
-                except Exception as e:  # SSHException: Unable to open channel
-                    last_exc = e
-                    time.sleep(2 * (attempt + 1))
-            raise last_exc if last_exc else RuntimeError("sftp channel open failed")
+                    return self._connect_attempt(paramiko)
+                except immediate_fail as e:
+                    log.warning("SFTP auth failed for %s (no retry): %s",
+                                self.name, e)
+                    return False
+                except transient as e:
+                    last_transient = e
+                    log.warning("SFTP transient connect failure for %s "
+                                "(attempt %d/3): %s", self.name, attempt + 1, e)
+                    if attempt < 2:
+                        time.sleep(0.5 if attempt == 0 else 1.5)
+                except Exception as e:
+                    log.warning("SFTP connect failed for %s: %s", self.name, e)
+                    return False
+            log.warning("SFTP connect to %s failed after 3 attempts: %s",
+                        self.name, last_transient)
+            return False
 
-        try:
-            if self.key_file:
-                try:
-                    key = paramiko.RSAKey.from_private_key_file(
-                        os.path.expanduser(self.key_file)
-                    )
-                    transport = _open_transport()
-                    transport.connect(username=self.username, pkey=key)
-                    _open_channel(transport)
-                    self._transport = transport
-                    self._sftp.chdir(self.base_path)
-                    self._connected = True
-                    return True
-                except Exception as ke:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "SFTP key auth failed for %s: %s", self.name, ke
-                    )
-                    self.disconnect()
+    def _connect_attempt(self, paramiko) -> bool:
+        """One full connect pass: key auth (if configured), then password
+        auth. Raises on failure — the caller owns the transient retry and
+        the auth fast-fail. A key-stage failure (including a rejected key)
+        falls through to the password stage, as before."""
+        if self.key_file:
             try:
-                transport = _open_transport()
-                transport.connect(username=self.username, password=self.password)
-                _open_channel(transport)
+                key = paramiko.RSAKey.from_private_key_file(
+                    os.path.expanduser(self.key_file)
+                )
+                transport = self._open_transport(paramiko)
+                transport.connect(username=self.username, pkey=key)
+                self._open_channel(transport, paramiko)
                 self._transport = transport
                 self._sftp.chdir(self.base_path)
                 self._connected = True
                 return True
-            except Exception as pe:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "SFTP password auth failed for %s: %s", self.name, pe
-                )
-                try:
-                    transport.close()
-                except Exception:
-                    pass
-                return False
-        except Exception:
-            return False
+            except Exception as ke:
+                log.warning("SFTP key auth failed for %s: %s", self.name, ke)
+                self.disconnect()
+        try:
+            transport = self._open_transport(paramiko)
+            transport.connect(username=self.username, password=self.password)
+            self._open_channel(transport, paramiko)
+            self._transport = transport
+            self._sftp.chdir(self.base_path)
+            self._connected = True
+            return True
+        except Exception as pe:
+            log.warning("SFTP password auth failed for %s: %s", self.name, pe)
+            try:
+                transport.close()
+            except Exception:
+                pass
+            raise
+
+    def _open_transport(self, paramiko):
+        # A bare Transport has no TCP timeout; create a pre-configured
+        # socket and cap the SSH banner/auth exchanges too — without
+        # banner_timeout a blackholed server hangs transport.connect()
+        # forever (it waits on a threading.Event, not on the socket).
+        sock = socket.create_connection((self.host, self.port), timeout=15)
+        t = paramiko.Transport(sock)
+        # Older paramiko versions don't take these as constructor kwargs;
+        # they are plain instance attributes on Transport.
+        t.banner_timeout = 15
+        t.auth_timeout = 15
+        return t
+
+    def _open_channel(self, transport, paramiko) -> None:
+        # SFTPClient.from_transport opens the session channel. Rate-limited
+        # servers reject new channels ("Unable to open channel") for a few
+        # seconds — that transient case is retried by connect()'s bounded
+        # 3-attempt loop now, so a failure here bubbles up instead of
+        # spinning the old unbounded inner sleep loop.
+        self._sftp = paramiko.SFTPClient.from_transport(transport)
 
     def disconnect(self):
         if self._sftp:

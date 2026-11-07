@@ -6,6 +6,7 @@ BEFORE GET /api/backends/{name} so "usage" is not captured by the path
 parameter. The verify/rescan/onboard/rebalance/drain group keeps the exact
 relative order the monolith had.
 """
+import asyncio
 from pathlib import Path
 
 from fastapi import Body
@@ -199,7 +200,18 @@ def register(app, ctx):
     @app.post("/api/backends/{name}/verify")
     async def api_backend_verify(name: str, count: int = 10):
         try:
-            result = verify.run_integrity_check(f"backend:{name}", count=count, backend_name=name)
+            def _run_check():
+                # run_integrity_check downloads + hashes blobs over the
+                # network — blocking work that must not sit on the event loop
+                # (qa defect D18); the executor thread always drops its own
+                # SQLite handle before returning.
+                try:
+                    return verify.run_integrity_check(
+                        f"backend:{name}", count=count, backend_name=name)
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_check)
             return JSONResponse({"status": "ok", **result})
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
@@ -219,8 +231,10 @@ def register(app, ctx):
                 status_code=502)
         try:
             from backupme.core.backend_scan import rescan_backend
-            # rescan_backend returns a JSON-ready dict (counts + sorted lists).
-            return JSONResponse(rescan_backend(be))
+            # rescan_backend walks the backend listing over the network —
+            # keep it off the event loop (qa defect D18). It returns a
+            # JSON-ready dict (counts + sorted lists).
+            return JSONResponse(await asyncio.to_thread(rescan_backend, be))
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
 

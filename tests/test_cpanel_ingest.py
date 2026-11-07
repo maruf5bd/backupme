@@ -178,12 +178,14 @@ def test_ingest_tree_end_to_end(drop_root, env, backends, ingest_cfg):
     assert op[0] == "committed"
     assert op[1] == f"cpanel_ingest:{archive_sha}"
 
-    # content_text NULL (no FTS extraction for ingest members).
-    nulls = execute(
+    # D17 fixed: small UTF-8 ingest members flow through upload_bundle like
+    # any other upload, so they now carry content_text and are
+    # content-searchable (previously ingest members were always NULL).
+    withtext = execute(
         "SELECT COUNT(*) FROM files f LEFT JOIN files_fts t ON f.id = t.rowid "
-        "WHERE f.source_root = 'cpanel/acct' AND t.content_text IS NULL",
+        "WHERE f.source_root = 'cpanel/acct' AND t.content_text IS NOT NULL",
     ).fetchone()[0]
-    assert nulls == 3
+    assert withtext == 3
 
     # manifest json with 3 members.
     manifests = list((env / "manifest").glob("*.json"))

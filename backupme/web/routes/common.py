@@ -260,6 +260,29 @@ def _coerce_int(value, fallback):
 
 # ── Background-task state dicts (B05: moved here verbatim) ────
 
+# State dicts of ops that actually LAUNCHED at least once in this app
+# instance (keyed by dict identity — the op state dicts are module-level
+# singletons updated in place, so id() is stable for the process lifetime;
+# reset_background_state clears the set at every registration so each fresh
+# app starts "never started"). SSE op streams terminate after ONE idle
+# snapshot when their op has never been started: until the first op ran,
+# `completed` stays False and scripted consumers waiting for EOF hung
+# forever (pre-first-op termination defect). Browser EventSource
+# auto-reconnects, so the live dashboard is unaffected.
+_ops_ever_started: set[int] = set()
+
+
+def mark_op_started(state: dict) -> None:
+    """Record that `state`'s background operation actually launched. Every
+    op-launch site calls this right after arming its state dict; SSE streams
+    for never-started ops close after a single idle snapshot instead."""
+    _ops_ever_started.add(id(state))
+
+
+def _op_ever_started(state: dict) -> bool:
+    return id(state) in _ops_ever_started
+
+
 # Restore-all operation (files.py)
 _restore_state = {
     "running": False, "source_root": "", "dest_path": "",
@@ -361,6 +384,10 @@ def _reset_rebalance(kind, backend):
             "done": 0, "total": 0, "current_blob": "",
             "errors": [], "completed": False, "result": None,
         })
+    # Only the launch sites call this — mark the op as actually started so
+    # the rebalance SSE stream polls to completion instead of closing after
+    # one idle snapshot.
+    mark_op_started(_rebalance_state)
 
 
 # Data-health physical scan (health.py)
@@ -384,7 +411,9 @@ def reset_background_state():
     task state: the old monolith scoped these dicts inside register_routes
     (fresh per create_app), and the tests pin that isolation ("no scan ran
     yet in this app instance"). Production runs one app per process, so the
-    shared module-level storage is safe once reset at registration."""
+    shared module-level storage is safe once reset at registration. The
+    op-started markers are cleared too — a fresh app's SSE streams close
+    after one idle snapshot until an op actually launches here."""
     _reset_scan()
     _reset_ingest()
     with _restore_lock:
@@ -404,6 +433,7 @@ def reset_background_state():
             "running": False, "started_at": 0.0, "finished_at": 0.0,
             "completed": False, "results": {}, "remote": [], "errors": [],
         })
+    _ops_ever_started.clear()
     _restore_event.set()
     _restore_event.clear()
     _scan_event.set()
@@ -473,6 +503,14 @@ def make_sse_stream(state: dict, lock: threading.Lock,
     completed and not running. `snapshot_fn` lets an op decorate its
     snapshot (ingest injects the live `paused` flag from its Event);
     `done_fn` overrides the completion test.
+
+    Termination has two cases:
+    - the op completed (`done_fn`) — one final frame, then EOF;
+    - the op was NEVER started in this app instance — one idle snapshot,
+      then EOF (pre-first-op termination: without it, `completed` stays
+      False forever on a fresh app and scripted consumers waiting for EOF
+      hung). Browser EventSource auto-reconnects, so the live dashboard
+      just re-polls as usual.
     """
     if snapshot_fn is None:
         def snapshot_fn():
@@ -485,13 +523,17 @@ def make_sse_stream(state: dict, lock: threading.Lock,
 
     async def event_generator():
         last_snapshot = ""
+        emitted_any = False
         while True:
             snapshot = snapshot_fn()
             if snapshot != last_snapshot:
                 yield f"data: {snapshot}\n\n"
                 last_snapshot = snapshot
+                emitted_any = True
             if done_fn():
                 yield f"data: {snapshot}\n\n"
+                break
+            if emitted_any and not _op_ever_started(state):
                 break
             await asyncio.sleep(0.5)
 

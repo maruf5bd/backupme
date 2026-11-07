@@ -339,8 +339,8 @@ class BackupScheduler:
         try:
             from backupme.core import db_lifecycle as lc
             result = lc.hard_purge_versions(config=self.config)
-            log.info("purge tick: purged=%s skipped=%s",
-                     result.get("purged"), result.get("skipped"))
+            log.info("purge tick: purged=%s above_watermark=%s",
+                     result.get("purged"), result.get("above_watermark"))
         except Exception:
             log.exception("purge tick failed")
         finally:
