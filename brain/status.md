@@ -113,3 +113,23 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   per-file verify returns match:true for 37423 end-to-end.
 - **Launcher**: `dashboard.bat` (one-click, reuses running instance) committed `50c2839`;
   index.bat menu #23 now opens the port actually passed.
+
+## 2026-11-07 (update 5)
+
+- **B05 COMPLETE (`c909655`)**: agent 3 had died mid-split (~2.5 h silent, nothing
+  committed). It left the routes/ package complete but UNWIRED — only 5 of 10 domain
+  modules registered, all 43 misc/health/backup/config/scheduler routes still served by
+  legacy.py, and the 2,990-line routes.py monolith still on disk. Landed: wired all 10
+  domain modules, deleted legacy.py + routes.py (104 route pairs, zero duplicates),
+  restored per-app task-state isolation via `reset_background_state()` at registration
+  (the monolith scoped its dicts inside register_routes; tests pin that), and landed the
+  queued fold-ins: B14 crypto capabilities in /api/encrypt/status, B09 op_counters in
+  /api/report, B12 op_log audit in /api/health/purge. 4 new pinning tests
+  (tests/test_web_foldins.py); 113 web-area tests green.
+- **B07 fanned out** (background agent, owns backupme/web/routes/*.py only): converting
+  31 silent except-pass sites to logged failures. B06 marked PARTIAL (helpers exist,
+  adoption pending — same file set, queued behind B07). /api/recompress rework onto core
+  recompress_blobs queued behind B07 as well.
+- Standing user decisions unchanged: gc --apply (8,498 orphans / 28.22 GiB), ~6,509 purge
+  candidates, 7 SOURCE_GONE files, 4 junk archives (2FA.7z = last copy), Storage Box
+  password rotation.

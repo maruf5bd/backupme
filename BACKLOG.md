@@ -38,37 +38,31 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
 
 ## P1 — codebase quality
 
-- **B05 [C] Split `web/routes.py` (2,700+ lines) into domain routers.** **SPEC (execute after routes.py is free)**
-  Goal: routes.py becomes a thin registrar (<400 lines). Split by domain into
-  `backupme/web/routes/` package: `pages.py` (GET / HTML), `files.py` (files, download,
-  preview, restore, upload), `backends.py` (backends incl. verify/onboard/rebalance/drain/
-  rescan + usage BEFORE {name} — ORDER CRITICAL), `dbops.py` (db check/snapshot/restore/
-  rebuild/checkpoint + snapshots delete/prune with their B03 confirm gates), `ingest.py`,
-  `backup.py` (backup + backup/source + scan), `scheduler.py` (daemon + scheduler config),
-  `health.py` (the /api/health/* family + scan SSE), `config_api.py` (config get/set/import/
-  export/sources), `misc.py` (activity, trends, encrypt, hash, search, reports, convert,
-  recompress, logs). Shared helpers (`_get_backends`, `_soft_delete_file`, `_fts_phrase`,
-  `_search_files_safe`, module-state dicts for background tasks) go to
-  `backupme/web/routes/common.py`; B06's task-runner helper lands there too.
-  Hard constraints: preserve EXACT route ORDER for same-path-prefix routes (usage before
-  {name}; specific before generic); keep `register_routes(app, config)` as the single public
-  entry (it calls each module's register(app, ctx) with a shared ctx object); full suite +
-  tests/test_web_api.py green after. Also fold in: op_log audit entry in POST /api/health/purge
-  (B12 remainder — op_log_mod.append("health_purge", {...ids...}, idempotency_key=f"purge_<ids-hash>")),
-  `crypto.capabilities()` into /api/encrypt/status (B14 remainder), and B09 counters
-  (recompress_blobs `failed`, rebuild `walk_failed_backends`/`unreadable_manifests`) surfaced
-  in /api/report + /api/recompress responses.
+- **B05 [C] Split `web/routes.py` (2,700+ lines) into domain routers.** **DONE (2026-11-07, `c909655`)**
+  Completed agent 3's unfinished split: all 10 domain modules + common.py wired from
+  routes/__init__.py; routes.py monolith and the redundant legacy.py (43 duplicated routes)
+  deleted; `reset_background_state()` at registration restores per-app task-state isolation
+  (the monolith scoped its dicts inside register_routes). Fold-ins landed: B14 crypto
+  capabilities in /api/encrypt/status, B09 op_counters in /api/report, B12 op_log audit in
+  POST /api/health/purge (confirm-gate rejections write no row). Tests:
+  tests/test_web_foldins.py (4) + 113 web-area tests green. Follow-up queued: /api/recompress
+  still uses an inline pre-core implementation (no counters, no op_log audit, silent
+  except-continue) — rework onto core recompress_blobs after B07.
 
-- **B06 [C] One background-task runner instead of 8 copies.**
-  The `op_id = None` + try/except + module-state-dict + SSE scaffolding is copy-pasted across
-  scan/ingest/rebalance/restore/backup routes. Extract a helper (start/status/stream) and reuse.
-  Done when: helpers used everywhere; one new bg task costs ~20 lines.
+- **B06 [C] One background-task runner instead of 8 copies.** **PARTIAL — helpers exist, adoption pending**
+  The shared scaffolding landed in `routes/common.py` (op_log_start/op_log_finish,
+  make_sse_stream, start_daemon_thread, state dicts + resets) but only health.py's purge
+  uses the op_log helpers; backup.py/dbops.py/files.py/misc.py/ingest.py/backends.py still
+  carry their inline op_log + SSE + thread copies. Done when: helpers used everywhere;
+  one new bg task costs ~20 lines. Same file set as B07 — execute after B07 lands.
 
-- **B07 [C] No silent data loss in API responses.**
+- **B07 [C] No silent data loss in API responses.** **IN FLIGHT (2026-11-07, background agent)**
   ~30 `except Exception: pass` sites in routes.py return partial data with no signal
   (e.g. 207, 342, 978, 1265, 1335, 1363). Every partial response must include an `errors` field
   and log the exception.
   Done when: grep finds no bare `except.*pass` in routes.py; QA harness asserts error visibility.
+  Update: agent converting all 31 package sites to logged failures (or justified-silence with
+  a written reason); targets zero unjustified `except.*pass` in backupme/web/routes/*.py.
 
 - **B08 [F] Turn the QA harness into a regression suite.**
   `tests/test_web_api.py` from the QA agent's TestClient harness: auth gate, pagination,
