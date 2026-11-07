@@ -15,16 +15,6 @@ def record_blob(blob_id: str, pt_size: int) -> dict:
     return {"blob_id": blob_id, "pt_size": pt_size, "ref_count": 1}
 
 
-def unref_blob(blob_id: str) -> int:
-    execute("UPDATE blobs SET ref_count = ref_count - 1, last_seen = datetime('now') WHERE blob_id = ?", (blob_id,))
-    row = execute("SELECT ref_count FROM blobs WHERE blob_id = ?", (blob_id,)).fetchone()
-    if row and row[0] <= 0:
-        execute("DELETE FROM blob_storage WHERE blob_id = ?", (blob_id,))
-        execute("DELETE FROM blobs WHERE blob_id = ?", (blob_id,))
-    commit()
-    return row[0] if row and row[0] > 0 else 0
-
-
 def _parent_blob_id(blob_id: str) -> str | None:
     """Parent bundle blob for a bundle member id, else None.
 
@@ -54,7 +44,10 @@ def add_ref(blob_id: str) -> None:
     )
 
 
-def unref_blob(blob_id: str) -> int:
+def unref_blob(blob_id: str, commit_now: bool = True) -> int:
+    """Drop one reference; delete the blob at zero refs, cascading to the
+    parent bundle. commit_now=False defers commits to the caller's open
+    transaction (uploader chunk replacement must stay atomic)."""
     execute(
         "UPDATE blobs SET ref_count = MAX(ref_count - 1, 0), last_seen = datetime('now') WHERE blob_id = ?",
         (blob_id,),
@@ -65,10 +58,12 @@ def unref_blob(blob_id: str) -> int:
         parent = _parent_blob_id(blob_id)
         execute("DELETE FROM blob_storage WHERE blob_id = ?", (blob_id,))
         execute("DELETE FROM blobs WHERE blob_id = ?", (blob_id,))
-        commit()
+        if commit_now:
+            commit()
         if parent:
-            return unref_blob(parent)
-    commit()
+            return unref_blob(parent, commit_now=commit_now)
+    if commit_now:
+        commit()
     return ref
 
 

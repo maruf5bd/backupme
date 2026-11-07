@@ -32,7 +32,8 @@ def migrate_inline_files(backends: list) -> dict:
     content_text.encode('utf-8'); when the recomputed hash differs from the
     originally recorded one the row is flagged (lossy) in the result.
     """
-    from backupme.core.uploader import _upload_chunk_to_backends, _record_chunk_upload
+    from backupme.core.uploader import (_upload_chunk_to_backends,
+                                        _record_blob_storage, _replace_file_chunks)
 
     rows = execute(
         "SELECT id, sha256, size, relative_path, content_text FROM files "
@@ -55,7 +56,8 @@ def migrate_inline_files(backends: list) -> dict:
         if not storage_rows:
             failed.append({"file_id": r["id"], "file": r["relative_path"]})
             continue
-        _record_chunk_upload(new_sha, len(data), storage_rows, r["id"], 0, 0, len(data))
+        _record_blob_storage(new_sha, len(data), storage_rows)
+        _replace_file_chunks(r["id"], [(0, new_sha, 0, len(data))])
         execute(
             "UPDATE files SET sha256 = ?, size = ?, migrated = 1, content_text = NULL, "
             "updated_at = datetime('now') WHERE id = ?",

@@ -151,11 +151,43 @@ def _upload_chunk_to_backends(
     return storage_rows
 
 
-def _record_chunk_upload(
-    blob_id: str, blob_pt_size: int, storage_rows: list[dict],
-    file_id: int, seq: int, pt_offset: int, pt_size: int,
-) -> None:
-    """DB side of a chunk upload. Caller owns the transaction (no commit here)."""
+def _replace_file_chunks(file_id: int, desired: list) -> bool:
+    """Replace a file's chunk mapping wholesale, unref-ing displaced blobs.
+
+    index_file matches on (source_root, relative_path, version_seq) and
+    callers always pass version_seq=1, so re-uploading a changed path
+    UPDATES the row in place. The old chunk rows must then be replaced:
+    INSERT OR IGNORE kept them silently, leaving file_chunks pointing at
+    the previous content while files.sha256 described the new one — every
+    restore of the path failed its integrity check and the new blob carried
+    a phantom ref (add_ref without a chunk row). No-op when the mapping
+    already equals `desired` (unchanged re-scan) to avoid blob-row churn.
+    Caller owns the transaction; runs without intermediate commits.
+    """
+    existing = execute(
+        "SELECT seq, blob_id, pt_offset, pt_size FROM file_chunks WHERE file_id = ?",
+        (file_id,),
+    ).fetchall()
+    existing_set = {(r["seq"], r["blob_id"], r["pt_offset"], r["pt_size"]) for r in existing}
+    if existing_set == set(desired):
+        return False
+    # Chunk rows must go before the blobs they reference (FK blob_id).
+    execute("DELETE FROM file_chunks WHERE file_id = ?", (file_id,))
+    for r in existing:
+        dedup_mod.unref_blob(r["blob_id"], commit_now=False)
+    for seq, blob_id, pt_offset, pt_size in desired:
+        execute(
+            "INSERT INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
+            (file_id, seq, blob_id, pt_offset, pt_size),
+        )
+        dedup_mod.add_ref(blob_id)
+    return True
+
+
+def _record_blob_storage(blob_id: str, blob_pt_size: int, storage_rows: list[dict]) -> None:
+    """DB side of a chunk upload: blob row + storage rows only. The chunk
+    mapping itself is written wholesale by _replace_file_chunks. Caller
+    owns the transaction (no commit here)."""
     dedup_mod.ensure_blob(blob_id, blob_pt_size)
     for s in storage_rows:
         execute(
@@ -168,11 +200,6 @@ def _record_chunk_upload(
              bytes.fromhex(s["nonce"]) if s.get("nonce") else None,
              bytes.fromhex(s["auth_tag"]) if s.get("auth_tag") else None),
         )
-    execute(
-        "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
-        (file_id, seq, blob_id, pt_offset, pt_size),
-    )
-    dedup_mod.add_ref(blob_id)
 
 
 def _write_manifest_and_pointers(backends: list, manifest: Manifest, redundancy: int) -> None:
@@ -426,11 +453,7 @@ def upload_bundle(
                              1 if nonce is not None else 0,
                              nonce.hex() if nonce else None, auth_tag.hex() if auth_tag else None),
                         )
-                    execute(
-                        "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
-                        (file_id, 0, member_id, 0, entry["pt_size"]),
-                    )
-                    dedup_mod.add_ref(member_id)
+                    _replace_file_chunks(file_id, [(0, member_id, 0, entry["pt_size"])])
                     manifest.v = 2
                     mc = ManifestChunk(seq=0, blob_id=member_id, pt_offset=0, pt_size=entry["pt_size"])
                     for bk in ok_backends:
@@ -518,12 +541,10 @@ def upload_bundle(
                         version_group=version_group or file_sha256[:16],
                         auto_commit=False,
                     )
-                    for c in prior_chunks:
-                        execute(
-                            "INSERT OR IGNORE INTO file_chunks (file_id, seq, blob_id, pt_offset, pt_size) VALUES (?, ?, ?, ?, ?)",
-                            (file_id, c["seq"], c["blob_id"], c["pt_offset"], c["pt_size"]),
-                        )
-                        dedup_mod.add_ref(c["blob_id"])
+                    _replace_file_chunks(file_id, [
+                        (c["seq"], c["blob_id"], c["pt_offset"], c["pt_size"])
+                        for c in prior_chunks
+                    ])
                 results.append({"file_id": file_id, "sha256": file_sha256,
                                 "dedup": True, "status": "ok", "local_path": local_path})
                 continue
@@ -584,9 +605,15 @@ def upload_bundle(
                         version_seq=version_seq, version_group=manifest.version_group,
                         auto_commit=False,
                     )
+                    # Blob rows first (FK for the chunk mapping), then replace
+                    # the mapping wholesale — a changed re-upload must not keep
+                    # stale chunk rows under the updated file row.
                     for seq, offset, chunk_data, chunk_sha256, storage_rows in pending:
-                        _record_chunk_upload(chunk_sha256, len(chunk_data), storage_rows,
-                                             file_id, seq, offset, len(chunk_data))
+                        _record_blob_storage(chunk_sha256, len(chunk_data), storage_rows)
+                    _replace_file_chunks(file_id, [
+                        (seq, chunk_sha256, offset, len(chunk_data))
+                        for seq, offset, chunk_data, chunk_sha256, storage_rows in pending
+                    ])
 
                 for seq, offset, chunk_data, chunk_sha256, storage_rows in pending:
                     mc = ManifestChunk(seq=seq, blob_id=chunk_sha256, pt_offset=offset,
