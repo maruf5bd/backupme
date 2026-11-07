@@ -1,19 +1,18 @@
 # Improvement Backlog
 
 Generated 2026-11-05 from a full codebase scan (`diagnostics/codebase_scan.txt`).
-Status: **B02, B10, B11 DONE**; D1-D5 + B01 in flight; the rest queued.
+Status (2026-11-07): **B01-B16 ALL DONE; D1-D9 all closed.** The only remaining items
+are the standing user decisions (gc --apply, purge candidates, junk archives,
+password rotation) — see brain/status.md.
 Tracks: **[F]** functionality, **[C]** codebase quality, **[W]** wiring.
 Priorities: **P0** = fix first (correctness), **P1** = quality, **P2** = features.
 Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not allowed.
 
 ## P0 — correctness
 
-- **B01 [C][W] Port the SFTP walk fix to the other backends.**
-  The silent-walk-truncation bug (fixed in `backends/ftp_sftp.py` 6dcaa73) exists in the
-  siblings: `smb.py:115-142` (walk + list swallows errors), `ssh.py:120-227` (6 `except: pass`
-  around remote probes), `ninedrive.py:355`, `agent.py:28-44`.
-  Done when: every backend `walk()` exposes a `walk_errors` counter, retries transient list
-  failures, and logs skips; a test asserts truncation surfaces instead of passing silently.
+- **B01 [C][W] Port the SFTP walk fix to the other backends.** **DONE (2026-11-07, `24146d6`)**
+  smb/ssh/ninedrive/agent now expose `walk_errors`, retry transient list failures, and
+  log skips; truncation surfaces instead of passing silently.
 
 - **B02 [W] Dead config keys warn on every startup — wire or remove.** **DONE (2026-11-05)**
   `config.yaml` had `chunking.parallel_uploads` and `verification.fallback_on_fail`; the
@@ -23,18 +22,14 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   every section incl. the nested `verify_restore` shape and all backend types;
   `tests/test_config_example_sync.py` pins example <-> dataclass drift both directions.
 
-- **B03 [W] Destructive endpoints need token + explicit confirm.**
-  `POST /api/server/restart` (routes.py:1470), `POST /api/db/restore` (1480),
-  `POST /api/db/rebuild` (1488), `DELETE /api/backends/remove/{name}` (426) are state-changing;
-  verify each is behind the `web.token` gate AND requires a `confirm` body flag like the new
-  purge endpoint. Fold in the QA agent's auth findings.
-  Done when: unauthenticated calls 401; missing confirm 400; tests cover all of them.
+- **B03 [W] Destructive endpoints need token + explicit confirm.** **DONE (2026-11-07, `01036ab`)**
+  `POST /api/server/restart`, `POST /api/db/restore`, `POST /api/db/rebuild`,
+  `DELETE /api/backends/remove/{name}`, snapshots delete/prune are all behind the token gate
+  AND a `confirm: true` body flag; all 7 frontend callers updated; missing confirm -> 400
+  (re-pinned by tests/test_web_foldins.py).
 
-- **B04 [W] Consolidate the health surface.**
-  A `GET /health` (routes.py:1219) and `GET /api/health/detailed` (1311) already exist while the
-  new data-health module adds `/api/health/data|issues|purge`. Make one canonical `/health` page
-  and one summary endpoint; keep old paths as thin aliases marked deprecated in comments.
-  Done when: single nav entry, no overlapping/duplicated health JSON shapes.
+- **B04 [W] Consolidate the health surface.** **DONE (2026-11-07, `8baea8e`)**
+  Canonical `/api/health/data` + `/health` page; old paths kept as thin aliases.
 
 ## P1 — codebase quality
 
@@ -68,16 +63,16 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   concurrent-cleanup case). Behavior unchanged; tests/test_web_b07.py (3 caplog tests);
   97 web-area tests + full suite green.
 
-- **B08 [F] Turn the QA harness into a regression suite.**
-  `tests/test_web_api.py` from the QA agent's TestClient harness: auth gate, pagination,
-  route-order, soft-delete semantics, SSE termination, concurrency smoke.
-  Done when: suite runs in CI/local run_pytest and catches route regressions.
+- **B08 [F] Turn the QA harness into a regression suite.** **DONE (2026-11-07, `b9abff1`)**
+  `tests/test_web_api.py` runs in the standard suite (route inventory sweep, auth gate,
+  pagination, soft-delete semantics, SSE termination, restore round-trip, concurrency
+  smoke). It caught the B05 state-leak regressions without any edits when the split
+  landed.
 
-- **B09 [C] Count and report skips instead of absorbing them.** **CORE DONE (2026-11-07); /api/report wiring queued on routes.py**
-  `compress.recompress_blobs` now returns `failed` (hash-verify failures + exceptions were
-  previously absorbed); `manifest.rebuild_database_from_manifests` returns
-  `walk_failed_backends` (a whole backend was silently skipped on walk error) +
-  `unreadable_manifests`. Covered by tests/test_skip_counters.py.
+- **B09 [C] Count and report skips instead of absorbing them.** **DONE (2026-11-07; core `43d7a8b`, wiring `c909655`)**
+  `compress.recompress_blobs` returns `failed`; `manifest.rebuild_database_from_manifests`
+  returns `walk_failed_backends` + `unreadable_manifests`; /api/report carries op_counters
+  from the op_log audit. Covered by tests/test_skip_counters.py + test_web_foldins.py.
 
 ## P2 — functionality
 
@@ -103,22 +98,26 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   (`ingest_archive` failure-recording block). Covered by tests/test_notify.py (7 tests) incl.
   the scheduler-regression path. Documented in MANUAL section 8.
 
-- **B12 [F] Purge approval workflow end-to-end.**
-  Dashboard purge-candidates view → confirm dialog → `POST /api/health/purge`, plus an
-  `op_log` entry per purge for audit.
-  Done when: a purge is impossible without the dialog and every purge is auditable.
+- **B12 [F] Purge approval workflow end-to-end.** **DONE (2026-11-07)**
+  Dashboard purge-candidates view (checkbox rows, button disabled until a selection) →
+  `App.Modal.confirm` dialog → `POST /api/health/purge {confirm: true, file_ids}` —
+  confirm-gate rejections write no op_log row (`c909655` fold-in), every purge is
+  audited to op_log with requested/ok/skipped counts, results toast + health refresh.
+  A purge is impossible without the dialog and every purge is auditable.
 
-- **B13 [F] Backend rescan as a product feature.** **CLI DONE (2026-11-05); dashboard button queued**
-  `core/backend_scan.rescan_backend(backend)` diffs a walk against blob_storage (correct
-  `backend_name` column; bundle-member rows `@offset:len` excluded, parents compared as plain
-  paths) reporting missing_on_box / extra_on_box / **size_mismatch** (cheap corruption signal)
-  + missing_bytes. CLI: `backupme backend rescan NAME [--json]` (exit 1 on missing/mismatch).
-  Covered by tests/test_backend_rescan.py. Remaining: dashboard button once routes.py frees up.
+- **B13 [F] Backend rescan as a product feature.** **DONE (2026-11-07; CLI `3d88ab1`, web `d7ec4e1`)**
+  `core/backend_scan.rescan_backend` diffs a walk against blob_storage (bundle-member
+  rows excluded, parents compared as plain paths) reporting missing_on_box /
+  extra_on_box / size_mismatch + missing_bytes; CLI `backupme backend rescan NAME
+  [--json]`; Backends page has a per-backend Rescan button (`rescanBackend()` →
+  `POST /api/backends/{name}/rescan`, results in a modal). Verified live 2026-11-07 on
+  local_disk: 19,819 walked vs 17,146 DB paths, 0 missing, 0 mismatches, 2,673 expected
+  extra-on-box (the known orphan-objects bucket).
 
-- **B14 [F] Capability introspection for crypto.** **CORE DONE (2026-11-07); /api/encrypt/status wiring queued on routes.py**
+- **B14 [F] Capability introspection for crypto.** **DONE (2026-11-07; core `43d7a8b`, wiring `c909655`)**
   `crypto.capabilities()` reports cipher, active KDF (argon2id vs pbkdf2 fallback), AEAD
-  availability, and — the operationally important part — the FILE LAYOUT each build writes
-  (tag-at-end AEAD vs tag-after-nonce legacy), which decrypt_file auto-detects.
+  availability, and the FILE LAYOUT each build writes; served on `/api/encrypt/status`
+  (pinned by tests/test_web_foldins.py).
 
 - **B15 [C] Fix AGENTS.md project-overview reference** to `@package.json` npm commands — this is
   a Python project; point to pytest/CLI commands instead.
