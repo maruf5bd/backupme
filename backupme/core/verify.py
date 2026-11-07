@@ -48,7 +48,12 @@ def run_integrity_check(
         try:
             with tempfile.TemporaryDirectory() as td:
                 tmp = Path(td) / "check.bin"
-                download_file(f["id"], str(tmp), backend_name)
+                res = download_file(f["id"], str(tmp), backend_name)
+                # Soft failures come back as a status dict without creating
+                # the file — hashing then raised a misleading FileNotFoundError
+                # instead of the real reason ("No chunks found").
+                if isinstance(res, dict) and res.get("status") != "ok":
+                    raise RuntimeError(str(res.get("message") or "download failed"))
                 actual = hasher_mod.sha256_file(str(tmp))
             ok = actual == f["sha256"]
             if ok:

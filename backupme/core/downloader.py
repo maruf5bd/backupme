@@ -55,7 +55,21 @@ def _decrypt_if_needed(work_file: Path, dec: Path, st: dict, config) -> Path:
 def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int | None,
                          st: dict, config) -> bytes:
     """Download the full bundle, decrypt/decompress it, and extract the target bytes."""
-    if offset is None or length is None or offset <= 0 or length <= 0:
+    if offset is None or length is None:
+        raise UnrecoverableChunkError(
+            f"Bundle storage row for {remote_path} has no valid @offset:length range "
+            "(legacy metadata) — re-backup this file"
+        )
+    if length == 0:
+        # Empty files are stored as zero-length member ranges (qa P1: the old
+        # 'length <= 0' rejection made every 0-byte file unrestorable even
+        # though upload reported success). Nothing to extract.
+        if offset < 0:
+            raise UnrecoverableChunkError(
+                f"Bundle storage row for {remote_path} has a negative offset"
+            )
+        return b""
+    if offset <= 0 or length < 0:
         raise UnrecoverableChunkError(
             f"Bundle storage row for {remote_path} has no valid @offset:length range "
             "(legacy metadata) — re-backup this file"
