@@ -1390,124 +1390,13 @@ def register_routes(app, config: cfgmod.Config):
             headers={"Content-Disposition": 'attachment; filename="config.yaml"'},
         )
 
+    # DEPRECATED (B04): use /api/health/data — kept as alias for old callers.
+    # The old bespoke payload (db integrity/daemon/replication snapshot) is
+    # retired; this endpoint now returns exactly the canonical JSON of
+    # /api/health/data (summary + last scan snapshot).
     @app.get("/api/health/detailed")
     async def api_health_detailed():
-        try:
-            # 1. Database details & integrity
-            gen = db.get_instance_id()
-            integrity = db.check_integrity()
-            total_files = index_mod.file_count()
-            savings = dedup.total_dedup_savings()
-            db_status = "ok" if not integrity else "corrupt"
-            
-            # 2. Daemon status
-            daemon_running = _scheduler is not None and _scheduler._thread is not None and _scheduler._thread.is_alive()
-            
-            # 3. Backends status
-            backends_list = []
-            backends_ok = True
-            for be in _get_backends():
-                conn_ok = False
-                free = total = None
-                try:
-                    conn_ok = be.connected or be.connect()
-                    if conn_ok:
-                        free = be.free_space()
-                        total = be.total_space()
-                except Exception:
-                    pass
-                if not conn_ok:
-                    backends_ok = False
-                backends_list.append({
-                    "name": be.name,
-                    "type": be.type,
-                    "connected": conn_ok,
-                    "free_space": free,
-                    "total_space": total,
-                    "priority": be.config.get("priority", 50),
-                })
-            
-            # 4. Replication summary
-            total_blobs = 0
-            fully_replicated = 0
-            single_copy = 0
-            try:
-                rows = db.execute(
-                    "SELECT bs.blob_id, bs.backend_name FROM blob_storage bs"
-                ).fetchall()
-                blob_map = {}
-                for r in rows:
-                    bid = r["blob_id"]
-                    blob_map.setdefault(bid, []).append(r["backend_name"])
-                total_blobs = len(blob_map)
-                fully_replicated = sum(1 for b in blob_map.values() if len(b) >= 2)
-                single_copy = sum(1 for b in blob_map.values() if len(b) == 1)
-            except Exception:
-                pass
-            
-            # 5. Active scan status
-            with _scan_lock:
-                scan_active = _scan_state["running"]
-                scan_errors_count = len(_scan_state["errors"])
-                scan_progress = {
-                    "running": scan_active,
-                    "files_total": _scan_state["files_total"],
-                    "files_done": _scan_state["files_done"],
-                    "files_error": _scan_state["files_error"],
-                }
-            
-            # 6. Database snapshot replication check
-            db_repl_status = {}
-            for be in _get_backends():
-                try:
-                    snaps = be.db_list("snapshots")
-                    db_repl_status[be.name] = {
-                        "snapshots_count": len(snaps) if snaps else 0,
-                        "replicated": bool(snaps),
-                    }
-                except Exception as e:
-                    db_repl_status[be.name] = {
-                        "snapshots_count": 0,
-                        "replicated": False,
-                        "error": str(e),
-                    }
-            
-            # Compile warnings/issues
-            issues = []
-            if integrity:
-                issues.append(f"Database integrity check failed: {', '.join(integrity)}")
-            if not daemon_running:
-                issues.append("Background scheduler daemon is not running")
-            if not backends_ok:
-                issues.append("One or more storage backends are disconnected")
-            for be_name, status in db_repl_status.items():
-                if not status["replicated"]:
-                    issues.append(f"Database snapshot not replicated to backend '{be_name}'")
-            
-            overall = "perfect" if not issues else "warning" if len(issues) < 3 else "danger"
-            
-            return JSONResponse({
-                "status": "ok" if overall == "perfect" else overall,
-                "overall_health": overall,
-                "issues": issues,
-                "generation": db.get_generation(),
-                "instance_id": gen,
-                "integrity": db_status,
-                "total_files": total_files,
-                "stored_bytes": savings.get("stored_bytes", 0),
-                "dedup_ratio": savings.get("ratio", 1.0),
-                "daemon_running": daemon_running,
-                "backends": backends_list,
-                "replication_summary": {
-                    "total_blobs": total_blobs,
-                    "fully_replicated": fully_replicated,
-                    "single_copy": single_copy,
-                },
-                "active_scan": scan_progress,
-                "db_replication_check": db_repl_status,
-            })
-        except Exception as e:
-            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+        return await api_health_data()
 
     # ── API: Daemon ─────────────────────────────────────────────
 
