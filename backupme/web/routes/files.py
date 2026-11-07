@@ -457,16 +457,31 @@ def register(app, ctx):
     async def api_upload_file(
         file: UploadFile = File(...),
         backend: str = Form(""),
-        redundancy: int = Form(1)
+        redundancy: int = Form(1),
+        dest_folder: str = Form(""),
     ):
         import tempfile
-        upload_key = f"upload:{file.filename}:{int(time.time())}"
+        # Optional destination folder inside web_upload. Normalize to forward
+        # slashes and reject anything that could escape it — the same
+        # defense-in-depth the restore worker applies to index paths.
+        dest_folder = (dest_folder or "").strip().replace("\\", "/").strip("/")
+        parts = [p for p in dest_folder.split("/") if p]
+        if dest_folder and (any(p in ("..", ".") for p in parts)
+                            or ":" in dest_folder or dest_folder.startswith("/")
+                            or (len(dest_folder) >= 2 and dest_folder[1] == ":")):
+            return JSONResponse(
+                {"status": "error", "message": "dest_folder must be a relative folder path"},
+                status_code=400)
+        safe_name = Path(file.filename).name
+        relative_path = ("/".join(parts) + "/" + safe_name) if parts else safe_name
+        upload_key = f"upload:{relative_path}:{int(time.time())}"
         op_id = op_log_start("upload", upload_key,
-                             {"filename": file.filename, "backend": backend})
+                             {"filename": safe_name, "backend": backend,
+                              "dest_folder": dest_folder})
 
         tmp_path = None
         try:
-            suffix = Path(file.filename).suffix
+            suffix = Path(safe_name).suffix
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 content = await file.read()
                 tmp.write(content)
@@ -479,7 +494,7 @@ def register(app, ctx):
             cfg_dict = _config_as_dict(ctx)
             r = uploader_mod.upload_file(
                 source_root="web_upload",
-                relative_path=file.filename,
+                relative_path=relative_path,
                 local_path=tmp_path,
                 backends=backends,
                 config=cfg_dict,
@@ -489,8 +504,10 @@ def register(app, ctx):
                 Path(tmp_path).unlink(missing_ok=True)
 
             op_log_finish(op_id, "completed", target_json={
-                "filename": file.filename, "result": "success", "size": len(content)})
-            return JSONResponse({"status": "ok", "filename": file.filename, **r})
+                "filename": safe_name, "result": "success", "size": len(content),
+                "dest": relative_path})
+            return JSONResponse({"status": "ok", "filename": safe_name,
+                                 "dest": relative_path, **r})
         except Exception as e:
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)

@@ -38,6 +38,8 @@
           <option value="3">3 Copies</option>
         </select>
       </div>
+      <input type="text" id="upload-dest-folder" placeholder="Destination folder (optional) — e.g. projects/2026"
+             style="font-size:0.75rem; padding:4px 8px; height:32px; width:100%;">
       
       <!-- Progress Bar -->
       <div id="upload-progress-wrap" style="display:none;">
@@ -654,7 +656,8 @@
   async function uploadBrowserFile(file) {
     const backend = document.getElementById('upload-backend').value;
     const redundancy = document.getElementById('upload-redundancy').value;
-    
+    const destFolder = (document.getElementById('upload-dest-folder').value || '').trim();
+
     const wrap = document.getElementById('upload-progress-wrap');
     const fill = document.getElementById('upload-progress-fill');
     const pct = document.getElementById('upload-pct');
@@ -667,12 +670,13 @@
     pct.textContent = '0%';
     status.textContent = 'Preparing ' + file.name + '...';
     icon.style.color = 'var(--accent)';
-    dropText.textContent = 'Uploading ' + file.name + '...';
+    dropText.textContent = 'Uploading ' + file.name + (destFolder ? ' to ' + destFolder : '') + '...';
 
     const formData = new FormData();
     formData.append('file', file);
     formData.append('backend', backend);
     formData.append('redundancy', redundancy);
+    formData.append('dest_folder', destFolder);
 
     try {
       const xhr = new XMLHttpRequest();
