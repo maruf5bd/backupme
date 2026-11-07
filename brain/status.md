@@ -153,3 +153,25 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   copies in backup/dbops/files/misc (+ingest/backends) onto the common helpers;
   /api/recompress moves onto core recompress_blobs with counters + op_log audit
   (its inline copy uploads without hash verification and has no audit).
+
+## 2026-11-07 (update 7)
+
+- **B06 DONE (`e819600`, background agent)**: every inline op_log/SSE/thread copy in
+  backup/dbops/files/misc/ingest/backends adopted the common helpers (none needed to
+  stay inline). /api/recompress now calls core recompress_blobs: counters in the
+  response ("converted" kept as alias for settings.html), op_log audit feeding /api/report
+  op_counters, hash-verified writes, encrypted blobs skipped + counted (the old inline
+  loop silently corrupted encrypted blobs and uploaded without verification).
+- **Activity page rebuilt** (`293f6aa`): the /logs page was server-rendered with a dead
+  Live toggle (poll discarded its own fetch) and a status filter offering nonexistent
+  statuses. Now a real console: working live polling, status cards + count chips,
+  instant client-side filtering, per-row durations with honest "stale — never finished"
+  for zombie rows (>24h running), friendly op summaries, click-to-expand detail with
+  pretty JSON + copy, Load-older pagination, time-sorted display. Verified in-browser
+  (screenshots). The 5 zombie scan rows from 2026-05-30 are visible as stale.
+- **Full suite green after both waves** (394 collected, 393 passed + 1 pre-existing skip,
+  exit 0 — agent-run). Dashboard restarted and verified: health/data, report card
+  (check 4, 10/10), encrypt capabilities, new logs console.
+- Backlog P1 code-quality track (B05-B07) is now fully closed. Remaining known work:
+  QA-visibility item (errors surfaced in partial responses) satisfied via B07 logging;
+  standing user decisions unchanged (gc apply, purges, 2FA.7z, password rotation).

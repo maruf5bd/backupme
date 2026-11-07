@@ -49,12 +49,16 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   still uses an inline pre-core implementation (no counters, no op_log audit, silent
   except-continue) — rework onto core recompress_blobs after B07.
 
-- **B06 [C] One background-task runner instead of 8 copies.** **IN FLIGHT (2026-11-07, background agent)**
-  Helpers landed in `routes/common.py` (op_log_start/op_log_finish, make_sse_stream,
-  start_daemon_thread, state dicts + resets). Agent is adopting them in
-  backup/dbops/files/misc/ingest/backends and reworking /api/recompress onto core
-  recompress_blobs (counters + op_log audit). Done when: helpers used everywhere;
-  one new bg task costs ~20 lines.
+- **B06 [C] One background-task runner instead of 8 copies.** **DONE (2026-11-07, `e819600`)**
+  All inline op_log + SSE + thread scaffolding in backup/dbops/files/misc/ingest/backends
+  switched onto the common helpers (op_log_start/op_log_finish, make_sse_stream,
+  start_daemon_thread); nothing needed to stay inline. /api/recompress reworked onto core
+  `recompress_blobs` — response now `{status, recompressed, total_scanned, skipped_encrypted,
+  failed, converted(=recompressed alias)}`, audited to op_log (feeds /api/report op_counters),
+  hash-verified writes, encrypted blobs skipped + counted (the old inline loop silently
+  corrupted them and uploaded without verification). "converted" kept for settings.html.
+  Tests: tests/test_web_b06.py (3); targeted 100 passed; full suite 394 collected /
+  393 passed + 1 pre-existing skip, exit 0.
 
 - **B07 [C] No silent data loss in API responses.** **DONE (2026-11-07, `dc2c2d9`)**
   43 truly-silent except handlers across 9 route modules converted: 40 now log via the
