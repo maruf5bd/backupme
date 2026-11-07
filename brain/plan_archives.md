@@ -103,16 +103,20 @@ never lost.
 
 ## Phases and status
 
-- **Phase 1 — IN FLIGHT (builder agent, 2026-11-08)**: core/archives.py
-  (extract + fingerprint + ingest + manifest build/write), DB tables,
-  `backup` wiring (archive hook in the file branch), `backupme archive
-  list|show|restore`, tests/test_archives.py (11 scenarios incl. same-archive
-  no-op, day-2 near-zero-byte dedup, zip-slip, caps, fallbacks, sidecar
-  recipe check, fresh-init migration), MANUAL.md §10 rows.
-- **IN FLIGHT (parallel agent, 2026-11-08)**: off-site guard module +
-  scheduler tick + `db snapshot --offsite` + `guard` config (files:
-  core/offsite_guard.py, scheduler.py, cli/db_cmd.py, config.py,
-  tests/test_offsite_guard.py; MANUAL lines reported not edited).
+- **Phase 1 — DONE (2026-11-08, `6cd6691`)**: core/archives.py
+  (extract + fingerprint + ingest + manifest build/write), DB tables
+  (base schema + migration 3, apply_migrations runs multi-statement now),
+  `backup` wiring, `backupme archive list|show|restore`, MANUAL 7.7 +
+  §10 rows, tests/test_archives.py (17 scenarios). Notable engine decisions:
+  gzip/bz2/xz classified only when a tar stream is inside (plain .gz files
+  keep their old behavior); truncated zip still takes the explicit fallback;
+  nested members get a virtual chunkless files row; unsafe members skipped
+  and counted (cpanel style); nested failure stays scoped (kept as a whole
+  member of its parent, not a global fallback).
+- **DONE (2026-11-08, `912bb2f`)**: off-site guard — core/offsite_guard.py +
+  daily scheduler tick + `db snapshot --offsite` + `guard` config + MANUAL
+  7.8 + tests/test_offsite_guard.py (16). Remote path
+  `guard/snapshots/<UTC ts>-gen<gen>.db.zst`, size-verified per backend.
 - **Phase 2 — PENDING**: 7z via py7zr, rar via external unrar/7z when
   present, dashboard "Archives" page (list archives, browse members, restore
   buttons), `db recover-from-manifests`, manifest retention pruning design.
