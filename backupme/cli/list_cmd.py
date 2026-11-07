@@ -14,12 +14,20 @@ from ..cli.output import emit
 @click.pass_context
 def list_files(ctx, backend, sha256_val, source_root, limit, offset, as_json):
     from ..core import index as index_mod
+    from ..core.database import execute
     if sha256_val:
         files = index_mod.find_by_sha256(sha256_val)
+        if backend:
+            # Filter by the storage join, not source_root (qa P1: the old
+            # source_root comparison returned 0 rows for every backend name).
+            ids = {r["file_id"] for r in execute(
+                "SELECT DISTINCT fc.file_id FROM file_chunks fc "
+                "INNER JOIN blob_storage bs ON fc.blob_id = bs.blob_id "
+                "WHERE bs.backend_name = ?", (backend,)).fetchall()}
+            files = [f for f in files if f.get("id") in ids]
     else:
-        files = index_mod.get_all_files(limit=limit, offset=offset)
-    if backend:
-        files = [f for f in files if f.get("source_root") == backend]
+        # get_all_files joins blob_storage for a real backend filter.
+        files = index_mod.get_all_files(backend=backend or None, limit=limit, offset=offset)
     if source_root:
         files = [f for f in files if f.get("source_root") == source_root]
 

@@ -72,6 +72,15 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move):
                     "relative_path": os.path.relpath(str(fp), path),
                 })
 
+        elif os.path.isdir(path):
+            _safe_echo(f"Error: {path} is a directory — use --recursive")
+            raise SystemExit(1)
+        else:
+            # Silent ignore made `backup missing.txt` exit 0 with empty
+            # output (qa P1) — a nonexistent path is an error.
+            _safe_echo(f"Error: {path} does not exist")
+            raise SystemExit(1)
+
     if files_to_backup:
         try:
             results = uploader.upload_bundle(files_to_backup, targets, cfg, redundancy)

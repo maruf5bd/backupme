@@ -12,11 +12,16 @@ from .base import cli
 @click.pass_context
 def convert(ctx, backend_name, prefix, delete, target, resume):
     from ..core.converter import convert_backend
-    result = convert_backend(
-        backend_name=backend_name,
-        prefix=prefix,
-        target_backend_name=target,
-        delete=delete,
-        resume=resume,
-    )
+    try:
+        result = convert_backend(
+            backend_name=backend_name,
+            prefix=prefix,
+            target_backend_name=target,
+            delete=delete,
+            resume=resume,
+        )
+    except ValueError as e:
+        # Unknown backend / bad arguments: clean error, not a traceback.
+        click.echo(f"Error: {e}")
+        raise SystemExit(1)
     click.echo(f"Converted {result['completed']} files, {result['errors']} errors, {result['skipped']} skipped")

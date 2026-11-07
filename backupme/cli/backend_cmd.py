@@ -1,4 +1,4 @@
-import os, yaml
+import os, sys, yaml
 
 import click
 
@@ -134,15 +134,16 @@ def backend_add(ctx, backend_type, name, host, port, username, password, key_fil
             val = default
         else:
             val = typ(val) if val else typ()
-        if name == "password" and val and (not isinstance(val, str) or not val.startswith("{{")):
+        if field_name == "password" and val and (not isinstance(val, str) or not val.startswith("{{")):
             env_key = f"{backend_type.upper()}_{val.upper()}"
-            click.echo(f"  Tip: use $env:{env_key} instead of plaintext password")
-            use_env = click.confirm(f"  Use env var {env_key}?", default=True)
-            if use_env:
-                os.environ[env_key] = str(val)
-                val = f"{{{{ {env_key} }}}}"
-            elif click.confirm("  Save plaintext?", default=False):
-                pass
+            if interactive:
+                click.echo(f"  Tip: use $env:{env_key} instead of plaintext password")
+                if click.confirm(f"  Use env var {env_key}?", default=True):
+                    os.environ[env_key] = str(val)
+                    val = f"{{{{ {env_key} }}}}"
+            else:
+                # Never prompt in non-interactive mode (scripts); just warn.
+                click.echo("  Warning: storing plaintext password in config.yaml")
         if isinstance(val, str) and not val.strip():
             continue
         if not val:
@@ -172,7 +173,10 @@ def backend_add(ctx, backend_type, name, host, port, username, password, key_fil
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     click.echo(f"Backend '{entry['name']}' ({backend_type}) added to {cfg_path}")
-    if click.confirm("Test connection now?", default=True):
+    # --no-test is honored: non-interactive runs test by default (no prompt),
+    # interactive runs ask first (qa P1: the confirm blocked scripts and the
+    # flag was ignored).
+    if test and (not interactive or click.confirm("Test connection now?", default=True)):
         _test_backend(entry, backend_type)
 
 
@@ -208,16 +212,15 @@ def backend_remove(ctx, name):
         return
     with open(cfg_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    found = False
+    exists = any(b.get("name") == name
+                 for blist in raw.get("backends", {}).values() for b in blist)
+    if not exists:
+        click.echo(f"No backend named '{name}'")
+        raise SystemExit(1)
     for btype in list(raw.get("backends", {})):
         raw["backends"][btype] = [b for b in raw["backends"][btype] if b.get("name") != name]
         if not raw["backends"][btype]:
             del raw["backends"][btype]
-        else:
-            found = True
-    if not found:
-        click.echo(f"No backend named '{name}'")
-        return
     with open(cfg_path, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     click.echo(f"Removed backend '{name}'")
@@ -249,7 +252,7 @@ def backend_test(ctx, name, as_json):
     if bk is None:
         emit({"connected": False, "error": f"backend '{name}' not found"}, as_json=as_json,
              human=lambda d: click.echo(f"Backend '{name}' not found"))
-        return
+        raise SystemExit(1)
     try:
         ok = bk.connect()
         free = bk.free_space() if ok else None
@@ -258,6 +261,8 @@ def backend_test(ctx, name, as_json):
             bk.disconnect()
         data = {"name": name, "connected": bool(ok), "free_space": free, "total_space": total}
         emit(data, as_json=as_json, human=lambda d: (click.echo(f"Connecting to {name}... OK"), click.echo(f"  Space: {free} / {total}") if total else None))
+        if not ok:
+            raise SystemExit(1)
     except Exception as e:
         emit({"name": name, "connected": False, "error": str(e)}, as_json=as_json,
              human=lambda d: click.echo(f"Connecting to {name}... ERROR: {e}"))

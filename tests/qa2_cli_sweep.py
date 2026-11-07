@@ -323,10 +323,11 @@ def test_download_unknown_id_clean_error(runner, env):
 
 
 def test_download_unknown_id_current_behavior_is_exit_1(runner, env):
-    """Documents the exit code part of defect 2 (correct code, ugly message)."""
+    """Fixed (defect 2): exit 1 AND a clean error message, no traceback."""
     r = invoke(runner, env, "download", "999999")
     assert r.exit_code == 1
-    assert isinstance(r.exception, FileNotFoundError)
+    assert "Error" in r.output and "not found" in r.output
+    assert "Traceback" not in r.output
 
 
 def test_upload_bundle_small_files(runner, env):
@@ -357,10 +358,10 @@ def test_backup_nonexistent_path_reports_error(runner, env):
 
 
 def test_backup_nonexistent_path_current_behavior_silent_success(runner, env):
-    """Documents defect 3: exit 0, nothing reported."""
+    """Fixed (defect 3): nonexistent path is an error (exit 1), not silence."""
     r = invoke(runner, env, "backup", str(env / "no-such-path-12345.txt"))
-    assert r.exit_code == 0
-    assert r.stdout.strip() == ""
+    assert r.exit_code == 1
+    assert "does not exist" in r.output
 
 
 # ---------------------------------------------------------------------------
@@ -512,10 +513,10 @@ def test_verify_backend_filter_seeded_exit_0(runner, env):
 
 
 def test_verify_unknown_backend_silent_zero_checked(runner, env):
-    """Documents P2: a typo'd backend name silently checks 0 files, exit 0."""
+    """Fixed (P2): a typo'd backend name errors out (exit 1)."""
     r = invoke(runner, env, "verify", "--count", "5", "--backend", "no_such_backend")
-    assert r.exit_code == 0, r.output
-    assert "checked=0" in r.output
+    assert r.exit_code == 1, r.output
+    assert "not found" in r.output
 
 
 # ---------------------------------------------------------------------------
@@ -568,9 +569,10 @@ def test_backend_test_unknown_name_exit_nonzero(runner, env):
 
 
 def test_backend_test_unknown_name_current_exit_0(runner, env):
-    """Documents defect 4."""
+    """Fixed (defect 4): unknown name exits 1."""
     r = invoke(runner, env, "backend", "test", "ghost_backend", "--json")
-    assert r.exit_code == 0
+    assert r.exit_code == 1
+    assert "not found" in r.output
     assert parse_json(r)["connected"] is False
 
 
@@ -613,16 +615,15 @@ def test_backend_add_no_test_is_fully_non_interactive(runner, env):
 
 
 def test_backend_add_no_test_current_behavior_still_prompts(runner, env):
-    """Documents defect 5: with no piped input the confirm aborts (exit 1)
-    even though --no-test was given; the backend row IS still written."""
+    """Fixed (defect 5): --no-test is honored — no confirm, clean exit 0."""
     storage3 = env.parent / "storage3"
     storage3.mkdir(exist_ok=True)
     r = invoke(runner, env, "backend", "add", "local",
                "--name", "qa2_nointer", "--path", str(storage3), "--no-test")
-    assert r.exit_code != 0  # aborts on the un-suppressed confirm
-    assert "Test connection now?" in r.output
+    assert r.exit_code == 0, r.output
+    assert "Test connection now?" not in r.output  # --no-test honored
     text = (env / "config.yaml").read_text(encoding="utf-8")
-    assert "qa2_nointer" in text  # config was already written before abort
+    assert "qa2_nointer" in text
 
 
 def test_backend_add_interactive_type_prompt(runner, env):
@@ -691,12 +692,13 @@ def test_backend_remove_unknown_exit_1(runner, env):
 
 
 def test_backend_remove_unknown_current_false_success(runner, env):
-    """Documents defect 6: nothing is removed, yet the CLI prints success."""
+    """Fixed (defect 6): unknown name exits 1 without touching config."""
     import yaml
     before = yaml.safe_load((env / "config.yaml").read_text(encoding="utf-8"))
     r = invoke(runner, env, "backend", "remove", "ghost_backend")
-    assert r.exit_code == 0
-    assert "Removed backend 'ghost_backend'" in r.output
+    assert r.exit_code == 1
+    assert "No backend named" in r.output
+    assert "Removed backend" not in r.output
     after = yaml.safe_load((env / "config.yaml").read_text(encoding="utf-8"))
     assert after == before  # config content unchanged
 
@@ -740,10 +742,10 @@ def test_recompress_runs_and_reports(runner, env):
 
 
 def test_recompress_unknown_backend_silent_zero(runner, env):
-    """Documents P2: unknown backend name silently recompresses nothing."""
+    """Fixed (P2): unknown backend name errors out (exit 1)."""
     r = invoke(runner, env, "recompress", "--backend", "ghost_backend")
-    assert r.exit_code == 0, r.output
-    assert "Recompressed 0 of 0" in r.output
+    assert r.exit_code == 1, r.output
+    assert "not found" in r.output
 
 
 def test_convert_no_files_ok(runner, env):
@@ -763,10 +765,11 @@ def test_convert_unknown_backend_clean_error(runner, env):
 
 
 def test_convert_unknown_backend_current_traceback(runner, env):
-    """Documents defect 7 (exit code is correct; the message is a traceback)."""
+    """Fixed (defect 7): clean error message, no traceback."""
     r = invoke(runner, env, "convert", "ghost_backend")
     assert r.exit_code == 1
-    assert isinstance(r.exception, ValueError)
+    assert "Error" in r.output
+    assert "Traceback" not in r.output
 
 
 def test_report_group_lifecycle(runner, env):
@@ -787,9 +790,9 @@ def test_report_group_lifecycle(runner, env):
 
 
 def test_report_get_unknown_current_exit_0(runner, env):
-    """Documents P2: 'Report not found' on stdout but exit 0."""
+    """Fixed (P2): unknown report id exits 1."""
     r = invoke(runner, env, "report", "get", "999999")
-    assert r.exit_code == 0
+    assert r.exit_code == 1
     assert "Report not found" in r.output
 
 

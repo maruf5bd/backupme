@@ -162,22 +162,28 @@ Output:
  144  C:/Users/Maruf/Documents/photo.jpg    2.3 MB   1
 ```
 
-### 3.2 Download a File by Path
+### 3.2 Find a File's ID
+
+Downloads take the numeric index id (find it with `backupme list` or
+`backupme search`):
 
 ```bash
-backupme download "C:/Users/Maruf/Documents/report.docx" --dest ./restored/
+backupme list | grep "report.docx"
 ```
 
 ### 3.3 Download a File by ID
 
 ```bash
-backupme download 142 --dest ./restored/report.docx
+backupme download 142 -o ./restored/
 ```
 
-### 3.4 Restore an Entire Directory
+### 3.4 Restore an Entire Directory or cPanel Account
+
+Whole-directory restore runs from the web dashboard (Files → Browse →
+"Restore this Folder"), and cPanel generations restore from the CLI:
 
 ```bash
-backupme restore --source C:/Users/Maruf/Documents --dest ./restored_files/
+backupme restore-cpanel mysite 3 --out ./restored_files/
 ```
 
 ### 3.5 Downloading from a Specific Backend
@@ -185,7 +191,7 @@ backupme restore --source C:/Users/Maruf/Documents --dest ./restored_files/
 If the primary backend is unavailable, specify another:
 
 ```bash
-backupme download 142 --from office_ftp --dest ./restored/
+backupme download 142 --backend office_ftp -o ./restored/
 ```
 
 backupme automatically tries all healthy backends with failover!
@@ -453,20 +459,15 @@ retention:
 View older versions of a file:
 
 ```bash
-backupme list --source ~/Documents | grep "report.docx"
+backupme list | grep "report.docx"
 ```
 
 ### 7.3 Daemon Mode (Automatic Backups)
 
 ```bash
-# Start the daemon (runs in background)
-backupme daemon start
-
-# Check status
-backupme daemon status
-
-# Stop the daemon
-backupme daemon stop
+# Runs the scheduler in the FOREGROUND — it blocks until Ctrl+C.
+# Run it in its own terminal or as a service.
+backupme daemon
 ```
 
 The daemon periodically:
@@ -627,8 +628,8 @@ section for editing every knob.
 
 - Staging holds plaintext briefly — use an encrypted volume or tmpfs, mode 0700.
 - `keep_raw` re-uploads the original archive (it dedups across generations).
-- Ingest failures are recorded in `op_log` and surfaced on the Ingest page;
-  register a failure hook (or check `backupme logs --op cpanel_ingest`) for alerting.
+- Ingest failures are recorded in `op_log` and surfaced on the Ingest page
+  (or `backupme ingest-status --account NAME`) for alerting.
 
 ---
 
@@ -715,37 +716,30 @@ backupme verify --count 5
 ```
 
 This randomly downloads 5 files, restores them, and verifies their hashes.
-
-For a full check:
-```bash
-backupme verify --all
-```
+Exit code 1 on any failure. Restrict to one backend with `--backend NAME`,
+or verify a single file with `--file ID`.
 
 ### 8.5 Integrity Report
 
 ```bash
-backupme report
-```
+# Run a check and store a report row
+backupme report verify --count 10
 
-Output includes:
-- Total file count and sizes
-- Deduplication and compression ratios
-- Per-backend health status
-- Recent verification results
-- Recommendations
+# List stored reports / read one
+backupme report list
+backupme report get 4
 
-HTML report:
-```bash
-backupme report --format html > report.html
+# JSON summary of the most recent check
+backupme report integrity
 ```
 
 ### 8.6 Check Backend Consistency
 
 ```bash
-backupme check-consistency
+# Walk a backend and diff against the index
+# (missing_on_box / extra_on_box / size_mismatch; exit 1 on problems)
+backupme backend rescan NAME
 ```
-
-Ensures all backends have consistent copies of mirrored files.
 
 ### 8.7 Garbage Collection
 
@@ -791,10 +785,10 @@ backupme list
 ```bash
 # backupme automatically tries all backends with failover
 # Check which backends are healthy:
-backupme status
+backupme backends
 
 # Manually specify a healthy backend:
-backupme download 142 --from healthy_backend_name
+backupme download 142 --backend healthy_backend_name
 ```
 
 ### 9.3 "Integrity mismatch"
@@ -803,14 +797,15 @@ backupme download 142 --from healthy_backend_name
 
 **Fix:**
 ```bash
-# Run full verification to find all corrupted files
-backupme verify --all
+# Run verification to find corrupted files (exit 1 on any failure)
+backupme verify --count 20
 
-# Check the report for details
-backupme report
+# Read the stored report
+backupme report list
+backupme report get 4
 
-# If a backend is consistently corrupted, restore from another:
-backupme db restore --from healthy_backend
+# If a backend is consistently corrupted, restore the DB from replicas:
+backupme db restore
 ```
 
 Restores are **atomic**: the file is written to a temporary sibling and
@@ -839,9 +834,6 @@ backupme encrypt status
 
 # Re-initialize if lost (WARNING: existing encrypted files won't be readable!)
 backupme encrypt init
-
-# Change password (re-encrypts key file)
-backupme encrypt change-password
 ```
 
 ### 9.6 Performance Issues
@@ -852,67 +844,106 @@ backupme encrypt change-password
 - Small files are auto-bundled (under 10MB) into 64MB tar archives for 3-5× faster transfers
 
 **Slow downloads?**
-- Check backend health: `backupme status`
+- Check backend health: `backupme backends`
 - Use local backends when possible
-- Download from fastest backend: `backupme download ID --from fast_backend`
+- Download from fastest backend: `backupme download ID --backend fast_backend`
 
 ---
 
 ## 10. Command Reference
 
+Verified against the code (CLI QA sweep, 40 leaf commands). Global options on
+every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
+
 ### Quick Command Summary
 
 | Command | Description | Example |
 |---|---|---|
-| `backupme backup PATHS` | Backup or move files/directories | `backupme backup ~/Docs -b local --recursive --move` |
-| `backupme upload-bundle DIR` | Batch-upload small files | `backupme upload-bundle ~/Photos -b local` |
-| `backupme download ID\|PATH` | Restore a file | `backupme download 142 --dest ./restored/` |
-| `backupme restore` | Restore entire directory | `backupme restore --source ~/Docs --dest ./old/` |
-| `backupme list` | List backed-up files | `backupme list --source ~/Docs` |
-| `backupme search QUERY` | Search files | `backupme search "report" --content` |
-| `backupme status` | Show backup status | `backupme status` |
-| `backupme verify` | Verify random files | `backupme verify --count 10` |
+| `backupme backup PATHS` | Backup files/directories (exit 1 on a missing path) | `backupme backup ~/Docs -b local --recursive --move` |
+| `backupme upload-bundle DIR` | Batch-upload small files (1KB–64KB) as a bundle | `backupme upload-bundle ~/Photos -b local` |
+| `backupme download FILE_ID` | Restore one file by index id | `backupme download 142 -o ./restored/` |
+| `backupme restore-cpanel ACC GEN` | Restore a cPanel account generation | `backupme restore-cpanel mysite 3 --out ./restored/` |
+| `backupme list` | List backed-up files | `backupme list --backend local --json` |
+| `backupme search QUERY` | Search the index (path search; punctuation-safe) | `backupme search "report-2026"` |
+| `backupme stats` | Totals: files, blobs, dedup savings | `backupme stats --json` |
+| `backupme verify` | Restore-and-hash verification (exit 1 on failure) | `backupme verify --count 10` |
 | `backupme health` | Data health summary (broken files, purge candidates) | `backupme health --json` |
-| `backupme backend rescan NAME` | Walk a backend, diff vs index (missing/extra/size mismatch) | `backupme backend rescan storagebox` |
-| `backupme report` | Full integrity report | `backupme report --format html` |
-| `backupme convert BACKEND` | Convert backend files | `backupme convert ftp --delete --resume` |
-| `backupme db check` | Database integrity | `backupme db check --full` |
+| `backupme backend rescan NAME` | Walk a backend, diff vs index (exit 1 on missing/mismatch) | `backupme backend rescan storagebox` |
+| `backupme report verify` | Run an integrity check, store a report | `backupme report verify --count 10` |
+| `backupme convert BACKEND` | Convert backend storage layout | `backupme convert ftp --delete --resume` |
+| `backupme db check` | Database integrity (read-only unless `--repair`) | `backupme db check --full` |
 | `backupme db snapshot` | Create snapshot | `backupme db snapshot` |
-| `backupme db restore` | Restore from replica | `backupme db restore --from ftp` |
-| `backupme db rebuild` | Rebuild from manifests | `backupme db rebuild` |
-| `backupme encrypt init` | Initialize encryption | `backupme encrypt init` |
-| `backupme recompress` | Recompress blobs | `backupme recompress --level 19` |
-| `backupme daemon start` | Start daemon | `backupme daemon start` |
+| `backupme db restore` | Restore DB from backend replicas (consensus) | `backupme db restore` |
+| `backupme db rebuild` | Rebuild index from manifests | `backupme db rebuild` |
+| `backupme encrypt init` | Initialize encryption key | `backupme encrypt init` |
+| `backupme recompress` | Recompress standalone blobs (bundles are skipped) | `backupme recompress --level 19` |
+| `backupme daemon` | Run the scheduler in the FOREGROUND (blocks; Ctrl+C stops) | `backupme daemon` |
 | `backupme web` | Start web dashboard | `backupme web --port 8080` |
 
 ### All CLI Options
 
 ```bash
-backupme backup [PATHS]... [--backend NAME] [--redundancy N] [--recursive/-r] [--move/-m]
-backupme upload-bundle DIR [--backend NAME] [--redundancy N]
-backupme download <file_id|path> [--from BACKEND] [--dest PATH]
-backupme restore [--source ROOT] [--dest PATH]
-backupme list [--source ROOT] [--backend NAME] [--hash VALUE]
-backupme search "query" [--content] [--source ROOT]
-backupme hash-lookup <sha256>
-backupme status
-backupme verify [--count N] [--backend NAME] [--all] [--recent N]
-backupme report [--format html|json|text]
-backupme check-consistency
-backupme scrub [--backend NAME]
-backupme convert BACKEND [--prefix PATH] [--target BACKEND] [--delete] [--resume]
-backupme db check [--full]
-backupme db snapshot
-backupme db restore [--from BACKEND] [--snapshot FILE]
-backupme db rebuild
-backupme db oplog [--pending]
-backupme db info
+# files & backup
+backupme backup [PATHS]... [-b/--backend NAME] [-n/--redundancy N] [-r/--recursive]
+                             [--no-skip] [--force] [-m/--move]
+backupme upload-bundle DIRECTORY [-b/--backend NAME] [-n/--redundancy N]
+backupme download FILE_ID [-o/--output DIR] [-v/--version N] [--backend NAME]
+backupme list [-b/--backend NAME] [--hash SHA256] [--source-root ROOT]
+              [-l/--limit N] [-o/--offset N] [--json]
+backupme search QUERY [--content] [--source ROOT]
+backupme hash-lookup SHA256
+backupme select-backend QUERY
+
+# monitoring & verification
+backupme stats [--json]
+backupme backends [--json]
+backupme verify [--count N] [--backend NAME] [--file ID]
+backupme health [--json] [--purge-candidates] [--limit N]
+backupme report list
+backupme report get REPORT_ID            # exit 1 if missing
+backupme report verify [--count N] [--backend NAME]
+backupme report integrity                # JSON summary of the last check
+
+# maintenance
+backupme convert BACKEND_NAME [--prefix PATH] [--delete] [--target BACKEND] [--resume]
+backupme recompress [--algo zstd] [--level 3] [-b/--backend NAME]
+backupme gc [--apply]                # DESTRUCTIVE with --apply; default dry run
+backupme db check [--full] [--repair] [--json]
+backupme db snapshot [--json]
+backupme db restore [--json]         # no options; consensus from replicas
+backupme db rebuild [--json]
+backupme db oplog [--pending] [--json]
+backupme db info [--json]
+backupme db cold-export [--dry-run] [--json]
+backupme db purge [--grace-days N] [--json]   # DESTRUCTIVE
+backupme db history "SQL" [--json]
+backupme db vacuum
+backupme db prune-oplog [--days N] [--json]
+
+# backends
+backupme backend add [TYPE] [--name --host --port --username --password --key-file
+                     --path --share --remote --base-url --api-key --email
+                     --refresh-token --folder --bwlimit --quota --priority --weight]
+                     [--test/--no-test]
+backupme backend list [--json]
+backupme backend remove NAME         # exit 1 if the name is unknown
+backupme backend test NAME [--json]  # exit 1 on unknown name or failed connect
+backupme backend onboard NAME [--rebalance] [--dry-run] [--json]
+backupme backend rebalance NAME [--limit N] [--dry-run] [--json]
+backupme backend drain NAME [--dry-run] [--json]
+backupme backend rescan NAME [--json]
+
+# encryption, ingest, servers
 backupme encrypt init
-backupme encrypt change-password
 backupme encrypt status
-backupme recompress [--algo zstd] [--level 3] [--backend NAME]
-backupme daemon start|stop|status
-backupme web [--port 8080] [--host 0.0.0.0]
+backupme ingest-cpanel DROP_ROOT [-n N] [--keep-raw N] [--dry-run] [--progress]
+                         [--watch] [--interval N] [--json]
+backupme ingest-status [--account NAME] [--drop-root PATH] [--json]
+backupme restore-cpanel ACCOUNT GENERATION [--member-filter GLOB] [--out DIR]
+                           [--retar FILE] [--json]
+backupme recompress [--algo] [--level] [--backend]
+backupme daemon                      # foreground scheduler; no start/stop/status
+backupme web [--host 127.0.0.1] [--port 8080] [--token TOKEN]
 ```
 
 ---

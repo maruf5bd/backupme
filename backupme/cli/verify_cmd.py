@@ -10,6 +10,13 @@ from .base import cli
 @click.pass_context
 def verify(ctx, count, backend_name, file_id):
     """Restore-and-hash verification: download files and compare sha256."""
+    if backend_name:
+        # An unknown backend silently sampled 0 files and exited 0 (qa P2) —
+        # validate the name against the configured backends first.
+        names = {b.name for blist in ctx.obj["config"].backends.values() for b in blist}
+        if backend_name not in names:
+            click.echo(f"Error: backend '{backend_name}' not found")
+            ctx.exit(1)
     if file_id is not None:
         from ..core.verify import verify_file_integrity
 

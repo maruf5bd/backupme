@@ -37,13 +37,20 @@ def status(ctx):
 def recompress(ctx, algo, level, backend):
     from ..core.compress import recompress_blobs
     cfg = ctx.obj["config"]
+    if backend:
+        # Unknown backend used to run a silent 0-blob no-op (qa P2).
+        names = {b.name for blist in cfg.backends.values() for b in blist}
+        if backend not in names:
+            click.echo(f"Error: backend '{backend}' not found")
+            ctx.exit(1)
     enc_cfg = getattr(cfg, "encryption", None)
     key = None
     if enc_cfg and getattr(enc_cfg, "enabled", False):
         from ..core.crypto import load_key
         key = load_key(getattr(enc_cfg, "key_file", "~/.backupme/key.enc"))
     result = recompress_blobs(algo=algo, level=level, backend_name=backend, key=key)
-    click.echo(f"Recompressed {result['recompressed']} of {result['total_scanned']} blobs")
+    click.echo(f"Recompressed {result['recompressed']} of {result['total_scanned']} blobs "
+               f"(skipped={result.get('skipped_encrypted', 0)}, failed={result.get('failed', 0)})")
 
 
 @cli.command()

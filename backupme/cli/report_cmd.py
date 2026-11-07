@@ -28,6 +28,7 @@ def report_get(ctx, report_id):
         click.echo(json.dumps(dict(row), indent=2, default=str))
     else:
         click.echo("Report not found")
+        raise SystemExit(1)
 
 
 @report.command()
