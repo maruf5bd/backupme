@@ -70,6 +70,35 @@ def decrypt(data: bytes, key: bytes) -> bytes:
         return decryptor.update(ct) + decryptor.finalize()
 
 
+def capabilities() -> dict:
+    """Which optional crypto deps are active vs fallback (backlog B14).
+
+    Both code paths are AES-256-GCM; they differ in KDF and, critically, in
+    the on-disk FILE LAYOUT (encrypt_file/decrypt_file): the AEAD path writes
+    the tag at the end, the fallback path writes a placeholder tag slot right
+    after the nonce. Anything that reports encryption status must surface this.
+    """
+    try:
+        import argon2.low_level  # noqa: F401
+        kdf_active, kdf_note = "argon2id", ""
+    except ImportError:
+        kdf_active, kdf_note = "pbkdf2-hmac-sha256 (600k iters)", "install argon2-cffi for argon2id"
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
+        aead = True
+    except ImportError:
+        aead = False
+    return {
+        "cipher": "aes-256-gcm",
+        "kdf": kdf_active,
+        "kdf_note": kdf_note,
+        "aead_available": aead,
+        "file_layout": "tag-at-end (AEAD)" if aead else "tag-after-nonce (legacy fallback)",
+        "interop_note": ("layouts are mutually exclusive per file; decrypt_file "
+                         "detects the layout at read time"),
+    }
+
+
 def load_key(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read().strip()

@@ -159,6 +159,8 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
 
     recompressed = 0
     skipped = 0
+    # B09: failures must be counted and reported, never absorbed silently.
+    failed = 0
     for row_s in rows:
         try:
             row = dict(row_s)
@@ -209,6 +211,7 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
                     bk.delete(new_path)
                 except Exception:
                     pass
+                failed += 1
                 continue
 
             # B12: INSERT new row first, then delete old
@@ -234,6 +237,8 @@ def recompress_blobs(algo: str = "zstd", level: int = 3, backend_name: str | Non
 
         except Exception as e:
             log.warning("recompress failed for %s: %s", blob_id, e)
+            failed += 1
             continue
 
-    return {"recompressed": recompressed, "total_scanned": len(rows), "skipped_encrypted": skipped}
+    return {"recompressed": recompressed, "total_scanned": len(rows),
+            "skipped_encrypted": skipped, "failed": failed}

@@ -60,10 +60,11 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   route-order, soft-delete semantics, SSE termination, concurrency smoke.
   Done when: suite runs in CI/local run_pytest and catches route regressions.
 
-- **B09 [C] Count and report skips instead of absorbing them.**
-  `compress.py:210-231` recompress loop and `manifest.py:98-135` corrupt-manifest skips are
-  invisible. Add per-run counters, log them, and surface in `/api/report`.
-  Done when: a recompress/manifest skip shows up in the report endpoint and logs.
+- **B09 [C] Count and report skips instead of absorbing them.** **CORE DONE (2026-11-07); /api/report wiring queued on routes.py**
+  `compress.recompress_blobs` now returns `failed` (hash-verify failures + exceptions were
+  previously absorbed); `manifest.rebuild_database_from_manifests` returns
+  `walk_failed_backends` (a whole backend was silently skipped on walk error) +
+  `unreadable_manifests`. Covered by tests/test_skip_counters.py.
 
 ## P2 — functionality
 
@@ -101,10 +102,10 @@ Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not al
   + missing_bytes. CLI: `backupme backend rescan NAME [--json]` (exit 1 on missing/mismatch).
   Covered by tests/test_backend_rescan.py. Remaining: dashboard button once routes.py frees up.
 
-- **B14 [F] Capability introspection for crypto.**
-  `core/crypto.py` has 5 optional-dependency fallbacks; `/api/encrypt/status` should report
-  which algorithm is actually active and which fell back.
-  Done when: status shows active vs fallback explicitly.
+- **B14 [F] Capability introspection for crypto.** **CORE DONE (2026-11-07); /api/encrypt/status wiring queued on routes.py**
+  `crypto.capabilities()` reports cipher, active KDF (argon2id vs pbkdf2 fallback), AEAD
+  availability, and — the operationally important part — the FILE LAYOUT each build writes
+  (tag-at-end AEAD vs tag-after-nonce legacy), which decrypt_file auto-detects.
 
 - **B15 [C] Fix AGENTS.md project-overview reference** to `@package.json` npm commands — this is
   a Python project; point to pytest/CLI commands instead.

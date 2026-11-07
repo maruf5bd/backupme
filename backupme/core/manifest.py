@@ -108,18 +108,28 @@ def rebuild_database_from_manifests(backends: list) -> dict:
 
     seen_files: dict[str, Manifest] = {}
     manifests_seen = 0
+    # B09: skips must be visible — a silently skipped backend or manifest is
+    # invisible data loss during disaster recovery.
+    walk_failed_backends: list[str] = []
+    unreadable_manifests = 0
 
     for bk in backends:
         try:
             files = bk.walk(MANIFEST_DIR)
-        except Exception:
+        except Exception as e:
+            walk_failed_backends.append(bk.name)
+            import logging
+            logging.getLogger(__name__).warning(
+                "manifest rebuild: backend %s walk failed: %s", bk.name, e)
             continue
         for f in files:
             try:
                 manifest = read_manifest(bk, f["path"])
             except Exception:
+                unreadable_manifests += 1
                 continue
             if manifest is None:
+                unreadable_manifests += 1
                 continue
             manifests_seen += 1
             key = f"{manifest.source_root}:{manifest.relative_path}"
@@ -221,6 +231,8 @@ def rebuild_database_from_manifests(backends: list) -> dict:
     ]
     return {"rebuilding": "ok", "files_rebuilt": len(seen_files),
             "manifests_seen": manifests_seen,
+            "walk_failed_backends": walk_failed_backends,
+            "unreadable_manifests": unreadable_manifests,
             "fts_rows": fts_rows,
             "version_collapsed_groups": version_collapsed,
             "needs_reupload": needs_reupload}
