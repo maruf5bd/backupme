@@ -13,6 +13,7 @@ module's register(app, ctx):
 - config_api config get/set/import/export/sources
 - scheduler  daemon start/stop/status, scheduler config, server restart
 - health     Data Health page + /api/health/* family (scan, purge)
+- archives   Archives page + /api/archives list/detail/restore (Phase 2)
 - misc       status/logs/report/search/encrypt/activity/stats/convert/...
 
 Shared plumbing lives in common.py (RouteContext, config/backend/search
@@ -39,6 +40,7 @@ from . import backup
 from . import config_api
 from . import scheduler
 from . import health
+from . import archives
 from . import misc
 
 
@@ -63,4 +65,5 @@ def register_routes(app, config):
     config_api.register(app, ctx)
     scheduler.register(app, ctx)
     health.register(app, ctx)
+    archives.register(app, ctx)
     misc.register(app, ctx)

@@ -251,6 +251,64 @@ def prune_oplog_cmd(ctx, days, as_json):
     ))
 
 
+@db.command("recover-from-manifests")
+@click.argument("backend")
+@click.option("--into", "into_path", default=None,
+              help="Path of the NEW sqlite file to build (an existing non-empty "
+                   "file is refused; the live DB is never touched). "
+                   "Default: recover-<UTC ts>.db")
+@click.option("--verify", type=click.Choice(["full", "none"]), default="full",
+              show_default=True,
+              help="full: download + decompress + sha256 every chunk (default). "
+                   "none: trust listings, no downloads or hashes (bundle tars "
+                   "are still parsed for member ranges)")
+@click.option("--dry-run", is_flag=True,
+              help="Scan + verify + report counts only; no sqlite file is written")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def recover_from_manifests_cmd(ctx, backend, into_path, verify, dry_run, as_json):
+    """Rebuild a fresh database from the ARCHIVE manifest sidecars on BACKEND.
+
+    Safety: this command never opens or writes the live database — it only
+    reads manifests + blobs from the backend and writes the --into file.
+    (The FILE-level counterpart is `backupme db rebuild`, which works from
+    the per-file receipts under manifests/.)
+    """
+    cfg = ctx.obj["config"]
+    names = {b.name for blist in cfg.backends.values() for b in blist}
+    if backend not in names:
+        click.echo(f"Error: backend '{backend}' not found")
+        ctx.exit(1)
+    from ..core.manifest_recover import recover_from_manifests, ManifestRecoverError
+    try:
+        result = recover_from_manifests(cfg, backend, into=into_path,
+                                        verify=verify, dry_run=dry_run)
+    except ManifestRecoverError as e:
+        click.echo(f"Error: {e}")
+        ctx.exit(1)
+
+    def human(d):
+        click.echo(f"status: {d['status']}  backend: {d['backend']}  "
+                   f"verify: {d['verify']}")
+        click.echo(f"into: {d['into']}")
+        click.echo(f"manifests scanned: {d['manifests_scanned']} "
+                   f"(receipts skipped: {d['skipped_receipts']})")
+        click.echo(f"archives recovered: {d['archives_recovered']}  "
+                   f"members: {d['members_recovered']}  "
+                   f"blobs: {d['blobs_recovered']}  "
+                   f"bytes: {d['bytes_recoverable']}")
+        if d["problems"]:
+            click.echo(f"problems: {len(d['problems'])}")
+            for p in d["problems"][:20]:
+                miss = f" missing={','.join(p.get('missing') or [])}" if p.get("missing") else ""
+                click.echo(f"  [{p.get('kind')}] {p.get('fingerprint') or '-'} "
+                           f"{p.get('path') or '-'}{miss} — {p.get('error')}")
+            if len(d["problems"]) > 20:
+                click.echo(f"  ... {len(d['problems']) - 20} more (use --json)")
+
+    emit(result, as_json=as_json, human=human)
+
+
 @db.command()
 @click.option("--pending", is_flag=True, help="Show only pending ops")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")

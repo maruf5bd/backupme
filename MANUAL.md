@@ -543,12 +543,13 @@ Deletions are highly secure: they are executed strictly after a successful datab
 
 ### 7.7 Archives (Extract-First Ingest)
 
-When `backupme backup` sees an archive file (tar, tar.gz, tar.bz2, tar.xz, zip — detected by magic bytes, not just the extension), it does not store the archive as an opaque blob. Instead BackupMe extracts it, uploads every member through the normal pipeline (so members deduplicate against your whole index), and records the archive as a virtual manifest. The archive itself is never stored — it is re-constructible from its members.
+When `backupme backup` sees an archive file (tar, tar.gz, tar.bz2, tar.xz, zip, 7z, rar — detected by magic bytes, not just the extension), it does not store the archive as an opaque blob. Instead BackupMe extracts it, uploads every member through the normal pipeline (so members deduplicate against your whole index), and records the archive as a virtual manifest. The archive itself is never stored — it is re-constructible from its members.
 
 - **Fingerprint** — archive identity is a sha256 over its sorted member manifest. The same archive content twice costs nothing (archive-level dedup).
 - **Members are first-class files** — each member lives under `archive/<fingerprint>` in the index, so `list`, `search`, `verify` and per-file restore work on members like on any other file.
 - **Nested archives** — a member that is itself an archive (up to 5 levels deep) gets its own fingerprint and manifest; its members dedup too.
-- **Safety** — corrupt or password-protected archives, unsupported formats (rar/7z) and oversized archives (cap: 200,000 members or 20 GiB uncompressed) are stored whole through the normal path instead; the backup output reports them as `stored_whole` with the reason.
+- **Supported archive formats** (detected by magic bytes): tar, tar.gz, tgz, tar.bz2, tar.xz, zip, 7z, and rar. 7z needs the `py7zr` library (declared in requirements.txt; without it 7z files are stored whole with reason "py7zr not installed"). rar needs an external extractor — `unrar` or `7z` on PATH, or WinRAR/7-Zip in their default install locations; without one, rar files are stored whole with a reason naming the missing tool.
+- **Safety** — corrupt or password-protected archives are never decrypted and are stored whole through the normal path instead, with the reason reported as `stored_whole`; data is never lost. Caps apply to every format (depth ≤ 5, ≤ 200,000 members, ≤ 20 GiB uncompressed), and 7z caps fire from header metadata before a single byte is extracted.
 - **Manifest sidecars** — after each successful archive ingest, a JSON restore recipe is written to every backend under `manifests/<fp[0:2]>/<fp[2:4]>/<fp>.json`, so archives can be re-manifested even if the database is lost. Sidecars are skipped when encryption is enabled (plaintext member names must not leak to backends).
 
 Inspect and restore virtual archives:
@@ -562,6 +563,8 @@ backupme archive restore <FINGERPRINT> -o ./restored/
 ```
 
 `archive restore` accepts the full fingerprint or a unique prefix. A nested archive member is restored as a directory at its path containing the nested archive's own members.
+
+**Dashboard.** The web dashboard has an **Archives** page (`/archives`) listing every virtual archive (fingerprint, format, original name, member count, uncompressed size) with a paginated member browser and a restore form. Restores go through `POST /api/archives/restore` (JSON body `{fingerprint, dest_path, confirm}`) and are confirm-gated: `confirm` must be the literal boolean `true`. The restore writes to a folder **on the server machine** and reuses the same sha-verified engine as the CLI; unsafe destinations (traversal, bare drives/roots) are rejected. Read APIs: `GET /api/archives` (list, `?limit&offset`) and `GET /api/archives/{id}` (detail + members).
 
 ### 7.8 Off-Site DB Snapshot Guard (`guard` section)
 
@@ -586,6 +589,44 @@ Manual run:
 
 Restoring from a guarded copy: download `guard/snapshots/<name>.db.zst` from any backend,
 decompress it with Zstandard, and replace `backupme.db` while the app is stopped.
+
+### 7.9 Recovering the Archive Vault from Manifest Sidecars (`db recover-from-manifests`)
+
+If the database is lost and no guarded snapshot is usable, the archive manifest sidecars
+(`manifests/<fp[0:2]>/<fp[2:4]>/<fp>.json`, written by extract-first ingest) plus the blob
+store are enough to rebuild the archive-level vault map:
+
+```bash
+backupme db recover-from-manifests BACKEND            # --into defaults to recover-<UTC ts>.db
+backupme db recover-from-manifests storagebox --into recover-2026.db --verify full
+backupme db recover-from-manifests storagebox --dry-run --json   # counts only, no file written
+```
+
+Safety contract:
+
+- The command **never opens or writes the live database** — it only reads manifests and
+  blobs from BACKEND and writes the `--into` file. An existing non-empty `--into` file is
+  refused (exit 1), so the live `backupme.db` can never be clobbered by accident.
+- BACKEND must be a configured backend name; unknown names exit 1 with a clean error.
+- Verification semantics: `--verify full` (the default) downloads every chunk, decompresses
+  it and sha256-checks the **plaintext** bytes against the blob id (bundle parent tars are
+  also parsed member-by-member so each `@offset:length` range is rebuilt exactly).
+  `--verify none` trusts listings (no downloads or hashes for standalone chunk objects) and
+  is clearly labeled in the output; bundle tars are still parsed because their member byte
+  ranges cannot be inferred any other way.
+- Only 64-hex-stem sidecars (archive manifests) are processed; the 32-hex
+  `<uuid>.manifest.json` per-file receipts written by the regular upload path are skipped
+  (counted as `skipped_receipts`). Those receipts are the domain of the separate FILE-level
+  recovery, `backupme db rebuild` — the two commands complement each other.
+- Members whose chunks are missing or fail verification are listed in the `problems`
+  section (fingerprint, path, missing blob ids) and get **no** `files` row — nothing in the
+  rebuilt database claims to restore from nothing. Their archive row is still recorded; the
+  gap is visible as `archives.member_count > COUNT(archive_members)`.
+- The JSON output (`--json`) reports `status`, `manifests_scanned`, `archives_recovered`,
+  `members_recovered`, `blobs_recovered`, `bytes_recoverable`, `problems`, `into`, `verify`.
+
+The rebuilt file is a working BackupMe database (schema applied): drop it in as
+`backupme.db` while the app is stopped, and archive members restore via all existing paths.
 
 ---
 
@@ -937,6 +978,7 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 | `backupme db snapshot` | Create snapshot | `backupme db snapshot` |
 | `backupme db restore` | Restore DB from backend replicas (consensus) | `backupme db restore` |
 | `backupme db rebuild` | Rebuild index from manifests | `backupme db rebuild` |
+| `backupme db recover-from-manifests BACKEND` | Rebuild a fresh DB from archive manifest sidecars | `backupme db recover-from-manifests storagebox --into recover.db` |
 | `backupme encrypt init` | Initialize encryption key | `backupme encrypt init` |
 | `backupme recompress` | Recompress standalone blobs (bundles are skipped) | `backupme recompress --level 19` |
 | `backupme daemon` | Run the scheduler in the FOREGROUND (blocks; Ctrl+C stops) | `backupme daemon` |
@@ -977,6 +1019,13 @@ backupme db check [--full] [--repair] [--json]
 backupme db snapshot [--json]
 backupme db restore [--json]         # no options; consensus from replicas
 backupme db rebuild [--json]
+backupme db recover-from-manifests BACKEND [--into PATH] [--verify full|none]
+                             [--dry-run] [--json]
+                             # rebuilds a NEW sqlite file from the ARCHIVE
+                             # manifest sidecars on BACKEND; never opens the
+                             # live DB; refuses an existing non-empty --into;
+                             # --verify full downloads + decompress + sha256
+                             # checks every chunk's plaintext before writing
 backupme db oplog [--pending] [--json]
 backupme db info [--json]
 backupme db cold-export [--dry-run] [--json]

@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Archives{% endblock %}
+{% block breadcrumb %}Archives{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1><i data-lucide="package-open" style="width:28px;height:28px;"></i> Archives</h1>
+  <div class="page-header-actions">
+    <button class="btn btn-secondary btn-sm" onclick="loadArchives()">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> Refresh
+    </button>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-icon blue">
+      <i data-lucide="package-open" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Archives</div>
+    <div class="stat-value" id="ar-total">{{ total }}</div>
+    <div class="stat-sub">virtual manifests (never stored whole)</div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <span class="card-title">Virtual Archives</span>
+    <span class="badge badge-gray" id="ar-badge">{{ archives|length }} shown</span>
+  </div>
+  {% if archives %}
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr><th>Fingerprint</th><th>Format</th><th>Original Name</th><th>Members</th><th>Uncompressed</th><th>Created</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+        {% for a in archives %}
+        <tr>
+          <td class="font-mono text-xs" title="{{ a.fingerprint }}">{{ a.fingerprint[:16] }}…</td>
+          <td><span class="badge badge-gray">{{ a.format }}</span></td>
+          <td class="text-sm">{{ a.original_name }}</td>
+          <td>{{ a.member_count }}</td>
+          <td class="text-sm" data-bytes="{{ a.total_uncompressed }}">{{ a.total_uncompressed }} B</td>
+          <td class="text-xs text-muted">{{ a.created_at }}</td>
+          <td>
+            <button class="btn btn-ghost btn-xs" onclick="viewMembers({{ a.id }}, '{{ a.fingerprint[:12] }}')">
+              <i data-lucide="list" style="width:12px;height:12px;"></i> Members
+            </button>
+            <button class="btn btn-ghost btn-xs" onclick="openRestore('{{ a.fingerprint }}')">
+              <i data-lucide="download" style="width:12px;height:12px;"></i> Restore
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding: 2rem;">
+    <p>No archives ingested yet — extract-first ingest records archives here.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="grid-2 mb-4">
+  <!-- Restore -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Restore Archive</span>
+    </div>
+    <div class="card-body">
+      <p class="text-xs text-muted" style="margin-bottom: 0.5rem;">
+        Writes every member (sha-verified) to a folder on the server.
+        A nested archive member restores as a directory at its path.
+      </p>
+      <div style="margin-bottom: 0.5rem;">
+        <input type="text" id="ar-restore-fp" autocomplete="off"
+               class="font-mono" style="font-size:0.75rem; padding:4px 8px; height:32px; width:100%;"
+               placeholder="fingerprint (full or unique prefix)">
+      </div>
+      <div style="margin-bottom: 0.75rem;">
+        <input type="text" id="ar-restore-dest" autocomplete="off"
+               style="font-size:0.8rem; padding:4px 8px; height:32px; width:100%;"
+               placeholder="destination path on the server, e.g. D:/restores/arch">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="submitRestore(this)">
+        <i data-lucide="download" style="width:14px;height:14px;"></i> Restore
+      </button>
+    </div>
+  </div>
+
+  <!-- Members browser -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Members</span>
+      <span class="badge badge-gray" id="ar-members-badge">select an archive</span>
+    </div>
+    <div class="card-body">
+      <div id="ar-members">
+        <div class="empty-state" style="padding: 1.5rem;"><p>Click Members on an archive row</p></div>
+      </div>
+      <div class="flex justify-between" style="margin-top: 0.5rem;">
+        <button class="btn btn-ghost btn-xs" onclick="membersPage(-1)">← Prev</button>
+        <button class="btn btn-ghost btn-xs" onclick="membersPage(1)">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const MEMBER_PAGE_SIZE = 100;
+  let memberState = { id: null, offset: 0 };
+
+  function humanBytes(n) {
+    if (n === null || n === undefined) return '-';
+    return App.formatBytes(Number(n));
+  }
+
+  async function loadArchives() {
+    window.location.reload();
+  }
+
+  function memberTable(items) {
+    if (!items.length) {
+      return '<div class="empty-state" style="padding: 1.5rem;"><p>No members on this page</p></div>';
+    }
+    let h = '<div class="table-wrapper"><table><thead><tr><th>Path</th><th>Size</th><th>Kind</th></tr></thead><tbody>';
+    for (const m of items) {
+      const kind = m.nested_archive
+        ? '<span class="badge badge-gray" title="' + App.escapeHtml(m.nested_archive) + '">nested archive</span>'
+        : '<span class="badge badge-green">file</span>';
+      h += '<tr>' +
+        '<td class="font-mono text-xs">' + App.escapeHtml(m.relative_path) + '</td>' +
+        '<td class="text-sm">' + humanBytes(m.member_size) + '</td>' +
+        '<td>' + kind + '</td></tr>';
+    }
+    return h + '</tbody></table></div>';
+  }
+
+  async function viewMembers(id, shortFp) {
+    memberState = { id: id, offset: 0 };
+    await fetchMembers();
+  }
+
+  async function fetchMembers() {
+    if (!memberState.id) return;
+    const data = await App.fetchAPI('/api/archives/' + memberState.id +
+                                    '?limit=' + MEMBER_PAGE_SIZE +
+                                    '&offset=' + memberState.offset);
+    document.getElementById('ar-members').innerHTML = memberTable(data.members);
+    const badge = document.getElementById('ar-members-badge');
+    badge.textContent = data.total + ' member(s)';
+    badge.className = 'badge ' + (data.total > 0 ? 'badge-gray' : 'badge-yellow');
+  }
+
+  function membersPage(delta) {
+    if (!memberState.id) return;
+    memberState.offset = Math.max(0, memberState.offset + delta * MEMBER_PAGE_SIZE);
+    fetchMembers();
+  }
+
+  function openRestore(fp) {
+    document.getElementById('ar-restore-fp').value = fp;
+    document.getElementById('ar-restore-dest').focus();
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  }
+
+  async function submitRestore(btn) {
+    const fp = document.getElementById('ar-restore-fp').value.trim();
+    const dest = document.getElementById('ar-restore-dest').value.trim();
+    if (!fp || !dest) {
+      App.Toast.error('Fingerprint and destination path are required');
+      return;
+    }
+    App.Modal.confirm(
+      'Restore archive?',
+      'Every member will be written (sha-verified) under ' + dest +
+      ' on the server. Existing files at those paths may be overwritten.',
+      async () => {
+        btn.disabled = true;
+        try {
+          const resp = await App.fetchAPI('/api/archives/restore', {
+            method: 'POST',
+            body: JSON.stringify({ fingerprint: fp, dest_path: dest, confirm: true }),
+          });
+          if (resp.status === 'ok') {
+            App.Toast.success('Restored ' + resp.members + ' member(s) to ' + resp.out);
+          } else {
+            App.Toast.error('Restore finished with ' + resp.errors + ' error(s)');
+          }
+        } catch (e) { /* fetchAPI already toasted the error */ }
+        finally { btn.disabled = false; }
+      },
+      'Restore', true);
+  }
+
+  if (window.lucide) lucide.createIcons();
+</script>
+{% endblock %}

@@ -37,6 +37,10 @@
           <i data-lucide="archive"></i>
           <span>Ingest</span>
         </a>
+        <a href="/archives" class="nav-link {% if request.url.path.startswith('/archives') %}active{% endif %}">
+          <i data-lucide="package-open"></i>
+          <span>Archives</span>
+        </a>
         <a href="/backends" class="nav-link {% if request.url.path == '/backends' %}active{% endif %}">
           <i data-lucide="database"></i>
           <span>Backends</span>

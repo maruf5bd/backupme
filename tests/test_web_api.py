@@ -106,12 +106,17 @@ SWEEP_PATHS = {
     "/api/health/issues",
     "/api/health/same-name",
     "/api/health/purge-candidates",
+    "/api/archives",
+    "/api/archives/{archive_id}",
 }
 
 # Requested instead of the bare template where the bare call is a
 # documented 400-by-design (see the error-shape group below).
 REQUEST_OVERRIDES = {
     "/api/ingest/generations": "/api/ingest/generations?account=ghost",
+    # /api/archives/{archive_id} needs a REAL archive row: the seeded fixture
+    # below inserts one (id 1) so the sweep hits the detail contract.
+    "/api/archives/{archive_id}": "/api/archives/1",
 }
 
 # Extra query-string variants exercised on top of the bare templates
@@ -337,7 +342,25 @@ def seeded(env, backends):
 
     result = backup_bytes(Path(env), "seed/delta.txt", b"delta content 123", backends)
     file_id = result["file_id"]
+    # One archive row (dashboard Archives surface, Phase 2) so the sweep can
+    # resolve /api/archives/{archive_id}; the member references an existing
+    # direct row to keep this insert cheap (no engine run).
+    with write_txn() as conn:
+        cur = conn.execute(
+            "INSERT INTO archives (fingerprint, format, original_name, "
+            "original_size, member_count, total_uncompressed) "
+            "VALUES (?, 'tar.gz', 'seed.tar.gz', 1234, 1, 17)",
+            (_sha("b08-archive-fp"),),
+        )
+        archive_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO archive_members (archive_id, relative_path, file_id, "
+            "member_sha256, member_size, mtime, nested_archive) "
+            "VALUES (?, 'docs/one.txt', ?, ?, 17, 0, NULL)",
+            (archive_id, direct_ids[0], _sha("b08-archive-member")),
+        )
     return {
+        "archive_id": archive_id,
         "env": env,
         "file_id": file_id,
         "sha256": _db_scalar("SELECT sha256 FROM files WHERE id = ?", (file_id,)),
