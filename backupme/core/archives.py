@@ -20,11 +20,11 @@ archive is recorded as a VIRTUAL manifest:
   MAX_TOTAL_UNCOMPRESSED uncompressed bytes per archive (nested members'
   uncompressed totals count toward the parent's budget).
 - FALLBACK RULE (never lose data): corrupt archive, encrypted/password
-  archive, unsupported format (rar/7z in Phase 1), any extraction error or
-  cap exceeded → the file takes the EXISTING whole-blob path exactly as
-  today and the result reports ``stored_whole`` with the reason. For a
-  nested member the fallback keeps the nested file's bytes and uploads them
-  as a regular member of the parent.
+  archive, unsupported format (rar with no extractor tool installed), any
+  extraction error or cap exceeded → the file takes the EXISTING whole-blob
+  path exactly as today and the result reports ``stored_whole`` with the
+  reason. For a nested member the fallback keeps the nested file's bytes and
+  uploads them as a regular member of the parent.
 - MANIFEST SIDECAR (DB-loss insurance): after a successful ingest a JSON
   restore recipe is written to EVERY target backend at
   ``manifests/<fp[:2]>/<fp[2:4]>/<fp>.json``. Skipped when encryption is
@@ -38,6 +38,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import tarfile
 import tempfile
 import zipfile
@@ -73,13 +74,87 @@ _TAR_OPEN_MODE = {
 }
 
 _ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
-# Known archive formats WITHOUT extract-first support in Phase 1: a file with
-# one of these magics is reported as stored_whole (unsupported) and uploaded
-# through the normal whole-blob path.
-_UNSUPPORTED_MAGICS = (
-    (b"Rar!\x1a\x07", "rar"),
-    (b"7z\xbc\xaf\x27\x1c", "7z"),
+_SEVENZIP_MAGIC = b"7z\xbc\xaf\x27\x1c"
+_RAR_MAGIC = b"Rar!\x1a\x07"  # rar4 and rar5 share the first 6 bytes
+
+
+# ---------------------------------------------------------------------------
+# Optional extractors (Phase 2a: 7z via py7zr, rar via an external tool)
+# ---------------------------------------------------------------------------
+
+# py7zr availability is resolved once per process. find_spec() does NOT
+# import the package, so detection stays cheap for the CLI startup path; the
+# real import happens lazily inside the 7z functions.
+_py7zr_checked = False
+_py7zr_available = False
+
+
+def _have_py7zr() -> bool:
+    global _py7zr_checked, _py7zr_available
+    if not _py7zr_checked:
+        import importlib.util
+
+        _py7zr_available = importlib.util.find_spec("py7zr") is not None
+        _py7zr_checked = True
+    return _py7zr_available
+
+
+def _import_py7zr():
+    """Import py7zr lazily; a missing/broken install raises ArchiveFallback."""
+    try:
+        import py7zr
+    except Exception as e:  # pragma: no cover - depends on a broken install
+        raise ArchiveFallback(f"py7zr could not be imported: {e}") from e
+    return py7zr
+
+
+# rar has no maintained pure-Python extractor, so extraction goes through an
+# external tool: unrar (preferred, the reference implementation) or 7z. The
+# lookup runs ONCE per process and covers PATH plus the common install dirs.
+_RAR_TOOL: dict | None = None
+_rar_tool_resolved = False
+
+_RAR_TOOL_CANDIDATES = (
+    ("unrar", ("unrar",)),
+    ("unrar", r"C:\Program Files\WinRAR\UnRAR.exe"),
+    ("unrar", r"C:\Program Files (x86)\WinRAR\UnRAR.exe"),
+    ("7z", ("7z",)),
+    ("7z", r"C:\Program Files\7-Zip\7z.exe"),
+    ("7z", r"C:\Program Files (x86)\7-Zip\7z.exe"),
 )
+
+_RAR_TOOL_TIMEOUT = 600  # seconds for one rar extraction
+
+# Keep helper windows from flashing when spawning the extractor.
+_SUBPROCESS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def find_rar_tool() -> dict | None:
+    """Locate a rar extractor (cached: at most once per process).
+
+    Returns ``{"kind": "unrar" | "7z", "path": <executable>}`` or None when
+    no tool exists — in which case rar stays an unsupported format and takes
+    the whole-blob fallback.
+    """
+    global _RAR_TOOL, _rar_tool_resolved
+    if not _rar_tool_resolved:
+        for kind, candidate in _RAR_TOOL_CANDIDATES:
+            if isinstance(candidate, tuple):
+                path = shutil.which(candidate[0])
+            else:
+                path = candidate if os.path.isfile(candidate) else None
+            if path:
+                _RAR_TOOL = {"kind": kind, "path": os.path.abspath(path)}
+                break
+        _rar_tool_resolved = True
+    return _RAR_TOOL
+
+
+def reset_rar_tool_cache() -> None:
+    """Forget the cached rar-tool lookup (used by tests)."""
+    global _RAR_TOOL, _rar_tool_resolved
+    _RAR_TOOL = None
+    _rar_tool_resolved = False
 
 
 class ArchiveFallback(Exception):
@@ -138,7 +213,13 @@ def sanitize_member(name: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _format_from_magic(head: bytes) -> str | None:
-    """Archive format suggested by magic bytes alone, or None."""
+    """Archive format suggested by magic bytes alone, or None.
+
+    7z counts as a format only while the py7zr library is importable, and rar
+    only while an extractor tool exists — without their extractors those
+    magics return None so the file falls through to
+    ``unsupported_archive_format`` (explicit stored_whole reason).
+    """
     if head.startswith(_ZIP_MAGICS):
         return "zip"
     if head.startswith(b"\x1f\x8b"):
@@ -149,6 +230,10 @@ def _format_from_magic(head: bytes) -> str | None:
         return "tar.xz"
     if len(head) >= 262 and head[257:262] == b"ustar":
         return "tar"
+    if head.startswith(_SEVENZIP_MAGIC):
+        return "7z" if _have_py7zr() else None
+    if head.startswith(_RAR_MAGIC):
+        return "rar" if find_rar_tool() is not None else None
     return None
 
 
@@ -165,7 +250,9 @@ def detect_archive_format(path: str) -> str | None:
     tar stream is actually inside. Zip is classified by magic alone: a
     truncated/corrupt zip must still be recognized as an archive ATTEMPT so it
     takes the whole-blob fallback with an explicit reason (never silently
-    stored without a word).
+    stored without a word). 7z/rar are classified only while their extractor
+    is available (py7zr / an unrar or 7z tool); otherwise they stay
+    unrecognized here and ``unsupported_archive_format`` reports them.
     """
     try:
         head = _head_of(path)
@@ -181,14 +268,21 @@ def detect_archive_format(path: str) -> str | None:
 
 
 def unsupported_archive_format(path: str) -> str | None:
-    """Name of a KNOWN archive format we cannot extract (rar/7z), else None."""
+    """Name of a KNOWN archive format we cannot extract, else None.
+
+    The returned string names the missing piece (py7zr / an extractor tool)
+    so the whole-blob fallback reason explains itself: a 7z file is
+    unsupported only when the py7zr library is missing, a rar file only when
+    no unrar/7z tool exists on the machine.
+    """
     try:
         head = _head_of(path)
     except OSError:
         return None
-    for magic, name in _UNSUPPORTED_MAGICS:
-        if head.startswith(magic):
-            return name
+    if head.startswith(_SEVENZIP_MAGIC) and not _have_py7zr():
+        return "7z: py7zr not installed"
+    if head.startswith(_RAR_MAGIC) and find_rar_tool() is None:
+        return "rar: no extractor found (install unrar or 7z, or WinRAR)"
     return None
 
 
@@ -440,11 +534,227 @@ def _plan_zip(path: str, depth: int, budget: Budget,
             plan.entries.append(entry)
 
 
+def _plan_member_file(staged: Path, sanitized: str, size: int, mtime: float,
+                      depth: int, budget: Budget, plan: ArchivePlan,
+                      ctx: IngestContext) -> MemberPlan:
+    """Plan one member whose bytes are ALREADY on disk (7z/rar staging).
+
+    Same rules as :func:`_plan_member_stream`: the member and any nested
+    archive's totals count toward the parent budget, nested candidates
+    recurse with the scoped fallback (a failed nested ingest keeps the
+    member's bytes whole). Every member keeps ``staged_path`` so the upload
+    pass reads straight from the extraction staging dir — the container is
+    never opened a second time.
+    """
+    _check_budget(budget, 1, size)
+    hasher = hashlib.sha256()
+    with open(staged, "rb") as f:
+        head = f.read(_MAGIC_PEEK)
+        hasher.update(head)
+        while True:
+            block = f.read(_COPY_BLOCK)
+            if not block:
+                break
+            hasher.update(block)
+    head_fmt = _format_from_magic(head)
+
+    if head_fmt is None:
+        return MemberPlan(path=sanitized, sha256=hasher.hexdigest(),
+                          size=size, mtime=mtime, staged_path=staged)
+    if depth >= MAX_DEPTH:
+        # Depth cap: keep the nested archive's bytes as a regular member
+        # (fallback rule — the file itself is still preserved whole).
+        log.warning("nesting depth cap (%d) reached inside %s — member %r "
+                    "will be stored whole", MAX_DEPTH, plan.format, sanitized)
+        return MemberPlan(path=sanitized, sha256=hasher.hexdigest(),
+                          size=size, mtime=mtime, staged_path=staged)
+
+    inner = _ingest_archive(str(staged), head_fmt, ctx,
+                            original_name=sanitized, depth=depth + 1,
+                            fallback_upload=False)
+    if inner.get("status") == "archive_ingested":
+        # The nested archive's uncompressed total counts toward the parent's
+        # budget; its own members carry the content, so the staged container
+        # bytes are no longer needed.
+        _check_budget(budget, inner.get("member_count", 0),
+                      inner.get("total_uncompressed", 0))
+        staged.unlink(missing_ok=True)
+        log.info("nested archive %r -> %s (%d members)", sanitized,
+                 inner["fingerprint"][:16], inner.get("member_count", 0))
+        return MemberPlan(path=sanitized, sha256=hasher.hexdigest(),
+                          size=size, mtime=mtime,
+                          nested_archive=inner["fingerprint"])
+    # Inner archive could not be extracted (corrupt/caps): keep its bytes
+    # and upload them as a regular member of the parent (fallback rule).
+    log.warning("nested archive %r falls back to whole-file (%s)",
+                sanitized, inner.get("reason"))
+    return MemberPlan(path=sanitized, sha256=hasher.hexdigest(),
+                      size=size, mtime=mtime, staged_path=staged)
+
+
+def _plan_extracted_dir(extract_dir: Path, depth: int, budget: Budget,
+                        plan: ArchivePlan, ctx: IngestContext,
+                        expected_names: set[str] | None = None) -> None:
+    """Plan members from files already extracted into ``extract_dir``.
+
+    Shared by the 7z (py7zr) and rar (external tool) routes: the staging dir
+    is walked, every regular file is sanitized, hashed and recursed like the
+    tar/zip routes. With ``expected_names`` (the 7z route), every planned
+    member must have materialized on disk and anything EXTRA on disk is
+    treated as a duplicate-name artifact (py7zr renames duplicates to
+    ``<name>_0``): first copy wins, duplicates are counted — mirroring the
+    zip route.
+    """
+    seen: set[str] = set()
+    for root, dirs, files in os.walk(extract_dir):
+        dirs.sort()
+        for fn in sorted(files):
+            staged = Path(root) / fn
+            if staged.is_symlink():
+                continue  # never ingest a link as a regular member
+            rel = staged.relative_to(extract_dir).as_posix()
+            sanitized = sanitize_member(rel)
+            if sanitized is None:
+                log.warning("rejecting unsafe extracted path %r", rel)
+                plan.unsafe_names += 1
+                continue
+            if sanitized in seen:
+                plan.duplicate_names += 1
+                continue
+            if expected_names is not None and sanitized not in expected_names:
+                plan.duplicate_names += 1
+                continue
+            seen.add(sanitized)
+            stat = staged.stat()
+            entry = _plan_member_file(
+                staged, sanitized, stat.st_size, stat.st_mtime,
+                depth, budget, plan, ctx)
+            plan.entries.append(entry)
+    if expected_names is not None:
+        missing = expected_names - seen
+        if missing:
+            raise ArchiveFallback(
+                f"{len(missing)} 7z member(s) missing after extraction "
+                f"(e.g. {sorted(missing)[0]!r})")
+
+
+def _plan_sevenzip(path: str, depth: int, budget: Budget,
+                   plan: ArchivePlan, ctx: IngestContext) -> None:
+    """7z route: py7zr plans from list() metadata, then extracts to staging.
+
+    Caps fire BEFORE any extraction: member count and uncompressed sizes
+    come from the archive header (list()), so a budget abort never writes a
+    single extracted byte. Unsafe member names are skipped and counted (the
+    cpanel/zip rule); they are excluded from the extraction targets, so
+    py7zr never even attempts them. Encrypted (header or content password)
+    and corrupt 7z raise ArchiveFallback → whole-blob fallback.
+    """
+    py7zr = _import_py7zr()
+    try:
+        archive = py7zr.SevenZipFile(path, "r")
+    except py7zr.exceptions.PasswordRequired as e:
+        raise ArchiveFallback(
+            "password-protected 7z (encrypted header)") from e
+    except py7zr.exceptions.Bad7zFile as e:
+        raise ArchiveFallback(f"corrupt 7z archive: {e}") from e
+
+    with archive:
+        if archive.needs_password():
+            raise ArchiveFallback("encrypted or password-protected 7z")
+        # Pass 1: header metadata only — sanitize, dedup, and cap checks
+        # with a throwaway budget so caps abort BEFORE extraction.
+        planned: list[tuple[str, str, int]] = []  # (raw name, sanitized, size)
+        pre_budget = Budget()
+        for info in archive.list():
+            if info.is_directory or info.is_symlink or not info.is_file:
+                continue  # dirs/links/sockets: nothing to hash
+            raw = info.filename
+            size = int(info.uncompressed or 0)
+            sanitized = sanitize_member(raw)
+            if sanitized is None:
+                log.warning("rejecting unsafe member name %r in %s", raw, path)
+                plan.unsafe_names += 1
+                continue
+            if any(sanitized == s for _, s, _ in planned):
+                plan.duplicate_names += 1
+                continue
+            planned.append((raw, sanitized, size))
+            _check_budget(pre_budget, 1, size)
+
+        # Pass 2: extract the planned members to a staging dir.
+        extract_dir = _stage_temp(plan) / "7z"
+        extract_dir.mkdir(parents=True)
+        if planned:
+            try:
+                archive.extract(path=str(extract_dir),
+                                targets=[raw for raw, _, _ in planned])
+            except py7zr.exceptions.PasswordRequired as e:
+                raise ArchiveFallback(
+                    "encrypted or password-protected 7z") from e
+
+        # Pass 3: hash + recurse from the extracted files on disk.
+        _plan_extracted_dir(extract_dir, depth, budget, plan, ctx,
+                            expected_names={s for _, s, _ in planned})
+
+
+def _rar_tool_argv(tool: dict, archive: str, extract_dir: Path) -> list[str]:
+    """Extractor command line: absolute archive argument, destination inside
+    the staging dir, no shell. ``-p-``/``-p`` keep an encrypted rar from
+    prompting (it fails instead — the fallback stores it whole)."""
+    arc = str(Path(archive).resolve())
+    dest = str(extract_dir.resolve())
+    if tool["kind"] == "unrar":
+        # unrar x -y -p- <archive> <dest>\ — the TRAILING SEPARATOR is
+        # required: without it unrar treats the destination as a file mask
+        # ("No files to extract").
+        return [tool["path"], "x", "-y", "-p-", arc, dest + os.sep]
+    # 7z: x -y -p -o<dest> <archive>
+    return [tool["path"], "x", "-y", "-p", f"-o{dest}", arc]
+
+
+def _plan_rar(path: str, depth: int, budget: Budget,
+              plan: ArchivePlan, ctx: IngestContext) -> None:
+    """rar route: extract with an external tool, then plan from the staging
+    dir. Any tool failure (corrupt or password-protected rar, missing tool)
+    raises ArchiveFallback → the whole rar is stored through the normal
+    whole-blob path."""
+    tool = find_rar_tool()
+    if tool is None:
+        raise ArchiveFallback(
+            "no rar extractor found (install unrar or 7z, or WinRAR)")
+    extract_dir = _stage_temp(plan) / "rar"
+    extract_dir.mkdir(parents=True)
+    argv = _rar_tool_argv(tool, path, extract_dir)
+    log.info("extracting rar with %s (%s)", tool["kind"], tool["path"])
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, cwd=str(extract_dir),
+            stdin=subprocess.DEVNULL, timeout=_RAR_TOOL_TIMEOUT,
+            creationflags=_SUBPROCESS_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise ArchiveFallback(
+            f"rar extraction timed out after {_RAR_TOOL_TIMEOUT}s") from e
+    if proc.returncode != 0:
+        output = (proc.stderr or proc.stdout or b"").decode(
+            "utf-8", errors="replace")
+        detail = output.strip().splitlines()
+        tail = detail[-1][:200] if detail else "no output"
+        raise ArchiveFallback(
+            f"rar extraction failed ({tool['kind']} exit "
+            f"{proc.returncode}): {tail}")
+    _plan_extracted_dir(extract_dir, depth, budget, plan, ctx)
+
+
 def _plan_container(path: str, fmt: str, depth: int, budget: Budget,
                     plan: ArchivePlan, ctx: IngestContext) -> None:
     try:
         if fmt == "zip":
             _plan_zip(path, depth, budget, plan, ctx)
+        elif fmt == "7z":
+            _plan_sevenzip(path, depth, budget, plan, ctx)
+        elif fmt == "rar":
+            _plan_rar(path, depth, budget, plan, ctx)
         else:
             _plan_tar(path, fmt, depth, budget, plan, ctx)
     except ArchiveFallback:
@@ -804,7 +1114,12 @@ def ingest_archive_file(
         relative_path=relative_path)
     archive_format = detect_archive_format(path)
     if archive_format is None:
-        return _fallback_whole(path, context, "not a recognized archive format")
+        # A KNOWN-but-unextractable format (7z without py7zr, rar without an
+        # extractor tool) reports the missing piece; anything else is simply
+        # not an archive.
+        reason = unsupported_archive_format(path)
+        return _fallback_whole(
+            path, context, reason or "not a recognized archive format")
     return _ingest_archive(path, archive_format, context,
                            original_name=original_name)
 

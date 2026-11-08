@@ -310,9 +310,18 @@ def test_rar_named_file_stored_whole_via_cli(env):
     source = payload["sources"][0]
     assert source["status"] == "stored_whole"
     assert "rar" in source["reason"]
-    # It still took the normal whole-blob path (per-file entry as usual).
-    assert payload["files"], "expected the normal upload entry"
-    assert payload["files"][0]["status"] == "ok"
+    # Phase 2a: WITH an extractor tool installed, the rar goes through the
+    # archive engine, whose fallback stores it whole (no separate per-file
+    # entry); WITHOUT a tool it stays unsupported and the normal whole-blob
+    # flow uploads it (per-file entry as usual). Either way the rar's bytes
+    # are stored and no virtual manifest exists.
+    if not payload["files"]:
+        whole = execute(
+            "SELECT id FROM files WHERE relative_path = 'photos.rar' "
+            "AND deleted_at IS NULL").fetchone()
+        assert whole is not None, "expected the rar stored via the engine fallback"
+    else:
+        assert payload["files"][0]["status"] == "ok"
     assert execute("SELECT COUNT(*) FROM archives").fetchone()[0] == 0
 
 
