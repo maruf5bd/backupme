@@ -82,6 +82,9 @@ class SchedulerConfig:
     ingest_interval: int = 300
     gc_interval_days: int = 7
     verify_interval_days: int = 1
+    # The scheduled gc tick is report-only unless this is explicitly true —
+    # destructive deletions require operator opt-in (purge-approval rule).
+    gc_apply: bool = False
 
 @dataclass
 class DBLifecycleConfig:

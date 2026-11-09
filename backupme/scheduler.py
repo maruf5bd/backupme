@@ -191,6 +191,11 @@ class BackupScheduler:
             "verify_interval_days": _int("verify_interval_days", 1),
             "purge_grace_days": purge_grace,
             "cold_export_after_days": export_after,
+            # Destructive-action gate: the scheduled gc tick must NEVER delete
+            # without the operator explicitly opting in (AGENTS.md purge rule —
+            # a running daemon silently applying gc was a latent policy
+            # violation; default is report-only).
+            "gc_apply": bool(sc.get("gc_apply", False)),
         }
 
     def start(self):
@@ -400,9 +405,13 @@ class BackupScheduler:
         try:
             from backupme.core import gc as gc_mod
             backends = get_all_backends(self.config)
-            result = gc_mod.run_gc(backends, apply=True)
-            log.info("gc tick: %s", {k: v for k, v in result.items()
-                                     if isinstance(v, (int, str))})
+            sc = self._sched()
+            apply_deletes = sc.get("gc_apply", False)
+            result = gc_mod.run_gc(backends, apply=apply_deletes)
+            log.info("gc tick (%s): %s",
+                     "APPLY" if apply_deletes else "dry-run",
+                     {k: v for k, v in result.items()
+                      if isinstance(v, (int, str))})
         except Exception:
             log.exception("gc tick failed")
         finally:

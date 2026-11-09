@@ -176,6 +176,40 @@ def test_periodic_loop_runs_all_ticks_once(env, backends):
     assert ran == {"gc": True, "verify": True}
 
 
+def test_scheduled_gc_default_is_report_only(env, backends):
+    """The scheduled gc tick must NEVER delete unless scheduler.gc_apply is
+    explicitly true — destructive remote deletions require operator opt-in
+    (purge-approval rule; a daemon silently applying gc was a latent
+    policy violation)."""
+    from backupme.scheduler import BackupScheduler
+    import backupme.core.gc as gc_mod
+
+    calls = []
+
+    def fake_gc(backends_list, apply=False):
+        calls.append(apply)
+        return {}
+
+    orig = gc_mod.run_gc
+    try:
+        gc_mod.run_gc = fake_gc
+
+        cfg = _make_cfg(env)
+        assert cfg["scheduler"]["gc_apply"] is False, \
+            "the default config must be report-only"
+        s = BackupScheduler(cfg)
+        s._run_scheduled_gc()
+        assert calls == [False], "default scheduled gc must not apply deletes"
+
+        cfg2 = _make_cfg(env)
+        cfg2["scheduler"]["gc_apply"] = True
+        s2 = BackupScheduler(cfg2)
+        s2._run_scheduled_gc()
+        assert calls == [False, True], "gc_apply: true must opt in to deletes"
+    finally:
+        gc_mod.run_gc = orig
+
+
 def test_check_staging_budget(env):
     import dataclasses
     from backupme.config import load_config

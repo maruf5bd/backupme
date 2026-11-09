@@ -144,16 +144,14 @@ never lost.
     members are reported as problems and get NO file rows). Files:
     web/routes/archives.py, template, routes/__init__.py, nav,
     core/manifest_recover.py, cli/db_cmd.py, MANUAL.
-- **Phase 3 — IN FLIGHT (2026-11-08, main thread)**: re-ingesting the 20
-  Softaculous .tar.gz archives from their source files through
-  `ingest_archive_file` (targets = K only), three gated phases: A ingest
-  (abort unless every archive returns archive_ingested), B sha-verify
-  (ALL members of the 2 smallest archives + first/last member of every
-  other archive), C soft-delete the 20 old whole-blob rows via
-  `_soft_delete_file()` + op_log audit (core op_log API: append /
-  mark_committed / mark_failed — the web-layer op_log_start/finish wrappers
-  do NOT exist in core). Zero-ref blobs remain physically on K until the
-  user approves `gc --apply`.
+- **Phase 3 — DONE (2026-11-08→10, main thread, op_log op12)**: all 20
+  Softaculous .tar.gz archives ingested extract-first (30 archive rows incl.
+  10 nested zips; ~198k member entries; 12,575 member downloads sha-verified;
+  20 old whole-blob rows soft-deleted via `_soft_delete_file()`). Physical
+  reclaim: completed by the owner's own restore-gated prune campaign
+  (4,062-object audit, sha-gated) — physical audit clean (51,547/51,547
+  referenced blobs on disk). K blob data: ~2.25 GB of whole blobs replaced
+  by ~466 MiB of deduplicated member objects.
 - **Phase 3 — PENDING (user-visible win)**: re-process the 20 Softaculous
   .tar.gz archives already stored on `k backupme-data` (2,258,329,053 B
   stored, saved only 1.0% as whole blobs) through the extractor; unref the

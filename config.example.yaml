@@ -114,6 +114,7 @@ scheduler:
   ingest_interval: 300
   gc_interval_days: 7
   verify_interval_days: 1
+  gc_apply: false             # scheduled gc tick DELETES only when true; default is report-only
 
 notifications:
   on_failure: true
