@@ -475,3 +475,99 @@ def backend_rescan(ctx, name, as_json):
     emit(result, as_json=as_json, human=human)
     if result["missing_on_box"] or result["size_mismatch"]:
         raise SystemExit(1)
+
+
+@backend.command("sync-namespace")
+@click.argument("target")
+@click.option("--source", "sources", multiple=True,
+              help="Restrict source roots to these local backend names "
+                   "(default: all local backend roots)")
+@click.option("--namespace", "namespaces", multiple=True,
+              type=click.Choice(["manifests", "tree", "__backupme_db__"]),
+              help="Restrict to these namespaces (default: all three)")
+@click.option("--dry-run", is_flag=True,
+              help="Scan and report without uploading anything")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def backend_sync_namespace(ctx, target, sources, namespaces, dry_run, as_json):
+    """Copy restore-map namespaces (manifests/tree/__backupme_db__) from
+    local backend roots to backend TARGET so it alone can drive restore."""
+    from pathlib import Path as _Path
+
+    from ..backends import get_backend
+    from ..config import load_config
+    from ..core.namespace_sync import DEFAULT_NAMESPACES, sync_namespace
+
+    cfg = load_config(ctx.obj.get("config_path", "config.yaml"))
+    if not hasattr(cfg, "backends"):
+        out = {"status": "error", "error": "config has no backends section"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    tgt = get_backend(target, cfg)
+    if tgt is None:
+        out = {"status": "error",
+               "error": f"backend '{target}' not found or not connectable"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    local_entries = [b for b in cfg.backends.get("local", []) if getattr(b, "path", None)]
+    known = {b.name: b for b in local_entries}
+    if sources:
+        unknown = [s for s in sources if s not in known]
+        if unknown:
+            out = {"status": "error",
+                   "error": f"unknown source backend(s): {', '.join(unknown)} "
+                            f"(sources must be local backends with a path)"}
+            emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+            raise SystemExit(1)
+        chosen = [known[s] for s in sources]
+    else:
+        chosen = local_entries
+    source_roots = [_Path(b.path) for b in chosen]
+    if not source_roots:
+        out = {"status": "error",
+               "error": "no local source roots resolved from config"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    def _progress(done, total, rel):
+        # Human-mode heartbeat on stderr only; --json stdout stays clean.
+        if total and done % 200 == 0:
+            click.echo(f"  namespace sync {done}/{total}", err=True)
+
+    result = sync_namespace(tgt, source_roots,
+                            namespaces=list(namespaces) or None,
+                            dry_run=dry_run,
+                            progress_cb=None if as_json else _progress)
+    result["target"] = target
+    result["sources"] = [str(p) for p in source_roots]
+    result["namespaces"] = list(namespaces) or list(DEFAULT_NAMESPACES)
+    result["dry_run"] = bool(dry_run)
+
+    def human(d):
+        if d.get("status") == "error":
+            click.echo(d["error"])
+            return
+        if d.get("dry_run"):
+            click.echo(f"sync-namespace -> {d['target']}: scanned {d['scanned']}, "
+                       f"would upload {d.get('would_upload', 0)} "
+                       f"({_fmt_bytes(d.get('would_upload_bytes', 0))}), "
+                       f"skipped {d['skipped_existing']}, "
+                       f"failed {len(d['failed'])}")
+        else:
+            click.echo(f"sync-namespace -> {d['target']}: scanned {d['scanned']}, "
+                       f"uploaded {d['uploaded']} ({_fmt_bytes(d['bytes_uploaded'])}), "
+                       f"skipped {d['skipped_existing']}, failed {len(d['failed'])}")
+        if d["conflicts"]["count"]:
+            click.echo(f"  conflicts: {d['conflicts']['count']} (first source wins)")
+            for ex in d["conflicts"]["examples"]:
+                click.echo(f"    {ex}")
+        for f in d["failed"][:10]:
+            click.echo(f"  failed: {f['path']}: {f['error']}")
+        if len(d["failed"]) > 10:
+            click.echo(f"  ... and {len(d['failed']) - 10} more")
+
+    emit(result, as_json=as_json, human=human)
+    if result.get("status") != "ok":
+        raise SystemExit(1)

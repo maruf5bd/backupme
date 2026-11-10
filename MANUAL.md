@@ -977,6 +977,7 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 | `backupme verify` | Restore-and-hash verification (exit 1 on failure) | `backupme verify --count 10` |
 | `backupme health` | Data health summary (broken files, purge candidates) | `backupme health --json` |
 | `backupme backend rescan NAME` | Walk a backend, diff vs index (exit 1 on missing/mismatch) | `backupme backend rescan storagebox` |
+| `backupme backend sync-namespace TARGET` | Copy manifests/tree/__backupme_db__ namespaces to TARGET (additive, idempotent; exit 1 on failures) | `backupme backend sync-namespace storagebox` |
 | `backupme report verify` | Run an integrity check, store a report | `backupme report verify --count 10` |
 | `backupme convert BACKEND` | Convert backend storage layout | `backupme convert ftp --delete --resume` |
 | `backupme db check` | Database integrity (read-only unless `--repair`) | `backupme db check --full` |

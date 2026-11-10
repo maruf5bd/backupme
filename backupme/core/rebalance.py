@@ -28,12 +28,19 @@ def _checkpoint_file(target_backend: str) -> Path:
 
 
 def _top_level_missing(target_backend: str):
-    """Blobs missing on the target: anti-join, excluding bundle member rows."""
+    """Blobs missing on the target: anti-join, excluding bundle member rows.
+
+    Only REFERENCED blobs are planned — unreferenced blobs are gc candidates,
+    and replicating them would spread garbage to a new backend (D14 fill run
+    showed 29,620 such ids). Bundle member rows ride their parent, which the
+    NOT LIKE filter handles by copying parents instead.
+    """
     return execute(
         """SELECT b.blob_id, b.pt_size
            FROM blobs b
-           WHERE b.blob_id NOT IN (
-                     SELECT blob_id FROM blob_storage WHERE backend_name = ?)
+           WHERE b.ref_count > 0
+             AND b.blob_id NOT IN (
+                         SELECT blob_id FROM blob_storage WHERE backend_name = ?)
              AND b.blob_id NOT LIKE 'bundle/%/%/%/%'
            ORDER BY b.first_seen ASC, b.blob_id ASC""",
         (target_backend,),

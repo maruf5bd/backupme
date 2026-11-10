@@ -1,4 +1,3 @@
-import hashlib
 import tempfile
 from pathlib import Path
 
@@ -10,6 +9,9 @@ from backupme.core import crypto as crypto_mod
 from backupme.backends import get_backend
 from backupme.core.downloader import _find_chunk_storage
 from backupme.core.uploader import _do_upload
+from backupme.log import get_logger
+
+log = get_logger("mirror")
 
 
 def replicate_to_n(blob_id: str, target_backends: list, config: dict) -> int:
@@ -19,13 +21,30 @@ def replicate_to_n(blob_id: str, target_backends: list, config: dict) -> int:
     if not needed:
         return 0
 
-    source_row = storage_rows[0]
-    bk = get_backend(source_row["backend_name"], config)
-    if bk is None:
+    # Source resilience (D14 lesson): the newest row can point at a depleted
+    # store. Try every row newest-first and fall through to the next copy
+    # when a source is unreadable; only give up when no copy downloads.
+    source_row = None
+    tmp = None
+    for candidate in storage_rows:
+        bk = get_backend(candidate["backend_name"], config)
+        if bk is None:
+            continue
+        attempt = Path(tempfile.mkdtemp()) / "replicate"
+        try:
+            bk.download(candidate["storage_path"], str(attempt))
+        except Exception as e:
+            log.warning("replicate %s: source %s/%s unreadable: %s",
+                        blob_id[:16], candidate["backend_name"],
+                        candidate["storage_path"][:60], e)
+            attempt.unlink(missing_ok=True)
+            _rmdir_quiet(attempt.parent)
+            continue
+        tmp = attempt
+        source_row = candidate
+        break
+    if source_row is None or tmp is None:
         return 0
-
-    tmp = Path(tempfile.mkdtemp()) / "replicate"
-    bk.download(source_row["storage_path"], str(tmp))
 
     replicated = 0
     for target in needed:
@@ -46,7 +65,15 @@ def replicate_to_n(blob_id: str, target_backends: list, config: dict) -> int:
 
     commit()
     tmp.unlink(missing_ok=True)
+    _rmdir_quiet(tmp.parent)
     return replicated
+
+
+def _rmdir_quiet(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        pass
 
 
 def mirror_file(file_id: int, target_backends: list, source_backend: str, config: dict) -> dict:

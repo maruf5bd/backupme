@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from backupme.core import rebalance as rb
-from backupme.core.database import execute
+from backupme.core.database import commit, execute
 from tests.helpers import backup_bytes
 
 
@@ -36,15 +36,37 @@ def _cfg(env):
 def test_plan_rebalance_matches_antijoin(two_backend_env):
     r = _ingest_only_on_first(two_backend_env)
     plan = rb.plan_rebalance("second")
-    # Anti-join reference: same predicate, direct SQL.
+    # Anti-join reference: same predicate (referenced only), direct SQL.
     expected = execute(
         """SELECT COUNT(*) FROM blobs b
-           WHERE b.blob_id NOT IN (SELECT blob_id FROM blob_storage WHERE backend_name = 'second')
+           WHERE b.ref_count > 0
+             AND b.blob_id NOT IN (SELECT blob_id FROM blob_storage WHERE backend_name = 'second')
              AND b.blob_id NOT LIKE 'bundle/%/%/%/%'"""
     ).fetchone()[0]
     assert plan["blobs"] == expected
     assert plan["blobs"] >= 1  # at least the uploaded blob
     assert plan["bytes"] > 0
+
+
+def test_plan_rebalance_excludes_unreferenced_blobs(two_backend_env):
+    _ingest_only_on_first(two_backend_env)
+    # an unreferenced blob missing on the target must NOT be planned
+    execute(
+        "INSERT INTO blobs (blob_id, pt_size, ref_count) VALUES ('deadbeef' || ?1 || ?1, 10, 0)",
+        ("0" * 28,),
+    )
+    commit()
+    plan = rb.plan_rebalance("second")
+    ids = execute(
+        "SELECT blob_id FROM blobs WHERE blob_id LIKE 'deadbeef%'"
+    ).fetchall()
+    assert len(ids) == 1
+    assert plan["blobs"] == execute(
+        """SELECT COUNT(*) FROM blobs b
+           WHERE b.ref_count > 0
+             AND b.blob_id NOT IN (SELECT blob_id FROM blob_storage WHERE backend_name = 'second')
+             AND b.blob_id NOT LIKE 'bundle/%/%/%/%'"""
+    ).fetchone()[0]
 
 
 def test_rebalance_copies_all_blobs_and_records_rows(two_backend_env):

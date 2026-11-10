@@ -313,3 +313,8 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   box remains nil and its "0 orphans" is unverified. Box holds ~3 blobs per update 10, so
   exposure is minimal, but any future box onboarding should create the prefixes or teach
   the walk to tolerate their absence loudly (it does log the skip — B09 compliant).
+
+
+## 2026-11-10 (update 17)
+
+- **Box-fill planning uncovered D14 (CRITICAL): store depletion + wrong hostraj root.** The configured hostraj Gdrive root (H:\Backupme) is physically near-empty (23 files); the real store sits at H:\New folder\backupme (3,301 objects, 64.3 GiB, mostly bundle parents). Full physical audit: 75,956 of 111,923 referenced blobs have sources after counting legacy stores; 35,967 (124.8 GiB pt) do not. The owner restore campaign has no deletion code and audited only 4,062 deletes, so the bulk depletion is unexplained by any audited channel. Insurance exists: D:\restore-all-backupme holds 254,701 sha-verified restored files; 84,028 campaign restores failed. Rebuildable: 3,096 blobs byte-exact from the restored tree; ~22% of failed cohort re-backable from original sources. Full plan + numbers presented to owner 2026-11-10; box fill deferred until approved. box census: zero BackupMe rows on storagebox (the 3 id2-era rows are gone); box '.' listing works, listdir / denied, cfg path=/ should become a backupme subdir.
