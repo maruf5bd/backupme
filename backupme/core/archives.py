@@ -1162,6 +1162,87 @@ def resolve_fingerprint(query: str):
     return None, None, []
 
 
+def get_archive_stats(fingerprints: list[str] | None = None) -> dict:
+    """Compute dedup/savings statistics for ingested archives.
+
+    When *fingerprints* is given (full or unique prefix resolved by caller
+    is not required — exact fingerprints are matched), stats are scoped to
+    those archives; otherwise all archives are included.
+
+    Returns authoritative numbers from the archive manifest tables:
+    - original_size: sum of source archive file sizes
+    - total_uncompressed: sum of member uncompressed bytes as recorded per archive
+    - member_entries: total archive_members rows in scope
+    - unique_member_hashes: distinct member content hashes in scope
+    - unique_logical_bytes: sum(max(member_size) per unique member hash) in scope
+    - dedup_savings_bytes / dedup_ratio: vs total_uncompressed
+    - vs_original_savings_bytes / vs_original_ratio: unique logical vs original_size
+    """
+    from backupme.core.database import execute as _execute
+
+    params: list = []
+    where = ""
+    if fingerprints:
+        fps = [str(f).strip().lower() for f in fingerprints if str(f).strip()]
+        if fps:
+            q = ",".join("?" * len(fps))
+            where = f"WHERE a.fingerprint IN ({q})"
+            params.extend(fps)
+
+    head = _execute(
+        f"SELECT count(*) AS archives, "
+        f"coalesce(sum(a.original_size), 0) AS original_size, "
+        f"coalesce(sum(a.total_uncompressed), 0) AS total_uncompressed, "
+        f"coalesce(sum(a.member_count), 0) AS member_count "
+        f"FROM archives a {where}",
+        tuple(params),
+    ).fetchone()
+    mem = _execute(
+        f"SELECT count(*) AS member_entries, "
+        f"count(DISTINCT am.member_sha256) AS unique_member_hashes, "
+        f"coalesce(sum(CASE WHEN am.nested_archive IS NULL THEN 1 ELSE 0 END), 0) "
+        f"  AS file_members, "
+        f"coalesce(sum(CASE WHEN am.nested_archive IS NOT NULL THEN 1 ELSE 0 END), 0) "
+        f"  AS nested_members "
+        f"FROM archive_members am JOIN archives a ON a.id = am.archive_id {where}",
+        tuple(params),
+    ).fetchone()
+    uniq = _execute(
+        f"SELECT coalesce(sum(sz), 0) AS unique_logical_bytes FROM ("
+        f"  SELECT am.member_sha256, max(am.member_size) AS sz "
+        f"  FROM archive_members am JOIN archives a ON a.id = am.archive_id "
+        f"  {where} GROUP BY am.member_sha256)",
+        tuple(params),
+    ).fetchone()
+
+    archives = int(head["archives"] or 0)
+    original = int(head["original_size"] or 0)
+    uncomp = int(head["total_uncompressed"] or 0)
+    member_entries = int(mem["member_entries"] or 0)
+    unique_hashes = int(mem["unique_member_hashes"] or 0)
+    unique_bytes = int(uniq["unique_logical_bytes"] or 0)
+    dedup_saved = max(uncomp - unique_bytes, 0)
+    vs_original_saved = original - unique_bytes
+
+    return {
+        "status": "ok",
+        "scope": "selected" if fingerprints else "all",
+        "archives": archives,
+        "original_size": original,
+        "total_uncompressed": uncomp,
+        "member_count_reported": int(head["member_count"] or 0),
+        "member_entries": member_entries,
+        "file_members": int(mem["file_members"] or 0),
+        "nested_members": int(mem["nested_members"] or 0),
+        "unique_member_hashes": unique_hashes,
+        "unique_logical_bytes": unique_bytes,
+        "dedup_savings_bytes": dedup_saved,
+        "dedup_ratio": round(dedup_saved / uncomp, 6) if uncomp else 0.0,
+        "vs_original_delta_bytes": vs_original_saved,
+        "vs_original_ratio": round(vs_original_saved / original, 6) if original else 0.0,
+    }
+
+
 def get_archive_members(archive_id: int) -> list[dict]:
     """Full member list of an archive, with the referenced files-row state."""
     rows = execute(

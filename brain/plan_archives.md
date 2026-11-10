@@ -146,17 +146,16 @@ never lost.
     core/manifest_recover.py, cli/db_cmd.py, MANUAL.
 - **Phase 3 — DONE (2026-11-08→10, main thread, op_log op12)**: all 20
   Softaculous .tar.gz archives ingested extract-first (30 archive rows incl.
-  10 nested zips; ~198k member entries; 12,575 member downloads sha-verified;
-  20 old whole-blob rows soft-deleted via `_soft_delete_file()`). Physical
-  reclaim: completed by the owner's own restore-gated prune campaign
-  (4,062-object audit, sha-gated) — physical audit clean (51,547/51,547
-  referenced blobs on disk). K blob data: ~2.25 GB of whole blobs replaced
-  by ~466 MiB of deduplicated member objects.
-- **Phase 3 — PENDING (user-visible win)**: re-process the 20 Softaculous
-  .tar.gz archives already stored on `k backupme-data` (2,258,329,053 B
-  stored, saved only 1.0% as whole blobs) through the extractor; unref the
-  whole-blob rows after members are verified; expected result: a few hundred
-  MB instead of 2.25 GB (14 daily WHMCS snapshots share ~99% of files).
+  10 nested zips; 12,575 member downloads sha-verified; 20 old whole-blob
+  rows soft-deleted via `_soft_delete_file()`). Physical reclaim: completed
+  by the owner's own restore-gated prune campaign (4,062-object audit,
+  sha-gated) — physical audit clean (51,547/51,547 referenced blobs on
+  disk). K blob data: ~2.25 GB of whole blobs replaced by ~466 MiB of
+  deduplicated member objects.
+- **Savings reporting — DONE (2026-11-10)**: `backupme archive stats
+  [-f FP]... [--json]` (core `get_archive_stats`) = the formal channel for
+  the numbers this plan promised: original 2.47 GB → uncompressed 5.58 GB →
+  unique logical 1.34 GB (76.0% member dedup; 45.9% saved vs whole).
 
 ## Open decisions (owner)
 

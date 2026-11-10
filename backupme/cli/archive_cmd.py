@@ -117,3 +117,58 @@ def archive_restore(ctx, fingerprint, output, as_json):
     emit(result, as_json=as_json, human=human)
     if result.get("status") != "ok":
         raise SystemExit(1)
+
+
+@archive.command("stats")
+@click.option("--fingerprint", "-f", "fingerprints", multiple=True,
+              help="Limit to these archive fingerprints/prefixes (repeatable)")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def archive_stats(ctx, fingerprints, as_json):
+    """Show dedup/savings statistics for ingested archives (formal channel).
+
+    Reports authoritative numbers from the archive manifest tables:
+    original archive bytes, total uncompressed member bytes, unique
+    logical member bytes (deduped by content hash), and savings ratios.
+    """
+    from ..core import archives as archives_mod
+
+    resolved = []
+    for fp in fingerprints:
+        row, err = _resolve_or_fail(fp)
+        if row is None:
+            if as_json:
+                emit({"status": "error", "error": err}, as_json=True)
+            else:
+                click.echo(err)
+            raise SystemExit(1)
+        resolved.append(row["fingerprint"])
+
+    payload = archives_mod.get_archive_stats(resolved or None)
+
+    def fmtb(n):
+        n = int(n or 0)
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        v = float(n)
+        for u in units:
+            if abs(v) < 1024 or u == "TiB":
+                return f"{n} B ({v:.2f} {u})" if u != "B" else f"{n} B"
+            v /= 1024
+        return f"{n} B"
+
+    def human(d):
+        click.echo(f"Archive stats ({d.get('scope','?')}): {d['archives']} archive(s)")
+        click.echo(f"  Original (compressed archives): {fmtb(d['original_size'])}")
+        click.echo(f"  Total uncompressed members:     {fmtb(d['total_uncompressed'])}")
+        click.echo(f"  Member entries:                 {d['member_entries']} "
+                   f"(file {d['file_members']}, nested refs {d['nested_members']})")
+        click.echo(f"  Unique member hashes:           {d['unique_member_hashes']}")
+        click.echo(f"  Unique logical bytes:           {fmtb(d['unique_logical_bytes'])}")
+        click.echo(f"  Dedup saved vs uncompressed:    {fmtb(d['dedup_savings_bytes'])} "
+                   f"({d['dedup_ratio']*100:.2f}% of uncompressed)")
+        delta = d['vs_original_delta_bytes']
+        label = "saved vs original archives" if delta >= 0 else "extra vs original archives"
+        click.echo(f"  Unique vs original archives:    {fmtb(abs(delta))} {label} "
+                   f"({abs(d['vs_original_ratio'])*100:.2f}%)")
+
+    emit(payload, as_json=as_json, human=human)

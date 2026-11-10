@@ -560,9 +560,13 @@ backupme archive list --json
 backupme archive show <FINGERPRINT>            # full member list (prefix accepted)
 backupme archive restore <FINGERPRINT> -o ./restored/
                                                # writes every member, sha-verified
+backupme archive stats [--json]                # dedup/savings over all archives
+backupme archive stats -f <FP> [-f <FP2>]      # scope to specific archives
 ```
 
 `archive restore` accepts the full fingerprint or a unique prefix. A nested archive member is restored as a directory at its path containing the nested archive's own members.
+
+`archive stats` reports the authoritative savings numbers straight from the manifest tables: original archive bytes vs total uncompressed member bytes vs **unique logical bytes** (members deduplicated by content hash, counted once no matter how many archives or paths share them), plus dedup and vs-original ratios. Example from a real 14-snapshot WHMCS set: 2.47 GB of archives → 5.58 GB uncompressed members → 1.34 GB unique (76.0% member dedup, 45.9% saved vs keeping the archives whole).
 
 **Dashboard.** The web dashboard has an **Archives** page (`/archives`) listing every virtual archive (fingerprint, format, original name, member count, uncompressed size) with a paginated member browser and a restore form. Restores go through `POST /api/archives/restore` (JSON body `{fingerprint, dest_path, confirm}`) and are confirm-gated: `confirm` must be the literal boolean `true`. The restore writes to a folder **on the server machine** and reuses the same sha-verified engine as the CLI; unsafe destinations (traversal, bare drives/roots) are rejected. Read APIs: `GET /api/archives` (list, `?limit&offset`) and `GET /api/archives/{id}` (detail + members).
 
@@ -966,6 +970,7 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 | `backupme download FILE_ID` | Restore one file by index id | `backupme download 142 -o ./restored/` |
 | `backupme restore-cpanel ACC GEN` | Restore a cPanel account generation | `backupme restore-cpanel mysite 3 --out ./restored/` |
 | `backupme archive restore FP` | Restore a virtual archive's members by fingerprint | `backupme archive restore 9f2c… -o ./restored/` |
+| `backupme archive stats` | Dedup/savings stats over the archive manifest tables | `backupme archive stats -f 9f2c… --json` |
 | `backupme list` | List backed-up files | `backupme list --backend local --json` |
 | `backupme search QUERY` | Search the index (path search; punctuation-safe) | `backupme search "report-2026"` |
 | `backupme stats` | Totals: files, blobs, dedup savings | `backupme stats --json` |
@@ -1068,6 +1073,8 @@ backupme restore-cpanel ACCOUNT GENERATION [--member-filter GLOB] [--out DIR]
 backupme archive list [--json]
 backupme archive show FINGERPRINT [--json]
                              # full member list; accepts a unique hex prefix
+backupme archive stats [-f FINGERPRINT]... [--json]
+                             # dedup/savings stats; -f scopes to archives
 backupme archive restore FINGERPRINT --output DIR [--json]
                              # writes every member (sha-verified); a nested
                              # archive member restores as a directory at its
