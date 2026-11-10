@@ -47,7 +47,8 @@
 - Rotate the Storage Box password (it appeared in plaintext in some gitignored diagnostics
   scripts; config.yaml is the single allowed home).
 - Approve `gc --apply` to delete 8,498 verified zero-reference remote orphans (28.22 GiB;
-  see 2026-11-05 update 2 below).
+  see 2026-11-05 update 2 below). **DONE 2026-11-10**: executed at the shrunken count of
+  785 orphans / 21.96 GiB after the consolidation waves emptied the drive — see update 17 below.
 
 ## Where things stand overall
 
@@ -286,3 +287,29 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 ## 2026-11-10 (update 16)
 
 - **`backupme archive stats` landed (formal channel for the Phase-3 savings numbers)**: core `archives.get_archive_stats(fingerprints=None)` computes, straight from the manifest tables — original archive bytes, total uncompressed member bytes, member entries (file vs nested), **unique logical bytes** (per distinct member sha, max size), dedup savings vs uncompressed, and the delta vs keeping the archives whole. CLI `archive stats [-f FP]... [--json]` with prefix scoping (unknown prefix → exit 1) and a human renderer. Live truth over the 30 ingested Softaculous archives: **2.47 GB original → 5.58 GB uncompressed members → 1.34 GB unique logical = 76.0% member dedup, 45.9% saved vs storing the archives whole**. Tests: tests/test_archive_stats.py (2, ingest-backed math + CLI surface). Note: a partially-built version of this command was found uncommitted in the tree after the Phase-3 push (dead duplicate formatter + no tests) — cleaned, tested, documented (MANUAL 7.7 + §10 rows), and landed.
+
+## 2026-11-10 (update 17)
+
+- **GC apply EXECUTED (user-approved; the standing decision from updates 5/11/15)**:
+  `python main.py --db-path backupme.db gc --apply` deleted **785 orphan objects /
+  23,578,828,744 B (21.96 GiB) from `h local drive`**, exit 0; post-apply dry-run reports
+  **0 orphans on every reachable backend** (local_disk, h, Gdrive, k; storagebox
+  unscanned — see caveat below).
+- **Gate re-verification caught a shrunken target**: the dry-run count had fallen from
+  8,497 (11-05) to 785 because the consolidation/prune waves physically emptied
+  H:\Backupme — lesson reinforced: ALWAYS re-run the full gate on the CURRENT DB
+  immediately before apply, never trust a stale dry-run number.
+- **Gate results at apply time**: all 785 paths had ZERO rows in blobs / file_chunks /
+  blob_storage; in-flight guard clean (newest orphan 24.2 h old, last DB write 2026-11-08).
+- **Matcher anomaly investigated, not ignored**: the h walk saw only 808 files and matched
+  only 23 of 15,000 h-name rows. Direct os.walk confirmed the drive really holds 821
+  files; all 14,977 missing-reference rows have copies on OTHER backends
+  (missing_NO_other_backend=0) — stale pointers to the drained h:/Gdrive shared directory
+  (same physical dir per update 10), consistent with update 15's K-disk audit. Zero
+  reachability loss; the stale h-name rows are the same phantom-row class as D6 and are
+  now quantified (14,977) — cleanup candidates for a future migration, harmless today.
+- **Caveat recorded**: the storagebox walk skips `objects` and `bundle` prefixes
+  ([Errno 2] after retries — the prefixes don't exist on the box), so GC coverage of the
+  box remains nil and its "0 orphans" is unverified. Box holds ~3 blobs per update 10, so
+  exposure is minimal, but any future box onboarding should create the prefixes or teach
+  the walk to tolerate their absence loudly (it does log the skip — B09 compliant).
