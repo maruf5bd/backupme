@@ -19,6 +19,9 @@
 <!-- Backend Cards Grid -->
 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem;" id="backends-grid">
   {% for be in backends %}
+  {% set known_types = ['local', 'ftp', 'sftp', 'smb', 'ssh', 'rclone', 'ninedrive'] %}
+  {% set has_space = be.free_space is not none and be.total_space and be.total_space > 0 %}
+  {% set used_pct = (((be.total_space - be.free_space) / be.total_space * 100) | round | int) if has_space else 0 %}
   <div class="card backend-card" data-name="{{ be.name }}">
     <div class="flex items-center justify-between mb-3">
       <div class="flex items-center gap-3">
@@ -42,7 +45,7 @@
         <div>
           <div class="font-semibold" style="font-size: 1.05rem;">{{ be.name }}</div>
           <div class="flex items-center gap-2 mt-1">
-            <span class="badge badge-gray">{{ be.type }}</span>
+            <span class="badge u3-type-badge {% if be.type in known_types %}u3-type-{{ be.type }}{% else %}badge-gray{% endif %}">{{ be.type }}</span>
             <span class="flex items-center gap-1 text-xs">
               <span class="dot {% if be.connected %}dot-green{% else %}dot-red{% endif %}"></span>
               {% if be.connected %}Online{% else %}Offline{% endif %}
@@ -52,54 +55,59 @@
       </div>
       <div class="text-right">
         <div class="text-xs text-muted">Priority</div>
-        <div class="font-semibold">{{ be.priority }}</div>
+        <div class="font-semibold u3-num">{{ be.priority }}</div>
       </div>
     </div>
 
-    <!-- Quota bar -->
+    <!-- Quota bar (colors escalate as the backend fills up) -->
     {% if be.quota %}
     <div class="mb-3">
-      <div class="flex justify-between text-xs text-muted mb-1">
-        <span>Quota</span>
-        <span>{{ be.quota }}{% if be.free_space is not none and be.total_space and be.total_space > 0 %} &middot; {{ "{:,.0f}".format((be.total_space - be.free_space) / 1073741824) }} / {{ "{:,.0f}".format(be.total_space / 1073741824) }} GB used{% endif %}</span>
+      <div class="flex justify-between text-xs text-muted mb-1" style="gap: 0.5rem;">
+        <span style="white-space: nowrap;">Quota <span class="badge badge-gray">{{ be.quota }}</span></span>
+        <span class="u3-num" style="text-align: right;">
+          {% if has_space %}
+            {{ (be.total_space - be.free_space) | filesize }} of {{ be.total_space | filesize }} used ({{ used_pct }}%)
+          {% else %}
+            capacity unknown
+          {% endif %}
+        </span>
       </div>
       <div class="progress-bar">
-        {% if be.free_space is not none and be.total_space and be.total_space > 0 %}
-        <div class="progress-fill accent" style="width: {{ ((be.total_space - be.free_space) / be.total_space * 100)|int }}%;"></div>
-        {% else %}
-        <div class="progress-fill accent" style="width: 0%;"></div>
-        {% endif %}
+        <div class="progress-fill {% if used_pct > 85 %}red{% elif used_pct > 65 %}yellow{% else %}accent{% endif %}"
+             style="width: {{ used_pct if has_space else 0 }}%;"
+             title="{% if has_space %}{{ used_pct }}% used{% endif %}"></div>
       </div>
     </div>
     {% endif %}
 
-    {% if be.free_space is not none %}
+    <!-- Raw capacity (only when no quota string is configured) -->
+    {% if not be.quota and be.free_space is not none %}
     <div class="mb-3">
-      <div class="flex justify-between text-xs text-muted mb-1">
-        <span>Space</span>
-        <span>{{ "{:,.0f}".format(be.free_space / 1073741824) }} GB free</span>
-      </div>
-      <div class="progress-bar">
-        {% if be.total_space %}
-        <div class="progress-fill green" style="width: {{ ((be.total_space - be.free_space) / be.total_space * 100)|int }}%;"></div>
-        {% endif %}
+      <div class="u3-meta-row">
+        <span class="u3-meta-label">Free space</span>
+        <span class="u3-meta-value u3-num">
+          {{ be.free_space | filesize }}{% if be.total_space %} of {{ be.total_space | filesize }}{% endif %} free
+        </span>
       </div>
     </div>
     {% endif %}
 
-    <!-- Stored vault data on this backend -->
+    <!-- Stored vault data on this backend (filled from /api/backends/usage) -->
     <div class="mb-3">
-      <div class="flex justify-between text-xs text-muted mb-1">
-        <span>Stored (vault)</span>
-        <span id="stored-{{ be.name }}">—</span>
+      <div class="u3-meta-row" style="border-bottom: none; padding-bottom: 0;">
+        <span class="u3-meta-label">Stored (vault)</span>
+        <span class="u3-meta-value u3-num stored-value" id="stored-{{ be.name }}">loading&hellip;</span>
       </div>
-      <div class="progress-bar">
-        <div class="progress-fill purple" id="stored-bar-{{ be.name }}" style="width: 0%;"></div>
+      <div class="progress-bar" style="margin-top: 0.4rem;">
+        <div class="progress-fill purple stored-bar" id="stored-bar-{{ be.name }}" style="width: 0%;"></div>
       </div>
     </div>
+
+    <!-- Per-card result banner (JSON outcome of Test / Verify / Rescan) -->
+    <div class="u2-banner card-banner"></div>
 
     <!-- Actions -->
-    <div class="flex gap-2" style="border-top: 1px solid var(--border-subtle); padding-top: 0.75rem;">
+    <div class="u3-actions-row">
       <button class="btn btn-secondary btn-sm" onclick="testBackend('{{ be.name }}', this)" style="flex:1;">
         <i data-lucide="zap" style="width:14px;height:14px;"></i> Test
       </button>
@@ -109,7 +117,7 @@
       <button class="btn btn-ghost btn-sm" onclick="startDrain('{{ be.name }}')" title="Copy data off this backend" style="color: var(--orange);">
         <i data-lucide="log-out" style="width:14px;height:14px;"></i> Drain
       </button>
-      <button class="btn btn-ghost btn-sm" onclick="verifyBackend('{{ be.name }}', this)" title="Verify files">
+      <button class="btn btn-ghost btn-sm" onclick="verifyBackend('{{ be.name }}', this)" title="Verify files (download + hash check)">
         <i data-lucide="shield-check" style="width:14px;height:14px;"></i>
       </button>
       <button class="btn btn-ghost btn-sm" onclick="rescanBackend('{{ be.name }}', this)" title="Rescan (walk vs DB diff)">
@@ -118,7 +126,7 @@
       <button class="btn btn-ghost btn-sm" onclick="editBackend('{{ be.name }}', '{{ be.type }}')" title="Edit">
         <i data-lucide="pencil" style="width:14px;height:14px;"></i>
       </button>
-      <button class="btn btn-ghost btn-sm" onclick="removeBackend('{{ be.name }}')" style="color: var(--red);">
+      <button class="btn btn-ghost btn-sm" onclick="removeBackend('{{ be.name }}')" title="Remove from config" style="color: var(--red);">
         <i data-lucide="trash-2" style="width:14px;height:14px;"></i>
       </button>
     </div>
@@ -244,17 +252,47 @@
     return v.toFixed(i ? 1 : 0) + ' ' + units[i];
   }
 
+  // Result banner inside the card the action button lives in.
+  function showCardBanner(btn, kind, text) {
+    const card = btn && btn.closest ? btn.closest('.backend-card') : null;
+    const banner = card ? card.querySelector('.card-banner') : null;
+    if (!banner) return;
+    const kinds = {
+      success: ['u2-banner-success', 'check-circle-2'],
+      error: ['u2-banner-error', 'x-circle'],
+      info: ['u2-banner-info', 'info'],
+    };
+    const pair = kinds[kind] || kinds.info;
+    banner.className = 'u2-banner card-banner visible ' + pair[0];
+    banner.innerHTML = '<i data-lucide="' + pair[1] + '" style="width:14px;height:14px;"></i>'
+      + '<span>' + App.escapeHtml(text) + '</span>';
+    App.initIcons();
+  }
+
   async function loadUsage() {
+    const valueEls = document.querySelectorAll('.stored-value');
     try {
-      const d = await fetch('/api/backends/usage').then(r => r.json());
+      const resp = await fetch('/api/backends/usage');
+      const d = await resp.json();
+      if (!resp.ok) throw new Error(d.error || ('HTTP ' + resp.status));
       const totalStored = d.backends.reduce((a, b) => a + (b.stored_bytes || 0), 0) || 1;
       d.backends.forEach(b => {
         const el = document.getElementById('stored-' + b.name);
         const bar = document.getElementById('stored-bar-' + b.name);
-        if (el) el.textContent = `${fmtBytes(b.stored_bytes)} · ${b.blobs} blob(s) · +${fmtBytes(b.ingest_24h_bytes)} (24h)`;
+        if (el) {
+          el.textContent = `${fmtBytes(b.stored_bytes)} · ${b.blobs} blob(s) · +${fmtBytes(b.ingest_24h_bytes)} (24h)`;
+          el.style.color = '';
+        }
         if (bar) bar.style.width = Math.round(100 * (b.stored_bytes || 0) / totalStored) + '%';
       });
-    } catch (e) {}
+    } catch (e) {
+      // No silent blanks: every card shows an honest error note.
+      valueEls.forEach(el => {
+        el.textContent = 'usage unavailable — ' + (e.message || 'request failed');
+        el.style.color = 'var(--red)';
+      });
+      document.querySelectorAll('.stored-bar').forEach(bar => { bar.style.width = '0%'; });
+    }
   }
   loadUsage();
 
@@ -271,8 +309,8 @@
           <button class="modal-close" onclick="App.Modal.close('rebalance-modal')">&times;</button>
         </div>
         <div class="modal-body">
-          <div class="progress" style="height:8px;background:var(--bg-subtle);border-radius:4px;overflow:hidden;">
-            <div id="rebalance-bar" style="height:100%;width:0%;background:var(--accent);transition:width .3s;"></div>
+          <div class="progress-bar" style="background:var(--bg-subtle);">
+            <div id="rebalance-bar" class="progress-fill accent" style="width:0%;"></div>
           </div>
           <p class="text-muted text-sm mt-2" id="rebalance-status">Starting…</p>
           <p class="text-xs font-mono text-muted" id="rebalance-current"></p>
@@ -305,7 +343,13 @@
         loadUsage();
       }
     };
-    es.onerror = () => { es.close(); };
+    es.onerror = () => {
+      es.close();
+      const status = document.getElementById('rebalance-status');
+      if (status && !status.textContent.includes('done')) {
+        status.textContent = 'Progress stream lost — the operation may still be running on the server. Refresh this page to see the final result.';
+      }
+    };
   }
 
   window.startRebalance = async function(name) {
@@ -318,12 +362,27 @@
     watchRebalanceStream();
   };
 
-  window.startDrain = async function(name) {
-    if (!confirm(`Drain "${name}"? All blobs will be copied to the other backends; the backend itself is NOT deleted. Run GC after removal.`)) return;
-    const r = await fetch(`/api/backends/${encodeURIComponent(name)}/drain`, {method: 'POST'});
-    const d = await r.json();
-    if (!r.ok) { App.Toast.show(d.error || 'failed to start', 'error'); return; }
-    watchRebalanceStream();
+  window.startDrain = function(name) {
+    // Destructive-class action: explicit modal confirm gate (danger styling),
+    // with copy that says exactly what will and will not happen.
+    App.Modal.confirm(
+      'Drain Backend',
+      'Copy every blob off <strong>' + App.escapeHtml(name) + '</strong> to the other backends. '
+      + 'Nothing is deleted from any backend during the drain; after it completes you can remove '
+      + 'this backend from the config and run GC to reclaim the space. Continue?',
+      async () => {
+        try {
+          const r = await fetch(`/api/backends/${encodeURIComponent(name)}/drain`, {method: 'POST'});
+          const d = await r.json();
+          if (!r.ok) { App.Toast.show(d.error || 'failed to start drain', 'error'); return; }
+          watchRebalanceStream();
+        } catch (e) {
+          App.Toast.error('Drain request failed: ' + (e.message || e));
+        }
+      },
+      'Start Drain',
+      true
+    );
   };
 
   window.openOnboardWizard = function() {
@@ -427,6 +486,10 @@
         method: 'POST',
         body: JSON.stringify(data),
       });
+      if (result && result.status === 'error') {
+        App.Toast.error(result.message || 'Failed to add backend');
+        return;
+      }
       App.Toast.success('Backend added successfully');
       App.Modal.close('add-backend-modal');
       setTimeout(() => location.reload(), 600);
@@ -453,11 +516,14 @@
     try {
       const result = await fetch('/api/backends/test/' + encodeURIComponent(name)).then(r => r.json());
       if (result.connected) {
+        showCardBanner(btn, 'success', name + ': connected');
         App.Toast.success(name + ': Connected');
       } else {
+        showCardBanner(btn, 'error', name + ': ' + (result.error || 'connection failed'));
         App.Toast.error(name + ': ' + (result.error || 'Connection failed'));
       }
     } catch (e) {
+      showCardBanner(btn, 'error', name + ': test request failed (network or server error)');
       App.Toast.error(name + ': Test failed');
     } finally {
       btn.disabled = false;
@@ -472,8 +538,17 @@
     btn.innerHTML = '<span class="spinner"></span>';
     try {
       const result = await App.fetchAPI('/api/backends/' + encodeURIComponent(name) + '/verify?count=10', { method: 'POST' });
-      App.Toast.success(name + ': Verified ' + (result.checked_files || 0) + ' files, ' + (result.failed_files || 0) + ' failed');
+      // Real API shape (core.verify.run_integrity_check): status/checked/failed.
+      const checked = result.checked != null ? result.checked : 0;
+      const failed = result.failed != null ? result.failed : 0;
+      const ok = result.status !== 'failed' && failed === 0;
+      const text = `${name}: verified ${checked} file(s), ${failed} failed`
+        + (ok ? ' — hashes match' : ' — corrupt or unreadable copies found');
+      showCardBanner(btn, ok ? 'success' : 'error', text);
+      if (ok) App.Toast.success(text, 6000);
+      else App.Toast.error(text, 8000);
     } catch (e) {
+      showCardBanner(btn, 'error', name + ': verify failed — ' + (e.message || 'request error'));
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -492,18 +567,17 @@
       });
       const summary = 'walk=' + (result.walk_files || 0)
         + ', db=' + (result.db_paths || 0)
-        + ', missing=' + (result.missing_on_box || []).length + ' (' + (result.missing_bytes || 0) + ' bytes)'
+        + ', missing=' + (result.missing_on_box || []).length + ' (' + fmtBytes(result.missing_bytes || 0) + ')'
         + ', extra=' + (result.extra_on_box || []).length
         + ', size mismatches=' + (result.size_mismatch || []).length;
       // Red emphasis when the box disagrees with the DB (missing files or
       // size mismatches = cheap corruption signal).
-      if ((result.missing_on_box || []).length > 0 || (result.size_mismatch || []).length > 0) {
-        App.Toast.error(name + ': ' + summary, 8000);
-      } else {
-        App.Toast.success(name + ': ' + summary, 8000);
-      }
+      const drifted = (result.missing_on_box || []).length > 0 || (result.size_mismatch || []).length > 0;
+      showCardBanner(btn, drifted ? 'error' : 'success', name + ' rescan: ' + summary);
+      if (drifted) App.Toast.error(name + ': ' + summary, 8000);
+      else App.Toast.success(name + ': ' + summary, 8000);
     } catch (e) {
-      // Error already shown by fetchAPI
+      showCardBanner(btn, 'error', name + ': rescan failed — ' + (e.message || 'request error'));
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -514,7 +588,8 @@
   window.removeBackend = function(name) {
     App.Modal.confirm(
       'Remove Backend',
-      'Are you sure you want to remove <strong>' + name + '</strong>? This cannot be undone.',
+      'Remove <strong>' + App.escapeHtml(name) + '</strong> from config.yaml? This cannot be undone. '
+      + 'If this backend still holds vault data, drain it first — blobs left behind here will count as lost.',
       async () => {
         try {
           await App.fetchAPI('/api/backends/remove/' + encodeURIComponent(name), { method: 'DELETE', body: JSON.stringify({ confirm: true }) });
@@ -572,10 +647,14 @@
     delete data.original_name;
 
     try {
-      await App.fetchAPI('/api/backends/' + encodeURIComponent(name), {
+      const result = await App.fetchAPI('/api/backends/' + encodeURIComponent(name), {
         method: 'PUT',
         body: JSON.stringify(data),
       });
+      if (result && result.status === 'error') {
+        App.Toast.error(result.message || 'Failed to update backend');
+        return;
+      }
       App.Toast.success('Backend updated');
       App.Modal.close('edit-backend-modal');
       setTimeout(() => location.reload(), 600);

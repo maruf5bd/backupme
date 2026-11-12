@@ -84,7 +84,7 @@
           <tr>
             <td class="font-semibold">{{ b.backend }}</td>
             <td>{{ "{:,}".format(b.blobs) }}</td>
-            <td class="text-sm text-muted" data-bytes="{{ b.stored_bytes }}">{{ "{:,}".format(b.stored_bytes) }} B</td>
+            <td class="text-sm text-muted" data-bytes="{{ b.stored_bytes }}" title="{{ "{:,}".format(b.stored_bytes) }} bytes">{{ b.stored_bytes|filesize }}</td>
           </tr>
           {% endfor %}
         </tbody>

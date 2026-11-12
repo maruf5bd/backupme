@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
   <title>{% block title %}Dashboard{% endblock %} — BackupMe</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Ctext x='16' y='22' font-family='Arial' font-size='17' font-weight='700' fill='%23ffffff' text-anchor='middle'%3EB%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/css/theme.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -23,49 +25,49 @@
         </div>
       </div>
 
-      <nav class="sidebar-nav">
+      <nav class="sidebar-nav" aria-label="Main navigation">
         <span class="nav-section-label">Overview</span>
-        <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}">
+        <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}" {% if request.url.path == '/' %}aria-current="page"{% endif %}>
           <i data-lucide="layout-dashboard"></i>
           <span>Dashboard</span>
         </a>
-        <a href="/files" class="nav-link {% if request.url.path.startswith('/files') %}active{% endif %}">
+        <a href="/files" class="nav-link {% if request.url.path.startswith('/files') %}active{% endif %}" {% if request.url.path.startswith('/files') %}aria-current="page"{% endif %}>
           <i data-lucide="files"></i>
           <span>Files</span>
         </a>
-        <a href="/ingest" class="nav-link {% if request.url.path.startswith('/ingest') %}active{% endif %}">
+        <a href="/ingest" class="nav-link {% if request.url.path.startswith('/ingest') %}active{% endif %}" {% if request.url.path.startswith('/ingest') %}aria-current="page"{% endif %}>
           <i data-lucide="archive"></i>
           <span>Ingest</span>
         </a>
-        <a href="/archives" class="nav-link {% if request.url.path.startswith('/archives') %}active{% endif %}">
+        <a href="/archives" class="nav-link {% if request.url.path.startswith('/archives') %}active{% endif %}" {% if request.url.path.startswith('/archives') %}aria-current="page"{% endif %}>
           <i data-lucide="package-open"></i>
           <span>Archives</span>
         </a>
-        <a href="/backends" class="nav-link {% if request.url.path == '/backends' %}active{% endif %}">
+        <a href="/backends" class="nav-link {% if request.url.path == '/backends' %}active{% endif %}" {% if request.url.path == '/backends' %}aria-current="page"{% endif %}>
           <i data-lucide="database"></i>
           <span>Backends</span>
         </a>
 
         <span class="nav-section-label">Monitoring</span>
-        <a href="/logs" class="nav-link {% if request.url.path == '/logs' %}active{% endif %}">
+        <a href="/logs" class="nav-link {% if request.url.path == '/logs' %}active{% endif %}" {% if request.url.path == '/logs' %}aria-current="page"{% endif %}>
           <i data-lucide="activity"></i>
           <span>Activity</span>
         </a>
-        <a href="/database" class="nav-link {% if request.url.path == '/database' %}active{% endif %}">
+        <a href="/database" class="nav-link {% if request.url.path == '/database' %}active{% endif %}" {% if request.url.path == '/database' %}aria-current="page"{% endif %}>
           <i data-lucide="hard-drive"></i>
           <span>DB Health</span>
         </a>
-        <a href="/health" class="nav-link {% if request.url.path.startswith('/health') %}active{% endif %}">
+        <a href="/health" class="nav-link {% if request.url.path.startswith('/health') %}active{% endif %}" {% if request.url.path.startswith('/health') %}aria-current="page"{% endif %}>
           <i data-lucide="heart-pulse"></i>
           <span>Data Health</span>
         </a>
-        <a href="/report" class="nav-link {% if request.url.path == '/report' %}active{% endif %}">
+        <a href="/report" class="nav-link {% if request.url.path == '/report' %}active{% endif %}" {% if request.url.path == '/report' %}aria-current="page"{% endif %}>
           <i data-lucide="shield-check"></i>
           <span>Report</span>
         </a>
 
         <span class="nav-section-label">System</span>
-        <a href="/settings" class="nav-link {% if request.url.path == '/settings' %}active{% endif %}">
+        <a href="/settings" class="nav-link {% if request.url.path == '/settings' %}active{% endif %}" {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
           <i data-lucide="settings"></i>
           <span>Settings</span>
         </a>

@@ -2,6 +2,29 @@
 {% block title %}Archives{% endblock %}
 {% block breadcrumb %}Archives{% endblock %}
 
+{# Human byte formatting for server-rendered cells (u2 additive helper). #}
+{% macro hb(n) -%}
+  {%- if n is none -%}—
+  {%- elif n < 1024 -%}{{ n|int }} B
+  {%- elif n < 1024 * 1024 -%}{{ '%.1f'|format(n / 1024) }} KB
+  {%- elif n < 1024 * 1024 * 1024 -%}{{ '%.1f'|format(n / (1024 * 1024)) }} MB
+  {%- elif n < 1024 * 1024 * 1024 * 1024 -%}{{ '%.1f'|format(n / (1024 * 1024 * 1024)) }} GB
+  {%- else -%}{{ '%.1f'|format(n / (1024 * 1024 * 1024 * 1024)) }} TB
+  {%- endif -%}
+{%- endmacro %}
+
+{# Colored badge per archive format (zip/tar.gz/tar.bz2/tar.xz/tar/7z/rar). #}
+{% macro fmt_badge(fmt) -%}
+  {%- if fmt == 'tar.gz' -%}<span class="badge badge-blue">{{ fmt }}</span>
+  {%- elif fmt == 'tar.bz2' -%}<span class="badge badge-cyan">{{ fmt }}</span>
+  {%- elif fmt == 'tar.xz' -%}<span class="badge badge-purple">{{ fmt }}</span>
+  {%- elif fmt == 'zip' -%}<span class="badge badge-orange">{{ fmt }}</span>
+  {%- elif fmt == '7z' -%}<span class="badge badge-accent">{{ fmt }}</span>
+  {%- elif fmt == 'rar' -%}<span class="badge badge-yellow">{{ fmt }}</span>
+  {%- else -%}<span class="badge badge-gray">{{ fmt }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="page-header">
   <h1><i data-lucide="package-open" style="width:28px;height:28px;"></i> Archives</h1>
@@ -22,12 +45,35 @@
     <div class="stat-value" id="ar-total">{{ total }}</div>
     <div class="stat-sub">virtual manifests (never stored whole)</div>
   </div>
+  <div class="stat-card">
+    <div class="stat-icon cyan">
+      <i data-lucide="layers" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Members</div>
+    <div class="stat-value">{{ archives | map(attribute='member_count') | sum }}</div>
+    <div class="stat-sub">extracted entries across shown archives</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-icon green">
+      <i data-lucide="hard-drive" style="width:20px;height:20px;"></i>
+    </div>
+    <div class="stat-label">Uncompressed</div>
+    <div class="stat-value">{{ hb(archives | map(attribute='total_uncompressed') | sum) }}</div>
+    <div class="stat-sub">logical size of shown archive members</div>
+  </div>
 </div>
 
 <div class="card mb-4">
   <div class="card-header">
     <span class="card-title">Virtual Archives</span>
-    <span class="badge badge-gray" id="ar-badge">{{ archives|length }} shown</span>
+    <div class="flex items-center gap-2">
+      <div class="topbar-search" style="width: 220px;">
+        <i data-lucide="search" class="search-icon" style="width:14px;height:14px;"></i>
+        <input type="search" id="ar-filter" placeholder="Filter by name or fingerprint…"
+               autocomplete="off" oninput="filterArchiveRows()" style="font-size:0.8rem;">
+      </div>
+      <span class="badge badge-gray" id="ar-badge">{{ archives|length }} shown</span>
+    </div>
   </div>
   {% if archives %}
   <div class="table-wrapper">
@@ -35,22 +81,32 @@
       <thead>
         <tr><th>Fingerprint</th><th>Format</th><th>Original Name</th><th>Members</th><th>Uncompressed</th><th>Created</th><th>Actions</th></tr>
       </thead>
-      <tbody>
+      <tbody id="ar-rows">
         {% for a in archives %}
-        <tr>
-          <td class="font-mono text-xs" title="{{ a.fingerprint }}">{{ a.fingerprint[:16] }}…</td>
-          <td><span class="badge badge-gray">{{ a.format }}</span></td>
-          <td class="text-sm">{{ a.original_name }}</td>
-          <td>{{ a.member_count }}</td>
-          <td class="text-sm" data-bytes="{{ a.total_uncompressed }}">{{ a.total_uncompressed }} B</td>
+        <tr class="ar-row" data-name="{{ a.original_name|lower }}" data-fp="{{ a.fingerprint }}">
+          <td>
+            <div class="flex items-center gap-1">
+              <span class="font-mono text-xs" title="{{ a.fingerprint }}">{{ a.fingerprint[:16] }}…</span>
+              <button class="btn btn-ghost btn-xs u2-copyable" onclick="App.copyToClipboard('{{ a.fingerprint }}')"
+                      title="Copy full fingerprint">
+                <i data-lucide="copy" style="width:12px;height:12px;"></i>
+              </button>
+            </div>
+          </td>
+          <td>{{ fmt_badge(a.format) }}</td>
+          <td class="text-sm truncate" style="max-width: 260px;" title="{{ a.original_name }}">{{ a.original_name }}</td>
+          <td class="font-semibold">{{ a.member_count }}</td>
+          <td class="text-sm" data-bytes="{{ a.total_uncompressed }}" title="{{ a.total_uncompressed }} bytes">{{ hb(a.total_uncompressed) }}</td>
           <td class="text-xs text-muted">{{ a.created_at }}</td>
           <td>
-            <button class="btn btn-ghost btn-xs" onclick="viewMembers({{ a.id }}, '{{ a.fingerprint[:12] }}')">
-              <i data-lucide="list" style="width:12px;height:12px;"></i> Members
-            </button>
-            <button class="btn btn-ghost btn-xs" onclick="openRestore('{{ a.fingerprint }}')">
-              <i data-lucide="download" style="width:12px;height:12px;"></i> Restore
-            </button>
+            <div class="flex gap-1">
+              <button class="btn btn-ghost btn-xs" onclick="viewMembers({{ a.id }}, '{{ a.fingerprint[:12] }}')">
+                <i data-lucide="list" style="width:12px;height:12px;"></i> Members
+              </button>
+              <button class="btn btn-ghost btn-xs" onclick="openRestore('{{ a.fingerprint }}')">
+                <i data-lucide="download" style="width:12px;height:12px;"></i> Restore
+              </button>
+            </div>
           </td>
         </tr>
         {% endfor %}
@@ -59,6 +115,8 @@
   </div>
   {% else %}
   <div class="empty-state" style="padding: 2rem;">
+    <i data-lucide="package-open" style="width:48px;height:48px;"></i>
+    <h3>No archives ingested yet</h3>
     <p>No archives ingested yet — extract-first ingest records archives here.</p>
   </div>
   {% endif %}
@@ -75,19 +133,39 @@
         Writes every member (sha-verified) to a folder on the server.
         A nested archive member restores as a directory at its path.
       </p>
-      <div style="margin-bottom: 0.5rem;">
+      <div style="margin-bottom: 0.25rem;">
         <input type="text" id="ar-restore-fp" autocomplete="off"
                class="font-mono" style="font-size:0.75rem; padding:4px 8px; height:32px; width:100%;"
-               placeholder="fingerprint (full or unique prefix)">
+               placeholder="fingerprint (full or unique prefix)"
+               oninput="validateRestoreFields()">
+        <div class="u2-field-hint" id="ar-fp-hint"></div>
       </div>
-      <div style="margin-bottom: 0.75rem;">
+      <div style="margin-bottom: 0.25rem;">
         <input type="text" id="ar-restore-dest" autocomplete="off"
                style="font-size:0.8rem; padding:4px 8px; height:32px; width:100%;"
-               placeholder="destination path on the server, e.g. D:/restores/arch">
+               placeholder="destination path on the server, e.g. D:/restores/arch"
+               oninput="validateRestoreFields()">
+        <div class="u2-field-hint" id="ar-dest-hint"></div>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="submitRestore(this)">
-        <i data-lucide="download" style="width:14px;height:14px;"></i> Restore
-      </button>
+      <label class="u2-confirm-row" for="ar-restore-confirm">
+        <input type="checkbox" id="ar-restore-confirm" onchange="validateRestoreFields()">
+        <span>I understand this writes every archive member under the destination
+              path on the server and may overwrite existing files there.</span>
+      </label>
+      <div class="flex items-center gap-2" style="margin-top: 0.75rem;">
+        <button class="btn btn-primary btn-sm" id="ar-restore-btn" onclick="submitRestore(this)" disabled>
+          <i data-lucide="download" style="width:14px;height:14px;"></i> Restore
+        </button>
+        <span class="text-xs text-muted" id="ar-restore-note">Confirm the checkbox to enable restore</span>
+      </div>
+      <div class="u2-banner u2-banner-error" id="ar-restore-banner">
+        <i data-lucide="alert-triangle" style="width:16px;height:16px;"></i>
+        <span id="ar-restore-banner-text"></span>
+      </div>
+      <div class="u2-banner u2-banner-success" id="ar-restore-success">
+        <i data-lucide="check-circle-2" style="width:16px;height:16px;"></i>
+        <span id="ar-restore-success-text"></span>
+      </div>
     </div>
   </div>
 
@@ -98,12 +176,25 @@
       <span class="badge badge-gray" id="ar-members-badge">select an archive</span>
     </div>
     <div class="card-body">
+      <div id="ar-member-meta" class="text-xs text-muted" style="margin-bottom: 0.5rem; display: none;"></div>
+      <div id="ar-member-error" class="u2-banner u2-banner-error" style="margin-top: 0; margin-bottom: 0.5rem;">
+        <i data-lucide="alert-triangle" style="width:16px;height:16px;"></i>
+        <span id="ar-member-error-text"></span>
+      </div>
+      <div class="flex items-center gap-2" id="ar-member-toolbar" style="display: none; margin-bottom: 0.5rem;">
+        <div class="topbar-search" style="flex: 1;">
+          <i data-lucide="search" class="search-icon" style="width:14px;height:14px;"></i>
+          <input type="search" id="ar-member-filter" placeholder="Filter members on this page…"
+                 autocomplete="off" oninput="filterMemberRows()" style="font-size:0.8rem;">
+        </div>
+      </div>
       <div id="ar-members">
         <div class="empty-state" style="padding: 1.5rem;"><p>Click Members on an archive row</p></div>
       </div>
-      <div class="flex justify-between" style="margin-top: 0.5rem;">
-        <button class="btn btn-ghost btn-xs" onclick="membersPage(-1)">← Prev</button>
-        <button class="btn btn-ghost btn-xs" onclick="membersPage(1)">Next →</button>
+      <div class="u2-pager">
+        <button class="btn btn-ghost btn-xs" id="ar-members-prev" onclick="membersPage(-1)" disabled>← Prev</button>
+        <span class="u2-pager-info" id="ar-members-pageinfo"></span>
+        <button class="btn btn-ghost btn-xs" id="ar-members-next" onclick="membersPage(1)" disabled>Next →</button>
       </div>
     </div>
   </div>
@@ -113,7 +204,7 @@
 {% block scripts %}
 <script>
   const MEMBER_PAGE_SIZE = 100;
-  let memberState = { id: null, offset: 0 };
+  let memberState = { id: null, fingerprint: '', offset: 0, total: 0, loading: false };
 
   function humanBytes(n) {
     if (n === null || n === undefined) return '-';
@@ -124,47 +215,267 @@
     window.location.reload();
   }
 
+  /* ── Archives table client-side filter ─────────────────── */
+  function filterArchiveRows() {
+    const q = (document.getElementById('ar-filter').value || '').toLowerCase().trim();
+    const rows = document.querySelectorAll('.ar-row');
+    let shown = 0;
+    rows.forEach(r => {
+      const hit = !q
+        || (r.dataset.name || '').indexOf(q) !== -1
+        || (r.dataset.fp || '').indexOf(q) !== -1;
+      r.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    const badge = document.getElementById('ar-badge');
+    const totalRows = rows.length;
+    badge.textContent = q ? (shown + ' of ' + totalRows + ' shown') : (totalRows + ' shown');
+  }
+
+  /* ── Members detail (paginated, JSON errors surfaced) ──── */
+  function showMemberError(msg) {
+    const box = document.getElementById('ar-member-error');
+    document.getElementById('ar-member-error-text').textContent = msg;
+    box.classList.add('visible');
+  }
+
+  function clearMemberError() {
+    document.getElementById('ar-member-error').classList.remove('visible');
+  }
+
   function memberTable(items) {
     if (!items.length) {
       return '<div class="empty-state" style="padding: 1.5rem;"><p>No members on this page</p></div>';
     }
-    let h = '<div class="table-wrapper"><table><thead><tr><th>Path</th><th>Size</th><th>Kind</th></tr></thead><tbody>';
+    let h = '<div class="table-wrapper"><table><thead><tr><th>Path</th><th>Size</th><th>SHA256</th><th>Kind</th></tr></thead><tbody>';
     for (const m of items) {
       const kind = m.nested_archive
         ? '<span class="badge badge-gray" title="' + App.escapeHtml(m.nested_archive) + '">nested archive</span>'
         : '<span class="badge badge-green">file</span>';
+      const sha = m.member_sha256 || '';
       h += '<tr>' +
-        '<td class="font-mono text-xs">' + App.escapeHtml(m.relative_path) + '</td>' +
+        '<td class="font-mono text-xs u2-copyable" style="word-break: break-all;"' +
+        ' data-copy="' + encodeURIComponent(m.relative_path) + '"' +
+        ' title="Click to copy path" onclick="copyMemberPath(this)">' +
+        App.escapeHtml(m.relative_path) + '</td>' +
         '<td class="text-sm">' + humanBytes(m.member_size) + '</td>' +
+        '<td class="font-mono text-xs text-muted" title="' + App.escapeHtml(sha) + '">' +
+        (sha ? sha.substring(0, 12) + '…' : '—') + '</td>' +
         '<td>' + kind + '</td></tr>';
     }
     return h + '</tbody></table></div>';
   }
 
+  function renderMemberMeta(archive) {
+    const el = document.getElementById('ar-member-meta');
+    if (!archive) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.innerHTML =
+      '<span class="font-semibold">' + App.escapeHtml(archive.original_name || '') + '</span>' +
+      ' — ' + humanBytes(archive.total_uncompressed) + ' uncompressed' +
+      (archive.original_size ? ' (source archive ' + humanBytes(archive.original_size) + ')' : '') +
+      ', ' + (archive.member_count || 0) + ' member(s), ' + (archive.format || '?');
+  }
+
+  function updatePager() {
+    const prevBtn = document.getElementById('ar-members-prev');
+    const nextBtn = document.getElementById('ar-members-next');
+    const info = document.getElementById('ar-members-pageinfo');
+    const total = memberState.total;
+    prevBtn.disabled = memberState.loading || memberState.offset <= 0;
+    nextBtn.disabled = memberState.loading
+      || (total !== null && memberState.offset + MEMBER_PAGE_SIZE >= total);
+    if (total !== null && total > 0) {
+      const first = memberState.offset + 1;
+      const last = Math.min(memberState.offset + MEMBER_PAGE_SIZE, total);
+      info.textContent = 'Members ' + first + '–' + last + ' of ' + total;
+    } else if (total === 0) {
+      info.textContent = 'No members';
+    } else {
+      info.textContent = '';
+    }
+  }
+
   async function viewMembers(id, shortFp) {
-    memberState = { id: id, offset: 0 };
+    memberState = { id: id, fingerprint: shortFp || '', offset: 0, total: null, loading: false };
+    document.getElementById('ar-member-toolbar').style.display = 'none';
+    document.getElementById('ar-member-filter').value = '';
+    document.getElementById('ar-members-badge').textContent = 'loading…';
+    document.getElementById('ar-members-badge').className = 'badge badge-gray';
+    document.getElementById('ar-members').innerHTML =
+      '<div class="u2-loading"><span class="u2-spinner"></span> Loading members…</div>';
+    clearMemberError();
     await fetchMembers();
   }
 
   async function fetchMembers() {
-    if (!memberState.id) return;
-    const data = await App.fetchAPI('/api/archives/' + memberState.id +
-                                    '?limit=' + MEMBER_PAGE_SIZE +
-                                    '&offset=' + memberState.offset);
-    document.getElementById('ar-members').innerHTML = memberTable(data.members);
-    const badge = document.getElementById('ar-members-badge');
-    badge.textContent = data.total + ' member(s)';
-    badge.className = 'badge ' + (data.total > 0 ? 'badge-gray' : 'badge-yellow');
+    if (!memberState.id || memberState.loading) return;
+    memberState.loading = true;
+    updatePager();
+    const container = document.getElementById('ar-members');
+    try {
+      const resp = await fetch('/api/archives/' + memberState.id +
+                               '?limit=' + MEMBER_PAGE_SIZE +
+                               '&offset=' + memberState.offset);
+      let data = null;
+      try { data = await resp.json(); } catch (e) { /* non-JSON body */ }
+      if (!resp.ok) {
+        const msg = (data && (data.error || data.detail || data.message))
+          || ('HTTP ' + resp.status);
+        memberState.total = 0;  // disable the pager — there is nothing to page
+        const badge = document.getElementById('ar-members-badge');
+        badge.textContent = 'load failed';
+        badge.className = 'badge badge-red';
+        container.innerHTML = '<div class="empty-state" style="padding: 1.5rem;"><p>Could not load members</p></div>';
+        showMemberError('Failed to load members: ' + msg);
+        App.Toast.error('Failed to load members: ' + msg);
+        return;
+      }
+      clearMemberError();
+      memberState.total = data.total;
+      // Offset beyond the end (archive shrank): step back one page once.
+      if (!data.members.length && data.total > 0 && memberState.offset > 0) {
+        memberState.offset = Math.max(0, Math.floor((data.total - 1) / MEMBER_PAGE_SIZE) * MEMBER_PAGE_SIZE);
+        memberState.loading = false;
+        return fetchMembers();
+      }
+      container.innerHTML = memberTable(data.members);
+      renderMemberMeta(data.archive);
+      document.getElementById('ar-member-toolbar').style.display = 'block';
+      const badge = document.getElementById('ar-members-badge');
+      badge.textContent = data.total + ' member(s)';
+      badge.className = 'badge ' + (data.total > 0 ? 'badge-gray' : 'badge-yellow');
+      filterMemberRows();
+    } catch (e) {
+      memberState.total = 0;  // disable the pager — there is nothing to page
+      const badge = document.getElementById('ar-members-badge');
+      badge.textContent = 'load failed';
+      badge.className = 'badge badge-red';
+      container.innerHTML = '<div class="empty-state" style="padding: 1.5rem;"><p>Could not load members</p></div>';
+      showMemberError('Network error while loading members: ' + e.message);
+    } finally {
+      memberState.loading = false;
+      updatePager();
+      App.initIcons();
+    }
   }
 
   function membersPage(delta) {
-    if (!memberState.id) return;
-    memberState.offset = Math.max(0, memberState.offset + delta * MEMBER_PAGE_SIZE);
+    if (!memberState.id || memberState.loading) return;
+    const next = memberState.offset + delta * MEMBER_PAGE_SIZE;
+    let clamped = Math.max(0, next);
+    if (memberState.total !== null) {
+      const maxOffset = Math.max(0, Math.floor(Math.max(0, memberState.total - 1) / MEMBER_PAGE_SIZE) * MEMBER_PAGE_SIZE);
+      clamped = Math.min(clamped, maxOffset);
+    }
+    memberState.offset = clamped;
+    document.getElementById('ar-members').innerHTML =
+      '<div class="u2-loading"><span class="u2-spinner"></span> Loading members…</div>';
     fetchMembers();
+  }
+
+  function copyMemberPath(el) {
+    App.copyToClipboard(decodeURIComponent(el.dataset.copy || ''));
+  }
+
+  function filterMemberRows() {
+    const q = (document.getElementById('ar-member-filter').value || '').toLowerCase().trim();
+    const rows = document.querySelectorAll('#ar-members tbody tr');
+    let shown = 0;
+    rows.forEach(r => {
+      const hit = !q || r.textContent.toLowerCase().indexOf(q) !== -1;
+      r.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    updatePager();
+    const info = document.getElementById('ar-members-pageinfo');
+    if (q) {
+      info.textContent = shown + ' of ' + rows.length + ' member(s) on this page match';
+    }
+  }
+
+  /* ── Restore form: validation + explicit confirm gate ──── */
+  function fingerprintValidationError(fp) {
+    if (!fp) return 'Fingerprint is required — click Restore on an archive row or paste a (prefix of a) sha256 fingerprint';
+    if (!/^[0-9a-fA-F]+$/.test(fp)) {
+      return 'Fingerprints are sha256 hex strings; this value contains non-hex characters';
+    }
+    if (fp.length < 8) return 'Use at least 8 hex characters so the prefix is unique';
+    return null;
+  }
+
+  // Mirrors the server-side _unsafe_dest guard (routes/archives.py) so the
+  // user gets feedback before the request is even sent.
+  function destValidationError(dest) {
+    if (!dest || !dest.trim()) return 'Destination path is required';
+    if (dest.indexOf('\x00') !== -1) return 'Destination path contains an invalid (NUL) character';
+    const parts = dest.split(/[\\/]/);
+    if (parts.indexOf('..') !== -1) return 'Destination path must not contain ".." segments (traversal)';
+    const stripped = dest.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!stripped) return 'Destination path must not be a bare filesystem root ("/" or "C:\\")';
+    if (stripped.endsWith(':')) return 'Destination path must not be a bare drive — add a folder, e.g. "D:/restores"';
+    if (dest.length >= 2 && dest[1] === ':' && !/^[A-Za-z]:[\\/]/.test(dest)) {
+      return 'Drive-relative path ("' + dest + '") resolves oddly — use "D:/restores" style absolute paths';
+    }
+    return null;
+  }
+
+  function setFieldHint(id, msg, cls) {
+    const el = document.getElementById(id);
+    el.textContent = msg || '';
+    el.className = 'u2-field-hint' + (msg ? ' visible ' + cls : '');
+  }
+
+  function validateRestoreFields() {
+    const fp = document.getElementById('ar-restore-fp').value.trim();
+    const dest = document.getElementById('ar-restore-dest').value.trim();
+    const confirmed = document.getElementById('ar-restore-confirm').checked;
+    const note = document.getElementById('ar-restore-note');
+
+    const fpErr = fingerprintValidationError(fp);
+    setFieldHint('ar-fp-hint', fpErr, 'error');
+    if (!fpErr && fp.length < 64) {
+      setFieldHint('ar-fp-hint', 'Prefix accepted — resolves to the first matching archive', 'ok');
+    }
+
+    const destErr = destValidationError(dest);
+    setFieldHint('ar-dest-hint', destErr, 'error');
+    if (!destErr) {
+      setFieldHint('ar-dest-hint', 'Valid destination path', 'ok');
+    }
+
+    const btn = document.getElementById('ar-restore-btn');
+    btn.disabled = !confirmed || !!(fpErr || destErr);
+    if (!confirmed) {
+      note.textContent = 'Confirm the checkbox to enable restore';
+    } else if (fpErr || destErr) {
+      note.textContent = 'Fix the highlighted fields to enable restore';
+    } else {
+      note.textContent = 'Ready — the restore request is sent with confirm: true';
+    }
+    return !fpErr && !destErr;
+  }
+
+  function showRestoreBanner(id, textId, msg) {
+    const errBox = document.getElementById('ar-restore-banner');
+    const okBox = document.getElementById('ar-restore-success');
+    if (id === 'error') {
+      document.getElementById('ar-restore-banner-text').textContent = msg;
+      errBox.classList.add('visible');
+      okBox.classList.remove('visible');
+    } else if (id === 'success') {
+      document.getElementById('ar-restore-success-text').textContent = msg;
+      okBox.classList.add('visible');
+      errBox.classList.remove('visible');
+    } else {
+      errBox.classList.remove('visible');
+      okBox.classList.remove('visible');
+    }
   }
 
   function openRestore(fp) {
     document.getElementById('ar-restore-fp').value = fp;
+    validateRestoreFields();
     document.getElementById('ar-restore-dest').focus();
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }
@@ -172,32 +483,64 @@
   async function submitRestore(btn) {
     const fp = document.getElementById('ar-restore-fp').value.trim();
     const dest = document.getElementById('ar-restore-dest').value.trim();
-    if (!fp || !dest) {
-      App.Toast.error('Fingerprint and destination path are required');
+    showRestoreBanner('none');
+    if (!validateRestoreFields()) {
+      showRestoreBanner('error', null,
+        'Fix the highlighted fields before restoring.');
       return;
     }
-    App.Modal.confirm(
-      'Restore archive?',
-      'Every member will be written (sha-verified) under ' + dest +
-      ' on the server. Existing files at those paths may be overwritten.',
-      async () => {
-        btn.disabled = true;
-        try {
-          const resp = await App.fetchAPI('/api/archives/restore', {
-            method: 'POST',
-            body: JSON.stringify({ fingerprint: fp, dest_path: dest, confirm: true }),
-          });
-          if (resp.status === 'ok') {
-            App.Toast.success('Restored ' + resp.members + ' member(s) to ' + resp.out);
-          } else {
-            App.Toast.error('Restore finished with ' + resp.errors + ' error(s)');
-          }
-        } catch (e) { /* fetchAPI already toasted the error */ }
-        finally { btn.disabled = false; }
-      },
-      'Restore', true);
+    const confirmed = document.getElementById('ar-restore-confirm');
+    if (!confirmed.checked) {
+      showRestoreBanner('error', null,
+        'Tick the confirmation checkbox first — this restore writes files on the server.');
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/archives/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: fp, dest_path: dest, confirm: true }),
+      });
+      let data = null;
+      try { data = await resp.json(); } catch (e) { /* non-JSON body */ }
+      if (!resp.ok) {
+        const msg = (data && (data.error || data.detail || data.message))
+          || ('HTTP ' + resp.status);
+        showRestoreBanner('error', null, msg);
+        App.Toast.error('Restore failed: ' + msg);
+        return;
+      }
+      if (data.status === 'ok') {
+        showRestoreBanner('success', null,
+          'Restored ' + data.members + ' member(s) to ' + (data.out || dest) + '.');
+        App.Toast.success('Restored ' + data.members + ' member(s) to ' + (data.out || dest));
+        // Reset the confirm gate so a follow-up restore needs a fresh tick.
+        confirmed.checked = false;
+        validateRestoreFields();
+      } else if (data.status === 'partial') {
+        const firstBad = (data.detail || []).find(d => d.status === 'error');
+        showRestoreBanner('error', null,
+          'Partial restore: ' + data.members + ' member(s) restored to ' + (data.out || dest) +
+          ', ' + data.errors + ' error(s)' +
+          (firstBad && firstBad.message ? ' — first: ' + firstBad.message : '') + '.');
+        App.Toast.warning('Partial restore: ' + data.errors + ' error(s)');
+        confirmed.checked = false;
+        validateRestoreFields();
+      } else {
+        const msg = data.error || ('Restore finished with ' + (data.errors || 0) + ' error(s)');
+        showRestoreBanner('error', null, msg);
+        App.Toast.error('Restore failed: ' + msg);
+      }
+    } catch (e) {
+      showRestoreBanner('error', null, 'Network error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      validateRestoreFields();
+    }
   }
 
+  validateRestoreFields();
   if (window.lucide) lucide.createIcons();
 </script>
 {% endblock %}

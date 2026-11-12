@@ -8,15 +8,15 @@
     <h1>cPanel Ingest</h1>
     <p class="text-muted">Stream cpmove archives into the dedup vault; SQLite hot store + Parquet history.</p>
   </div>
-  <div class="header-actions">
+  <div class="page-header-actions">
     <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="Ingest.pause()">
-      <i data-lucide="pause"></i> Pause
+      <i data-lucide="pause" style="width:14px;height:14px;"></i> Pause
     </button>
     <button class="btn btn-ghost btn-sm" id="btn-resume" onclick="Ingest.resume()">
-      <i data-lucide="play"></i> Resume
+      <i data-lucide="play" style="width:14px;height:14px;"></i> Resume
     </button>
-    <button class="btn btn-primary btn-sm" id="btn-scan" onclick="Ingest.scan()">
-      <i data-lucide="scan-line"></i> Scan drop folder
+    <button class="btn btn-primary btn-sm" id="btn-scan" onclick="Ingest.scan(this)">
+      <i data-lucide="scan-line" style="width:14px;height:14px;"></i> Scan drop folder
     </button>
   </div>
 </div>
@@ -25,28 +25,37 @@
 <div class="card" style="margin-bottom:16px;">
   <div class="card-header"><h3>Drop Folder</h3></div>
   <div class="card-body">
-    <div class="stats-row">
-      <div class="stat">
-        <span class="stat-label">Status</span>
-        <span class="stat-value" id="ingest-enabled">{{ 'Enabled' if ci.enabled else 'Disabled' }}</span>
+    <div class="u3-stats-row">
+      <div class="u3-stat">
+        <span class="u3-stat-label">Status</span>
+        <span class="u3-stat-value" id="ingest-enabled">
+          {% if ci.enabled %}<span class="badge badge-green">Enabled</span>{% else %}<span class="badge badge-red">Disabled</span>{% endif %}
+        </span>
       </div>
-      <div class="stat">
-        <span class="stat-label">Drop root</span>
-        <span class="stat-value stat-sm" id="drop-root">{{ ci.drop_root or '(not configured)' }}</span>
+      <div class="u3-stat">
+        <span class="u3-stat-label">Drop root</span>
+        <span class="u3-stat-value small font-mono">{{ ci.drop_root or '(not configured)' }}</span>
       </div>
-      <div class="stat">
-        <span class="stat-label">keep_raw</span>
-        <span class="stat-value" id="keep-raw">{{ ci.keep_raw }}</span>
+      <div class="u3-stat">
+        <span class="u3-stat-label">keep_raw</span>
+        <span class="u3-stat-value">{{ ci.keep_raw }} <span class="text-xs text-muted">(raw archive retention)</span></span>
       </div>
-      <div class="stat">
-        <span class="stat-label">Queue</span>
-        <span class="stat-value" id="queue-depth">0 / 0</span>
+      <div class="u3-stat">
+        <span class="u3-stat-label">Queue</span>
+        <span class="u3-stat-value u3-num" id="queue-depth">0 / 0</span>
       </div>
     </div>
-    <div id="queue-progress" class="progress" style="display:none; margin-top:12px;">
-      <div class="progress-bar" id="queue-bar" style="width:0%"></div>
+    <div id="queue-progress" style="display:none; margin-top:12px;">
+      <div class="progress-bar">
+        <div class="progress-fill accent" id="queue-bar" style="width:0%"></div>
+      </div>
+      <p class="text-xs text-muted u3-num" id="queue-pct" style="margin-top:0.4rem;"></p>
     </div>
-    <p class="text-muted" id="current-item" style="margin-top:8px; min-height:18px;"></p>
+    <p class="text-muted text-sm" id="current-item" style="margin-top:8px; min-height:18px;"></p>
+    <p class="u3-state-note is-error" id="status-note" style="display:none;"></p>
+    {% if not ci.enabled %}
+    <p class="u3-state-note">Ingest is disabled in config (cpanel_ingest.enabled) — scans and scheduled ingest are rejected until it is enabled.</p>
+    {% endif %}
   </div>
 </div>
 
@@ -55,26 +64,34 @@
   <div class="card">
     <div class="card-header"><h3>Staging</h3></div>
     <div class="card-body">
-      <div class="progress">
-        <div class="progress-bar" id="staging-bar" style="width:0%"></div>
+      <div class="progress-bar">
+        <div class="progress-fill accent" id="staging-bar" style="width:0%"></div>
       </div>
-      <p class="text-muted" style="margin-top:8px;">
+      <p class="text-muted text-sm u3-num" style="margin-top:8px;">
         <span id="staging-used">0 B</span> of <span id="staging-budget">{{ ci.staging_budget_gb }} GB</span>
-        <span id="staging-path" class="stat-sm">({{ ci.staging_dir }})</span>
+        <span id="staging-path" class="font-mono text-xs">({{ ci.staging_dir }})</span>
       </p>
     </div>
   </div>
   <div class="card">
     <div class="card-header"><h3>DB Health</h3></div>
     <div class="card-body">
-      <div class="stats-row">
-        <div class="stat"><span class="stat-label">SQLite</span><span class="stat-value" id="db-size">0 B</span></div>
-        <div class="stat"><span class="stat-label">Live files</span><span class="stat-value" id="db-files">0</span></div>
-        <div class="stat"><span class="stat-label">Chunks</span><span class="stat-value" id="db-chunks">0</span></div>
-        <div class="stat"><span class="stat-label">Parquet</span><span class="stat-value" id="parquet-size">0 B</span></div>
+      <div class="u3-stats-row">
+        <div class="u3-stat"><span class="u3-stat-label">SQLite</span><span class="u3-stat-value u3-num" id="db-size">0 B</span></div>
+        <div class="u3-stat"><span class="u3-stat-label">Live files</span><span class="u3-stat-value u3-num" id="db-files">0</span></div>
+        <div class="u3-stat"><span class="u3-stat-label">Chunks</span><span class="u3-stat-value u3-num" id="db-chunks">0</span></div>
+        <div class="u3-stat"><span class="u3-stat-label">Parquet</span><span class="u3-stat-value u3-num" id="parquet-size">0 B</span></div>
       </div>
-      <p class="text-muted" id="parquet-partitions" style="margin-top:8px;">No partitions</p>
+      <p class="text-muted text-sm u3-num" id="parquet-partitions" style="margin-top:8px;">No partitions</p>
     </div>
+  </div>
+</div>
+
+<!-- Recent ingest errors (fed from the status payload; hidden while clean) -->
+<div class="card" id="ingest-errors-card" style="display:none; margin-bottom:16px; border-color: rgba(239, 68, 68, 0.4);">
+  <div class="card-header"><h3>Recent Ingest Errors</h3></div>
+  <div class="card-body">
+    <ul id="ingest-errors" class="u3-state-note is-error" style="margin:0; padding-left:1.2rem;"></ul>
   </div>
 </div>
 
@@ -82,7 +99,7 @@
 <div class="card" style="margin-bottom:16px;">
   <div class="card-header"><h3>Ingest by Backend (last 24h)</h3></div>
   <div class="card-body">
-    <div id="backend-share-body"><p class="text-muted">Loading…</p></div>
+    <div id="backend-share-body"><div class="u2-loading"><span class="u2-spinner"></span> Loading…</div></div>
   </div>
 </div>
 
@@ -91,8 +108,8 @@
   <div class="card-header"><h3>Accounts</h3></div>
   <div class="card-body">
     <table class="table" id="accounts-table">
-      <thead><tr><th>Account</th><th>Files</th><th>Bytes</th><th></th></tr></thead>
-      <tbody id="accounts-body"><tr><td colspan="4" class="text-muted">Loading…</td></tr></tbody>
+      <thead><tr><th>Account</th><th>Status</th><th>Files</th><th>Bytes</th><th></th></tr></thead>
+      <tbody id="accounts-body"><tr><td colspan="5" class="u3-state-note">Loading…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -112,14 +129,26 @@
 <div class="card">
   <div class="card-header"><h3>History (Parquet via DuckDB)</h3></div>
   <div class="card-body">
-    <div class="header-actions" style="margin-bottom:10px;">
-      <select id="history-template" class="form-control" style="max-width:220px;">
+    <div class="flex gap-2" style="margin-bottom:10px; flex-wrap: wrap; align-items: center;">
+      <select id="history-template" style="max-width:220px;">
         <option value="member_history">Member history</option>
         <option value="account_bytes">Per-account bytes over time</option>
         <option value="recent">Recent rows</option>
       </select>
-      <input id="history-account" class="form-control" placeholder="account (optional)" style="max-width:180px;">
-      <button class="btn btn-sm btn-ghost" onclick="Ingest.history()">Query</button>
+      <input id="history-account" type="text" placeholder="account (optional)" style="max-width:180px;">
+      <button class="btn btn-sm btn-ghost" onclick="Ingest.history(this)">Query</button>
+    </div>
+    <div id="history-error" class="u3-state-note is-error" style="display:none;"></div>
+    <div id="history-table-wrap" style="display:none;">
+      <table class="table" id="history-table">
+        <thead id="history-head"></thead>
+        <tbody id="history-body"></tbody>
+      </table>
+      <div class="u3-pager">
+        <span class="u3-pager-info" id="history-pager-info"></span>
+        <button class="btn btn-ghost btn-xs" id="history-prev" onclick="Ingest.histPage(-1)">&larr; Prev</button>
+        <button class="btn btn-ghost btn-xs" id="history-next" onclick="Ingest.histPage(1)">Next &rarr;</button>
+      </div>
     </div>
     <pre id="history-output" class="text-muted" style="max-height:260px; overflow:auto;">(no query yet)</pre>
   </div>
@@ -137,129 +166,286 @@ function fmtBytes(n) {
   return v.toFixed(i ? 1 : 0) + ' ' + units[i];
 }
 
+// "2024-05-30 09:44:12" -> "May 30, 2024 09:44" (year only when not current).
+function fmtStamp(s) {
+  if (!s) return '—';
+  const d = new Date(String(s).replace(' ', 'T'));
+  if (isNaN(d.getTime())) return String(s);
+  const opts = { month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('en-US', opts) + ' ' + d.toTimeString().slice(0, 5);
+}
+
 const Ingest = {
   pollTimer: null,
+  historyRows: [],
+  historyPage: 0,
+  historyPageSize: 25,
 
   async status() {
     try {
-      const s = await fetch('/api/ingest/status').then(r => r.json());
+      const resp = await fetch('/api/ingest/status');
+      const s = await resp.json();
+      if (!resp.ok) throw new Error(s.error || s.message || ('HTTP ' + resp.status));
+
+      const note = document.getElementById('status-note');
+      note.style.display = 'none';
+
       document.getElementById('queue-depth').textContent =
         `${s.queue.archives_done} / ${s.queue.archives_total}`;
       const bar = document.getElementById('queue-bar');
       const wrap = document.getElementById('queue-progress');
+      const pctEl = document.getElementById('queue-pct');
       if (s.queue.archives_total > 0 && (s.running || s.queue.members_done > 0)) {
         wrap.style.display = 'block';
         const pct = s.queue.members_total > 0
           ? Math.round(100 * s.queue.members_done / s.queue.members_total) : 0;
         bar.style.width = pct + '%';
+        pctEl.textContent = `${s.queue.members_done} / ${s.queue.members_total} members (${pct}%)`;
       } else {
         wrap.style.display = 'none';
+        pctEl.textContent = '';
       }
       document.getElementById('current-item').textContent =
-        s.running ? `${s.queue.current_archive || ''} → ${s.queue.current_member || ''}` : '';
+        s.running ? 'Now ingesting: ' + (s.queue.current_archive || '') + ' → ' + (s.queue.current_member || '') : '';
       document.getElementById('staging-used').textContent = fmtBytes(s.staging.bytes);
       const budgetBytes = (s.staging.budget_gb || 10) * 1024 ** 3;
-      document.getElementById('staging-bar').style.width =
-        Math.min(100, Math.round(100 * s.staging.bytes / budgetBytes)) + '%';
+      const sbar = document.getElementById('staging-bar');
+      const over = s.staging.bytes > budgetBytes;
+      sbar.className = 'progress-fill ' + (over ? 'red' : 'accent');
+      sbar.style.width = Math.min(100, Math.round(100 * s.staging.bytes / budgetBytes)) + '%';
       document.getElementById('db-size').textContent = fmtBytes(s.sqlite.size);
-      document.getElementById('db-files').textContent = s.sqlite.files;
-      document.getElementById('db-chunks').textContent = s.sqlite.chunks;
+      document.getElementById('db-files').textContent = (s.sqlite.files || 0).toLocaleString('en-US');
+      document.getElementById('db-chunks').textContent = (s.sqlite.chunks || 0).toLocaleString('en-US');
       const pbytes = s.parquet.partitions.reduce((a, p) => a + (p.bytes || 0), 0);
       document.getElementById('parquet-size').textContent = fmtBytes(pbytes);
-      document.getElementById('parquet-partitions').textContent =
-        s.parquet.partitions.length
-          ? s.parquet.partitions.map(p => `${p.file} (${fmtBytes(p.bytes)})`).join(', ')
-          : 'No partitions';
+      const parts = s.parquet.partitions;
+      document.getElementById('parquet-partitions').textContent = parts.length
+        ? parts.length + ' partition(s): ' + parts.slice(0, 3).map(p => `${p.file} (${fmtBytes(p.bytes)})`).join(', ')
+          + (parts.length > 3 ? ' …' : '')
+        : 'No partitions — run a cold export (db cold-export) to archive old rows';
+
+      // Honest error surfacing: the status payload carries the last errors.
+      const errCard = document.getElementById('ingest-errors-card');
+      const errList = document.getElementById('ingest-errors');
+      if (s.errors && s.errors.length) {
+        errList.innerHTML = s.errors.map(e => '<li>' + App.escapeHtml(e) + '</li>').join('');
+        errCard.style.display = 'block';
+      } else {
+        errCard.style.display = 'none';
+      }
+
       document.getElementById('btn-pause').disabled = s.paused;
       document.getElementById('btn-resume').disabled = !s.paused;
       document.getElementById('btn-scan').disabled = s.running;
 
       const tbody = document.getElementById('accounts-body');
       if (s.accounts.length) {
-        tbody.innerHTML = s.accounts.map(a => `
+        const totalFiles = s.accounts.reduce((a, x) => a + (x.files || 0), 0);
+        const totalBytes = s.accounts.reduce((a, x) => a + (x.bytes || 0), 0);
+        tbody.innerHTML = s.accounts.map(a => {
+          const acct = String(a.source_root || '').replace('cpanel/', '');
+          return `
           <tr>
-            <td>${a.source_root.replace('cpanel/', '')}</td>
-            <td>${a.files}</td>
-            <td>${fmtBytes(a.bytes)}</td>
-            <td><button class="btn btn-ghost btn-sm" onclick="Ingest.generations('${a.source_root.replace('cpanel/', '')}')">Generations</button></td>
-          </tr>`).join('');
+            <td class="font-mono text-xs">${App.escapeHtml(acct)}</td>
+            <td><span class="u3-pill u3-pill-green"><span class="dot dot-green"></span> Live</span></td>
+            <td class="u3-num">${(a.files || 0).toLocaleString('en-US')}</td>
+            <td class="u3-num">${fmtBytes(a.bytes)}</td>
+            <td><button class="btn btn-ghost btn-sm" onclick="Ingest.generations('${App.escapeHtml(acct)}', this)">Generations</button></td>
+          </tr>`;
+        }).join('')
+        + `<tr>
+            <td class="font-semibold">Total (${s.accounts.length} account${s.accounts.length === 1 ? '' : 's'})</td>
+            <td></td>
+            <td class="u3-num font-semibold">${totalFiles.toLocaleString('en-US')}</td>
+            <td class="u3-num font-semibold">${fmtBytes(totalBytes)}</td>
+            <td></td>
+          </tr>`;
       } else {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No cpanel/ accounts ingested yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="u3-state-note">No cpanel/ accounts ingested yet — place cpmove archives under the drop root and scan.</td></tr>';
       }
-    } catch (e) { console.error('status failed', e); }
+    } catch (e) {
+      const note = document.getElementById('status-note');
+      note.textContent = 'Ingest status unavailable — ' + (e.message || 'request failed') + ' (retrying…)';
+      note.style.display = 'block';
+    }
   },
 
-  async scan() {
-    const r = await fetch('/api/ingest/scan', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
-    });
-    const d = await r.json();
-    if (!r.ok) { App.Toast.show(d.error || 'scan failed', 'error'); return; }
-    App.Toast.show('Ingest scan started', 'success');
+  async scan(btn) {
+    const origHtml = btn ? btn.innerHTML : null;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Scanning…'; }
+    try {
+      const r = await fetch('/api/ingest/scan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const d = await r.json();
+      if (!r.ok) { App.Toast.show(d.error || d.message || ('scan failed (HTTP ' + r.status + ')'), 'error'); return; }
+      App.Toast.show('Ingest scan started — ' + (d.drop_root || ''), 'success');
+      this.status();
+    } catch (e) {
+      App.Toast.show('Scan request failed: ' + (e.message || e), 'error');
+    } finally {
+      if (btn && origHtml) { btn.innerHTML = origHtml; }
+      this.status();
+    }
+  },
+
+  async pause() {
+    try {
+      const r = await fetch('/api/ingest/pause', {method:'POST'});
+      if (!r.ok) App.Toast.show('Pause failed (HTTP ' + r.status + ')', 'error');
+      else App.Toast.show('Ingest paused — deferred archives stay in the drop root', 'info');
+    } catch (e) { App.Toast.show('Pause request failed: ' + (e.message || e), 'error'); }
     this.status();
   },
 
-  async pause() { await fetch('/api/ingest/pause', {method:'POST'}); this.status(); },
-  async resume() { await fetch('/api/ingest/resume', {method:'POST'}); this.status(); },
+  async resume() {
+    try {
+      const r = await fetch('/api/ingest/resume', {method:'POST'});
+      if (!r.ok) App.Toast.show('Resume failed (HTTP ' + r.status + ')', 'error');
+      else App.Toast.show('Ingest resumed', 'success');
+    } catch (e) { App.Toast.show('Resume request failed: ' + (e.message || e), 'error'); }
+    this.status();
+  },
 
-  async generations(account) {
+  async generations(account, btn) {
     document.getElementById('generations-card').style.display = 'block';
-    document.getElementById('generations-title').textContent = `Generations — ${account}`;
-    const d = await fetch(`/api/ingest/generations?account=${encodeURIComponent(account)}`).then(r => r.json());
+    document.getElementById('generations-title').textContent = 'Generations — ' + account;
     const tbody = document.getElementById('generations-body');
-    tbody.innerHTML = (d.generations || []).map(g => `
-      <tr>
-        <td>gen ${g.generation}</td>
-        <td>${g.members}</td>
-        <td>${fmtBytes(g.bytes)}</td>
-        <td>${g.created || ''}</td>
-        <td><button class="btn btn-ghost btn-sm" onclick="Ingest.restore('${account}', ${g.generation})">Restore</button></td>
-      </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No generations</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="u3-state-note">Loading…</td></tr>';
+    try {
+      const resp = await fetch(`/api/ingest/generations?account=${encodeURIComponent(account)}`);
+      const d = await resp.json();
+      if (!resp.ok) throw new Error(d.error || d.detail || ('HTTP ' + resp.status));
+      tbody.innerHTML = (d.generations || []).map(g => `
+        <tr>
+          <td class="u3-num">gen ${g.generation}</td>
+          <td class="u3-num">${(g.members || 0).toLocaleString('en-US')}</td>
+          <td class="u3-num">${fmtBytes(g.bytes)}</td>
+          <td class="u3-num" title="${App.escapeHtml(g.created || '')}">${fmtStamp(g.created)}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="Ingest.restore('${App.escapeHtml(account)}', ${g.generation})">Restore</button></td>
+        </tr>`).join('')
+        || '<tr><td colspan="5" class="u3-state-note">No generations for this account</td></tr>';
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="5" class="u3-state-note is-error">Failed to load generations — '
+        + App.escapeHtml(e.message || String(e)) + '</td></tr>';
+    }
   },
 
   async restore(account, generation) {
     const out = prompt(`Restore ${account} gen ${generation} to server path:`, `restore_out/${account}`);
     if (!out) return;
-    const r = await fetch('/api/ingest/restore-generation', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({account, generation, out})
-    });
-    const d = await r.json();
-    if (d.status === 'ok') App.Toast.show(`Restored ${d.members} member(s) to ${d.out}`, 'success');
-    else App.Toast.show(d.message || d.error || 'restore failed', 'error');
+    try {
+      const r = await fetch('/api/ingest/restore-generation', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({account, generation, out})
+      });
+      const d = await r.json();
+      if (d.status === 'ok') App.Toast.show(`Restored ${d.members} member(s) to ${d.out}`, 'success');
+      else App.Toast.show(d.message || d.error || 'restore failed', 'error');
+    } catch (e) {
+      App.Toast.show('Restore request failed: ' + (e.message || e), 'error');
+    }
   },
 
-  async history() {
+  // ── History: proper table with human timestamps/sizes + client paging ──
+  async history(btn) {
     const t = document.getElementById('history-template').value;
     const a = document.getElementById('history-account').value.trim();
     const out = document.getElementById('history-output');
+    const errEl = document.getElementById('history-error');
+    const wrapEl = document.getElementById('history-table-wrap');
+    errEl.style.display = 'none';
+    wrapEl.style.display = 'none';
     out.textContent = 'Querying…';
+    if (btn) { btn.disabled = true; }
     try {
-      const d = await fetch(`/api/ingest/history?template=${t}&account=${encodeURIComponent(a)}&limit=100`).then(r => r.json());
-      if (d.error) { out.textContent = d.error; return; }
-      if (!d.rows || !d.rows.length) { out.textContent = '(no rows)'; return; }
-      out.textContent = JSON.stringify(d.rows, null, 2);
-    } catch (e) { out.textContent = String(e); }
+      const resp = await fetch(`/api/ingest/history?template=${t}&account=${encodeURIComponent(a)}&limit=100`);
+      const d = await resp.json();
+      if (!resp.ok) {
+        throw new Error(d.error || d.message || d.status || ('HTTP ' + resp.status));
+      }
+      this.historyRows = d.rows || [];
+      this.historyPage = 0;
+      if (!this.historyRows.length) {
+        out.textContent = '(no rows — the Parquet history is empty; run "backupme db cold-export" to archive old rows first)';
+        return;
+      }
+      out.textContent = '';
+      wrapEl.style.display = 'block';
+      this.renderHistory();
+    } catch (e) {
+      out.textContent = '';
+      errEl.textContent = 'History query failed — ' + (e.message || String(e))
+        + ' (the Parquet store may be missing or empty; run a cold export first)';
+      errEl.style.display = 'block';
+    } finally {
+      if (btn) { btn.disabled = false; }
+    }
+  },
+
+  histPage(delta) {
+    const maxPage = Math.max(0, Math.ceil(this.historyRows.length / this.historyPageSize) - 1);
+    this.historyPage = Math.min(maxPage, Math.max(0, this.historyPage + delta));
+    this.renderHistory();
+  },
+
+  renderHistory() {
+    const rows = this.historyRows;
+    if (!rows.length) return;
+    const cols = Object.keys(rows[0]);
+    const TIME_KEYS = ['created_at', 'deleted_at', 'updated'];
+    const SIZE_KEYS = ['size', 'bytes'];
+    function fmtCell(key, val) {
+      if (val === null || val === undefined || val === '') return '—';
+      const k = String(key).toLowerCase();
+      if (TIME_KEYS.includes(k)) return App.escapeHtml(fmtStamp(val));
+      if (SIZE_KEYS.includes(k)) return fmtBytes(val);
+      if (k === 'sha256') return '<span class="font-mono text-xs" title="' + App.escapeHtml(String(val)) + '">'
+        + App.escapeHtml(String(val).slice(0, 12)) + '…</span>';
+      return App.escapeHtml(String(val));
+    }
+    document.getElementById('history-head').innerHTML = '<tr>'
+      + cols.map(c => '<th>' + App.escapeHtml(c.replace(/_/g, ' ')) + '</th>').join('') + '</tr>';
+    const start = this.historyPage * this.historyPageSize;
+    const pageRows = rows.slice(start, start + this.historyPageSize);
+    document.getElementById('history-body').innerHTML = pageRows.map(r =>
+      '<tr>' + cols.map(c => '<td class="u3-num">' + fmtCell(c, r[c]) + '</td>').join('') + '</tr>'
+    ).join('');
+    document.getElementById('history-pager-info').textContent =
+      'Rows ' + (start + 1) + '–' + (start + pageRows.length) + ' of ' + rows.length.toLocaleString('en-US')
+      + ' · page ' + (this.historyPage + 1) + '/' + Math.ceil(rows.length / this.historyPageSize);
+    document.getElementById('history-prev').disabled = this.historyPage === 0;
+    document.getElementById('history-next').disabled =
+      start + this.historyPageSize >= rows.length;
   },
 
   async backendShare() {
     try {
-      const d = await fetch('/api/backends/usage').then(r => r.json());
+      const resp = await fetch('/api/backends/usage');
+      const d = await resp.json();
+      if (!resp.ok) throw new Error(d.error || ('HTTP ' + resp.status));
       const body = document.getElementById('backend-share-body');
       const rows = d.backends.filter(b => (b.ingest_24h_bytes || 0) > 0 || (b.stored_bytes || 0) > 0);
-      if (!rows.length) { body.innerHTML = '<p class="text-muted">No stored data yet</p>'; return; }
+      if (!rows.length) {
+        body.innerHTML = '<div class="u3-state-note">No stored data on any backend yet.</div>';
+        return;
+      }
       const total24h = rows.reduce((a, b) => a + (b.ingest_24h_bytes || 0), 0) || 1;
       body.innerHTML = rows.map(b => `
         <div style="margin-bottom:8px;">
-          <div class="flex justify-between text-xs text-muted">
-            <span>${b.name} (${b.type})</span>
+          <div class="flex justify-between text-xs text-muted u3-num">
+            <span>${App.escapeHtml(b.name)} (${App.escapeHtml(b.type)})${b.connected ? '' : ' · <span style=\"color:var(--red);\">offline</span>'}</span>
             <span>+${fmtBytes(b.ingest_24h_bytes || 0)} / 24h · ${fmtBytes(b.stored_bytes)} stored</span>
           </div>
-          <div class="progress">
-            <div class="progress-bar" style="width:${Math.round(100 * (b.ingest_24h_bytes || 0) / total24h)}%"></div>
+          <div class="progress-bar" style="margin-top:4px;">
+            <div class="progress-fill accent" style="width:${Math.round(100 * (b.ingest_24h_bytes || 0) / total24h)}%"></div>
           </div>
         </div>`).join('');
-    } catch (e) {}
+    } catch (e) {
+      document.getElementById('backend-share-body').innerHTML =
+        '<div class="u3-state-note is-error">Backend usage unavailable — ' + App.escapeHtml(e.message || String(e)) + '</div>';
+    }
   },
 };
 

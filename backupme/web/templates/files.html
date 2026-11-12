@@ -2,6 +2,17 @@
 {% block title %}Files{% endblock %}
 {% block breadcrumb %}Files{% endblock %}
 
+{# Human byte formatting for server-rendered cells (u2 additive helper). #}
+{% macro hb(n) -%}
+  {%- if n is none -%}—
+  {%- elif n < 1024 -%}{{ n|int }} B
+  {%- elif n < 1024 * 1024 -%}{{ '%.1f'|format(n / 1024) }} KB
+  {%- elif n < 1024 * 1024 * 1024 -%}{{ '%.1f'|format(n / (1024 * 1024)) }} MB
+  {%- elif n < 1024 * 1024 * 1024 * 1024 -%}{{ '%.1f'|format(n / (1024 * 1024 * 1024)) }} GB
+  {%- else -%}{{ '%.1f'|format(n / (1024 * 1024 * 1024 * 1024)) }} TB
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="page-header">
   <h1><i data-lucide="files" style="width:28px;height:28px;"></i> Files</h1>
@@ -104,8 +115,9 @@
   <div class="flex gap-3 items-center" style="flex-wrap: wrap;">
     <div class="topbar-search" style="flex: 1; min-width: 200px; max-width: 400px;">
       <i data-lucide="search" class="search-icon" style="width:16px;height:16px;"></i>
-      <input type="search" id="file-search" placeholder="Search files by name or path..." value="{{ q or '' }}" autocomplete="off">
+      <input type="search" id="file-search" placeholder="Search by name, path, or paste a sha256…" value="{{ q or '' }}" autocomplete="off">
     </div>
+    <span class="u2-mode-chip" id="hash-mode-chip"></span>
     <select id="backend-filter" style="min-width: 160px;">
       <option value="">All backends</option>
       {% for be in backends %}
@@ -128,9 +140,9 @@
       <option value="name_desc">Name Z-A</option>
     </select>
     <select id="search-mode" style="min-width: 120px;">
-      <option value="path">Path search</option>
-      <option value="content">Content search</option>
-      <option value="hash">Hash lookup</option>
+      <option value="path" {% if mode != 'content' and mode != 'hash' %}selected{% endif %}>Path search</option>
+      <option value="content" {% if mode == 'content' %}selected{% endif %}>Content search</option>
+      <option value="hash" {% if mode == 'hash' %}selected{% endif %}>Hash lookup</option>
     </select>
     <div class="flex gap-1" style="margin-left:auto;">
       <button class="btn btn-ghost btn-icon sm active-view-btn" id="view-list-btn" onclick="setViewMode('list')" title="List view" style="background:var(--accent-bg);color:var(--accent);">
@@ -307,6 +319,16 @@
           <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
           <span>Refresh</span>
         </button>
+        <!-- u2 additive: fast path jump -->
+        <div class="flex items-center gap-1" title="Jump straight to a source root and sub-path">
+          <input type="text" id="browser-jump" autocomplete="off"
+                 placeholder="Jump to path… source/sub/folder"
+                 style="font-size:0.75rem; height:32px; width:200px; padding:4px 8px; border-radius: var(--radius-sm); border:1px solid var(--border-subtle); background: var(--bg-subtle);"
+                 onkeydown="if(event.key==='Enter')browserJumpTo()">
+          <button class="btn btn-secondary btn-sm" onclick="browserJumpTo()" title="Jump to path" style="height:32px; font-size:0.75rem; padding: 0 10px;">
+            <i data-lucide="corner-down-right" style="width:14px;height:14px;"></i> Go
+          </button>
+        </div>
       </div>
 
       <!-- Quick Instant Folder Row Search Filter -->
@@ -468,7 +490,7 @@
           <th>Backend</th>
           <th>Version</th>
           <th class="sortable" data-sort="date">Created</th>
-          <th style="width: 80px;"></th>
+          <th style="width: 108px;"></th>
         </tr>
       </thead>
       <tbody id="files-tbody">
@@ -481,7 +503,7 @@
               <span class="truncate" style="max-width: 320px;" title="{{ f.relative_path }}">{{ f.relative_path }}</span>
             </div>
           </td>
-          <td class="font-mono text-sm">{{ "{:,.0f}".format(f.size) }}</td>
+          <td class="font-mono text-sm" data-size="{{ f.size or 0 }}" title="{{ "{:,.0f}".format(f.size or 0) }} bytes">{{ hb(f.size) }}</td>
           <td>
             <div class="flex items-center gap-1">
               <code class="font-mono text-xs" style="color:var(--text-muted);">{{ f.sha256[:16] if f.sha256 else '' }}…</code>
@@ -492,8 +514,13 @@
               {% endif %}
             </div>
           </td>
-          <td><span class="badge badge-gray">{{ f.source_root or '—' }}</span></td>
-          <td class="text-muted">{{ f.version_seq or 1 }}</td>
+          <td><span class="badge badge-gray" title="Source root">{{ f.source_root or '—' }}</span></td>
+          <td>
+            <button class="btn btn-ghost btn-xs" onclick="showVersions({{ f.id }})"
+                    title="Version history">
+              <span class="badge badge-gray">v{{ f.version_seq or 1 }}</span>
+            </button>
+          </td>
           <td class="text-muted text-sm">{{ f.created_at[:10] if f.created_at else '' }}</td>
           <td>
             <div class="flex gap-1">
@@ -502,6 +529,9 @@
               </a>
               <button class="btn btn-ghost btn-icon sm" onclick="previewFile({{ f.id }})" title="Preview Content">
                 <i data-lucide="eye" style="width:14px;height:14px;"></i>
+              </button>
+              <button class="btn btn-ghost btn-icon sm" onclick="restoreFileIds([{{ f.id }}], 'file')" title="Restore to folder on server">
+                <i data-lucide="folder-down" style="width:14px;height:14px;"></i>
               </button>
               <button class="btn btn-ghost btn-icon sm" onclick="showFileDetail({{ f.id }})" title="Details">
                 <i data-lucide="info" style="width:14px;height:14px;"></i>
@@ -530,23 +560,32 @@
   </div>
 
   <!-- Pagination -->
+  {# Preserve every active filter across page turns; searches are served
+     from fixed-limit queries, so prev/next only applies to plain listing. #}
+  {% set page_qs = 'limit=' ~ limit ~ '&q=' ~ (q or '')|urlencode ~ '&backend=' ~ (backend or '')|urlencode ~ '&source=' ~ (source or '')|urlencode ~ '&mode=' ~ (mode or '')|urlencode %}
   {% if files %}
   <div class="flex items-center justify-between mt-3" style="padding-top: 0.75rem; border-top: 1px solid var(--border-subtle);">
     <span class="text-sm text-muted">
-      Showing {{ offset + 1 }}–{{ offset + files|length }} of {{ total }}
+      {% if q %}
+        {{ files|length }} result(s) for this search — searches are capped, refine the query to narrow further
+      {% else %}
+        Showing {{ offset + 1 }}–{{ offset + files|length }} of {{ total }}
+      {% endif %}
     </span>
+    {% if not q %}
     <div class="flex gap-2">
       {% if offset > 0 %}
-      <a href="/files?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-secondary btn-sm">
+      <a href="/files?offset={{ [offset - limit, 0]|max }}&{{ page_qs }}" class="btn btn-secondary btn-sm">
         <i data-lucide="chevron-left" style="width:14px;height:14px;"></i> Previous
       </a>
       {% endif %}
       {% if files|length == limit %}
-      <a href="/files?offset={{ offset + limit }}&limit={{ limit }}&q={{ q or '' }}&backend={{ backend or '' }}" class="btn btn-secondary btn-sm">
+      <a href="/files?offset={{ offset + limit }}&{{ page_qs }}" class="btn btn-secondary btn-sm">
         Next <i data-lucide="chevron-right" style="width:14px;height:14px;"></i>
       </a>
       {% endif %}
     </div>
+    {% endif %}
   </div>
   {% endif %}
 </div>
@@ -811,9 +850,10 @@
     const cats = { img: 0, vid: 0, aud: 0, doc: 0, arc: 0, cod: 0, oth: 0 };
     
     rows.forEach(r => {
-      // Find path column (index 1) and size column (index 2)
+      // Find path column (index 1) and size column (index 2, exact bytes in
+      // the data-size attribute since the display is human-formatted)
       const pathText = r.children[1].textContent.trim();
-      const sizeVal = parseInt(r.children[2].textContent.replace(/,/g, '')) || 0;
+      const sizeVal = parseFloat(r.children[2].dataset.size) || 0;
       totalSize += sizeVal;
       
       const ext = pathText.split('.').pop().toLowerCase();
@@ -865,19 +905,38 @@
   const backendFilter = document.getElementById('backend-filter');
   const sortSelect = document.getElementById('sort-select');
   const searchMode = document.getElementById('search-mode');
+  const hashChip = document.getElementById('hash-mode-chip');
 
   function doSearch() {
-    const q = encodeURIComponent(searchInput.value);
+    const raw = (searchInput.value || '').trim();
+    const q = encodeURIComponent(raw);
     const backend = encodeURIComponent(backendFilter.value);
-    const mode = searchMode.value;
-    if (mode === 'hash') {
-      window.location.href = '/files?q=' + q + '&backend=' + backend + '&mode=hash';
-    } else if (mode === 'content') {
-      window.location.href = '/files?q=' + q + '&backend=' + backend + '&mode=content';
+    const source = encodeURIComponent(document.getElementById('source-filter').value || '');
+    // A full 64-hex input is unambiguously a sha256 — route it to the exact
+    // hash lookup regardless of the picked mode (>= 8 hex chars still goes
+    // through the chosen mode; the API treats such queries as hash prefixes).
+    let mode = searchMode.value;
+    if (/^[0-9a-fA-F]{64}$/.test(raw)) mode = 'hash';
+    let url = '/files?q=' + q + '&backend=' + backend + '&mode=' + mode;
+    if (source) url += '&source=' + source;
+    window.location.href = url;
+  }
+
+  // Auto-detect hex/hash input and surface it as a hint chip next to the box.
+  function updateSearchHint() {
+    if (!hashChip) return;
+    const raw = (searchInput.value || '').trim();
+    if (/^[0-9a-fA-F]{64}$/.test(raw)) {
+      hashChip.textContent = '64-hex detected — exact SHA-256 lookup';
+      hashChip.classList.add('visible');
+    } else if (raw.length >= 8 && /^[0-9a-fA-F]+$/.test(raw)) {
+      hashChip.textContent = 'Hex prefix — matches file hashes starting with it';
+      hashChip.classList.add('visible');
     } else {
-      window.location.href = '/files?q=' + q + '&backend=' + backend;
+      hashChip.classList.remove('visible');
     }
   }
+  searchInput.addEventListener('input', App.debounce(updateSearchHint, 150));
 
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doSearch();
@@ -885,12 +944,18 @@
 
   backendFilter.addEventListener('change', doSearch);
 
-  function applySourceFilter() {
+  // Exposed on window: the select's inline onchange handler cannot reach
+  // functions declared inside this IIFE otherwise.
+  window.applySourceFilter = function() {
     const src = encodeURIComponent(document.getElementById('source-filter').value);
-    const q = encodeURIComponent(document.getElementById('file-search').value || '');
-    window.location.href = '/files?q=' + q + '&source=' + src + '&mode=path';
-  }
+    const raw = (document.getElementById('file-search').value || '').trim();
+    const backend = encodeURIComponent(document.getElementById('backend-filter').value || '');
+    let url = '/files?q=' + encodeURIComponent(raw) + '&source=' + src +
+              '&backend=' + backend + '&mode=' + searchMode.value;
+    window.location.href = url;
+  };
   searchMode.addEventListener('change', doSearch);
+  updateSearchHint();
 
   // Client-side sorting
   sortSelect.addEventListener('change', () => {
@@ -900,8 +965,9 @@
 
     rows.sort((a, b) => {
       if (sortBy === 'size_desc' || sortBy === 'size_asc') {
-        const aSize = parseInt(a.children[2].textContent.replace(/,/g, '')) || 0;
-        const bSize = parseInt(b.children[2].textContent.replace(/,/g, '')) || 0;
+        // Exact bytes live in data-size; the visible cell is human-formatted.
+        const aSize = parseFloat(a.children[2].dataset.size) || 0;
+        const bSize = parseFloat(b.children[2].dataset.size) || 0;
         return sortBy === 'size_desc' ? bSize - aSize : aSize - bSize;
       }
       if (sortBy === 'date_desc' || sortBy === 'date_asc') {
@@ -1823,6 +1889,21 @@
     loadBrowser(_currentRoot, _currentPath);
   };
 
+  // u2 additive: jump straight to "source_root/sub/path" typed by the user.
+  // The first segment (before any separator) is the source root; the rest is
+  // the sub-path. Both separator styles are accepted — /api/browse matches
+  // rows stored with either / or \.
+  window.browserJumpTo = function() {
+    const input = document.getElementById('browser-jump');
+    const raw = (input.value || '').trim().replace(/^["']|["']+$/g, '');
+    if (!raw) return;
+    const sepIdx = raw.search(/[\\/]/);
+    const root = sepIdx === -1 ? raw : raw.slice(0, sepIdx);
+    const path = sepIdx === -1 ? '' : raw.slice(sepIdx + 1).replace(/[\\/]+$/, '');
+    if (!root) return;
+    browseTo(root, path);
+  };
+
   // Row selection highlighting
   window.selectBrowserRow = function(rowEl, event) {
     if (event.target.closest('.browser-btn') || event.target.closest('a') || event.target.closest('input')) {
@@ -2052,6 +2133,9 @@
                   <a href="/api/download/${f.id}" class="browser-btn btn-accent" title="Download File">
                     <i data-lucide="download" style="width:13px;height:13px;"></i>
                   </a>
+                  <button class="browser-btn btn-accent" onclick="event.stopPropagation(); restoreFileIds([${f.id}], 'file')" title="Restore this file to a folder on the server">
+                    <i data-lucide="folder-down" style="width:13px;height:13px;color:var(--accent);"></i>
+                  </button>
                   <button class="browser-btn btn-accent" onclick="showFileDetail(${f.id})" title="Properties">
                     <i data-lucide="info" style="width:13px;height:13px;"></i>
                   </button>

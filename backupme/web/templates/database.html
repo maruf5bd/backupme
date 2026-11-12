@@ -9,6 +9,9 @@
     <button class="btn btn-secondary btn-sm" onclick="runIntegrityCheck(this)">
       <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Integrity Check
     </button>
+    <button class="btn btn-secondary btn-sm" onclick="refreshDbInfo(this)" title="Refresh info + integrity (full PRAGMA check)">
+      <i data-lucide="info" style="width:14px;height:14px;"></i> Refresh Info
+    </button>
     <button class="btn btn-secondary btn-sm" onclick="createSnapshot(this)">
       <i data-lucide="camera" style="width:14px;height:14px;"></i> Create Snapshot
     </button>
@@ -21,6 +24,9 @@
   </div>
 </div>
 
+<!-- Last operation result strip (filled from real API JSON responses) -->
+<div class="u2-banner" id="op-strip"></div>
+
 <!-- Stat Cards -->
 <div class="stat-grid">
   <div class="stat-card">
@@ -28,8 +34,8 @@
       <i data-lucide="hard-drive" style="width:20px;height:20px;"></i>
     </div>
     <div class="stat-label">DB Size</div>
-    <div class="stat-value" id="db-size">{{ "{:,.0f}".format(db_info.size) if db_info else '0' }}</div>
-    <div class="stat-sub">bytes on disk</div>
+    <div class="stat-value" id="db-size">{{ (db_info.size | filesize) if db_info else '—' }}</div>
+    <div class="stat-sub">on disk</div>
   </div>
   <div class="stat-card">
     <div class="stat-icon purple">
@@ -58,9 +64,9 @@
     <div class="stat-label">WAL Mode</div>
     <div class="stat-value">
       {% if db_info and db_info.wal_mode %}
-        <span class="badge badge-green">Enabled</span>
+        <span class="badge badge-green" id="wal-badge">Enabled</span>
       {% else %}
-        <span class="badge badge-red">Disabled</span>
+        <span class="badge badge-red" id="wal-badge">Disabled</span>
       {% endif %}
     </div>
   </div>
@@ -78,6 +84,8 @@
     <div class="text-center text-sm text-muted" id="integrity-text">
       {% if db_info and db_info.integrity_status == 'ok' %}
         Database integrity verified
+      {% elif db_info and db_info.integrity_errors %}
+        {{ db_info.integrity_errors | length }} integrity error(s) found — run an integrity check
       {% else %}
         Run an integrity check to verify database health
       {% endif %}
@@ -90,21 +98,21 @@
     </div>
     <div class="card-body">
       <div style="display:grid; gap: 0.75rem;">
-        <div class="flex justify-between" style="padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
-          <span class="text-muted text-sm">Generation</span>
-          <span class="font-semibold text-sm" id="db-generation">{{ db_info.generation if db_info else '—' }}</span>
+        <div class="u3-meta-row">
+          <span class="u3-meta-label">Generation</span>
+          <span class="u3-meta-value" id="db-generation">{{ db_info.generation if db_info else '—' }}</span>
         </div>
-        <div class="flex justify-between" style="padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
-          <span class="text-muted text-sm">Instance ID</span>
-          <span class="font-mono text-xs text-muted" id="db-instance">{{ db_info.instance_id[:12] if db_info and db_info.instance_id else '—' }}…</span>
+        <div class="u3-meta-row">
+          <span class="u3-meta-label">Instance ID</span>
+          <span class="font-mono text-xs text-muted" id="db-instance">{% if db_info and db_info.instance_id %}{{ db_info.instance_id[:12] }}…{% else %}—{% endif %}</span>
         </div>
-        <div class="flex justify-between" style="padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
-          <span class="text-muted text-sm">Page Count</span>
-          <span class="font-semibold text-sm">{{ db_info.page_count if db_info and db_info.page_count else '—' }}</span>
+        <div class="u3-meta-row">
+          <span class="u3-meta-label">Page Count</span>
+          <span class="u3-meta-value u3-num" id="db-page-count">{{ "{:,.0f}".format(db_info.page_count) if db_info and db_info.page_count else '—' }}</span>
         </div>
-        <div class="flex justify-between">
-          <span class="text-muted text-sm">Page Size</span>
-          <span class="font-semibold text-sm">{{ db_info.page_size if db_info and db_info.page_size else '—' }}</span>
+        <div class="u3-meta-row">
+          <span class="u3-meta-label">Page Size</span>
+          <span class="u3-meta-value u3-num" id="db-page-size">{{ (db_info.page_size | filesize) if db_info and db_info.page_size else '—' }}</span>
         </div>
       </div>
     </div>
@@ -130,7 +138,7 @@
             <i data-lucide="file-archive" style="width:16px;height:16px;color:var(--text-muted);"></i>
             <div>
               <div class="text-sm font-semibold truncate" style="max-width: 220px;">{{ snap.name }}</div>
-              <div class="text-xs text-muted">{{ "{:,.0f}".format(snap.size) }} bytes</div>
+              <div class="text-xs text-muted u3-num">{{ snap.size | filesize }}</div>
             </div>
           </div>
           <div class="flex items-center gap-1">
@@ -145,7 +153,7 @@
         {% endfor %}
       {% else %}
         <div class="empty-state" style="padding: 1.5rem;">
-          <p>No snapshots yet</p>
+          <p>No snapshots yet — create one before risky operations.</p>
         </div>
       {% endif %}
     </div>
@@ -161,7 +169,7 @@
           {% for ev in recovery %}
           <div class="timeline-item">
             <div class="timeline-dot {% if ev.status in ['ok', 'completed'] %}green{% elif ev.status == 'error' %}red{% else %}yellow{% endif %}"></div>
-            <div class="timeline-time">{{ ev.created_at[:19] if ev.created_at else '' }}</div>
+            <div class="timeline-time u3-num" title="{{ ev.created_at or '' }}">{{ (ev.created_at | dtime) or '—' }}</div>
             <div class="timeline-content">
               <div class="flex items-center gap-2">
                 <span class="font-semibold text-sm">{{ ev.event_type }}</span>
@@ -187,13 +195,12 @@
   <div class="card">
     <div class="card-header">
       <span class="card-title">Replication Health</span>
-      <button class="btn btn-ghost btn-xs" onclick="loadReplication()">
+      <button class="btn btn-ghost btn-xs" onclick="loadReplication(this)" title="Reload replication status">
         <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
       </button>
     </div>
     <div class="card-body" id="replication-body">
-      <div class="skeleton skeleton-text"></div>
-      <div class="skeleton skeleton-text sm"></div>
+      <div class="u2-loading"><span class="u2-spinner"></span> Loading replication status…</div>
     </div>
   </div>
   <div class="card">
@@ -224,24 +231,104 @@
     colorThresholds: { green: 80, yellow: 50 },
   });
 
+  function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  // Page-level operation result strip (real API JSON outcomes).
+  function showOpBanner(kind, text) {
+    const strip = document.getElementById('op-strip');
+    if (!strip) return;
+    const kinds = {
+      success: ['u2-banner-success', 'check-circle-2'],
+      error: ['u2-banner-error', 'x-circle'],
+      info: ['u2-banner-info', 'info'],
+    };
+    const pair = kinds[kind] || kinds.info;
+    strip.className = 'u2-banner visible ' + pair[0];
+    strip.innerHTML = '<i data-lucide="' + pair[1] + '" style="width:14px;height:14px;"></i>'
+      + '<span>' + App.escapeHtml(text) + '</span>';
+    App.initIcons();
+  }
+
   window.runIntegrityCheck = async function(btn) {
     const origHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Checking...';
+    showOpBanner('info', 'Integrity check running — this can take a while on a large database…');
     try {
       const result = await App.fetchAPI('/api/db/check', { method: 'POST' });
       if (result.status === 'ok') {
         App.Toast.success('Integrity check passed');
+        showOpBanner('success', 'Integrity check passed — no errors found.');
         Charts.createGauge('integrity-gauge', 100, 100, { size: 140, color: 'green', label: 'integrity' });
-        document.getElementById('integrity-badge').className = 'badge badge-green';
-        document.getElementById('integrity-badge').textContent = 'OK';
-        document.getElementById('integrity-text').textContent = 'Database integrity verified';
+        const badge = document.getElementById('integrity-badge');
+        badge.className = 'badge badge-green';
+        badge.textContent = 'OK';
+        setText('integrity-text', 'Database integrity verified');
       } else {
+        const errors = result.errors || [];
         App.Toast.error('Integrity issues found');
+        showOpBanner('error', 'Integrity check FAILED — ' + errors.length + ' error(s): '
+          + errors.slice(0, 3).join('; ') + (errors.length > 3 ? ' …' : ''));
         Charts.createGauge('integrity-gauge', 0, 100, { size: 140, color: 'red', label: 'integrity' });
+        const badge = document.getElementById('integrity-badge');
+        badge.className = 'badge badge-red';
+        badge.textContent = 'Corrupt';
+        setText('integrity-text', errors.length + ' integrity error(s) found');
       }
     } catch (e) {
-      // Error shown by fetchAPI
+      showOpBanner('error', 'Integrity check request failed — ' + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      App.initIcons();
+    }
+  };
+
+  // Pull /api/db/info and repaint the info card + stat badges.
+  window.refreshDbInfo = async function(btn) {
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Reading…';
+    showOpBanner('info', 'Reading database info (includes a full PRAGMA integrity check — can take a while)…');
+    try {
+      const d = await App.fetchAPI('/api/db/info');
+      setText('db-size', App.formatBytes(d.size));
+      setText('db-generation', d.generation != null ? String(d.generation) : '—');
+      setText('db-instance', d.instance_id ? d.instance_id.slice(0, 12) + '…' : '—');
+      setText('db-page-count', d.page_count != null ? App.formatNumber(d.page_count) : '—');
+      setText('db-page-size', d.page_size != null ? App.formatBytes(d.page_size) : '—');
+      const walBadge = document.getElementById('wal-badge');
+      if (walBadge) {
+        walBadge.className = 'badge ' + (d.wal_mode ? 'badge-green' : 'badge-red');
+        walBadge.textContent = d.wal_mode ? 'Enabled' : 'Disabled';
+      }
+      const ok = d.integrity_status === 'ok';
+      const badge = document.getElementById('integrity-badge');
+      if (badge) {
+        badge.className = 'badge ' + (ok ? 'badge-green' : 'badge-red');
+        badge.textContent = ok ? 'OK' : 'Corrupt';
+      }
+      Charts.createGauge('integrity-gauge', ok ? 100 : 0, 100, {
+        size: 140, color: ok ? 'green' : 'red', label: 'integrity',
+        colorThresholds: { green: 80, yellow: 50 },
+      });
+      const errors = d.integrity_errors || [];
+      setText('integrity-text', ok ? 'Database integrity verified' : errors.length + ' integrity error(s) found');
+      if (ok) {
+        showOpBanner('success', 'Info refreshed — ' + App.formatBytes(d.size) + ' on disk, '
+          + App.formatNumber(d.page_count || 0) + ' pages, WAL ' + (d.wal_mode ? 'enabled' : 'disabled')
+          + ', integrity OK.');
+        App.Toast.success('Database info refreshed');
+      } else {
+        showOpBanner('error', 'Info refreshed — integrity FAILED with ' + errors.length + ' error(s): '
+          + errors.slice(0, 3).join('; ') + (errors.length > 3 ? ' …' : ''));
+        App.Toast.error('Integrity issues found');
+      }
+    } catch (e) {
+      showOpBanner('error', 'Info refresh failed — ' + (e.message || e));
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -253,12 +340,15 @@
     const origHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Creating...';
+    showOpBanner('info', 'Creating snapshot (VACUUM INTO + zstd — can take a moment)…');
     try {
-      await App.fetchAPI('/api/db/snapshot', { method: 'POST' });
+      const result = await App.fetchAPI('/api/db/snapshot', { method: 'POST' });
+      showOpBanner('success', 'Snapshot created: ' + (result.snapshot || 'snapshot')
+        + (result.generation != null ? ' (generation ' + result.generation + ')' : ''));
       App.Toast.success('Snapshot created');
-      setTimeout(() => location.reload(), 800);
+      setTimeout(() => location.reload(), 1400);
     } catch (e) {
-      // Error shown by fetchAPI
+      showOpBanner('error', 'Snapshot failed — ' + (e.message || e));
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -270,11 +360,13 @@
     const origHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Backing up...';
+    showOpBanner('info', 'Creating a fresh snapshot and uploading it to every backend…');
     try {
       await App.fetchAPI('/api/db/replicate', { method: 'POST' });
+      showOpBanner('success', 'Database replicated to all reachable backends.');
       App.Toast.success('Database replicated to all backends');
     } catch (e) {
-      // Error shown by fetchAPI
+      showOpBanner('error', 'Replication failed — ' + (e.message || e));
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -289,9 +381,12 @@
       async () => {
         try {
           const result = await App.fetchAPI('/api/db/restore', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+          showOpBanner('success', result.message || 'Database restored from backend consensus.');
           App.Toast.success(result.message || 'Database restored');
           setTimeout(() => location.reload(), 1000);
-        } catch (e) {}
+        } catch (e) {
+          showOpBanner('error', 'Restore failed — ' + (e.message || e));
+        }
       },
       'Restore',
       true
@@ -305,10 +400,11 @@
       async () => {
         try {
           const result = await App.fetchAPI('/api/db/rebuild', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+          showOpBanner('success', 'Rebuilt from manifests: ' + (result.files || 0) + ' files indexed.');
           App.Toast.success('Rebuilt: ' + (result.files || 0) + ' files');
           setTimeout(() => location.reload(), 1000);
         } catch (e) {
-          // Error shown by fetchAPI
+          showOpBanner('error', 'Rebuild failed — ' + (e.message || e));
         }
       },
       'Rebuild',
@@ -322,9 +418,10 @@
     btn.innerHTML = '<span class="spinner"></span>';
     try {
       await App.fetchAPI('/api/db/checkpoint', { method: 'POST' });
+      showOpBanner('success', 'WAL checkpoint completed — write-ahead log folded back into the main database file.');
       App.Toast.success('WAL checkpoint completed');
     } catch (e) {
-      // Error shown by fetchAPI
+      showOpBanner('error', 'WAL checkpoint failed — ' + (e.message || e));
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -335,7 +432,7 @@
   window.downloadSnapshot = async function(name) {
     try {
       const resp = await fetch('/api/db/snapshots/' + encodeURIComponent(name) + '/download');
-      if (!resp.ok) throw new Error('Download failed');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -345,14 +442,14 @@
       URL.revokeObjectURL(url);
       App.Toast.success('Downloading ' + name);
     } catch (e) {
-      App.Toast.error('Download failed');
+      App.Toast.error('Download failed — ' + (e.message || e));
     }
   };
 
   window.deleteSnapshot = function(name) {
     App.Modal.confirm(
       'Delete Snapshot',
-      'Delete <strong>' + name + '</strong>? This cannot be undone.',
+      'Delete <strong>' + App.escapeHtml(name) + '</strong>? This cannot be undone.',
       async () => {
         try {
           await App.fetchAPI('/api/db/snapshots/' + encodeURIComponent(name), { method: 'DELETE', body: JSON.stringify({ confirm: true }) });
@@ -372,8 +469,9 @@
       async () => {
         try {
           const result = await App.fetchAPI('/api/db/snapshots/prune?keep=5', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+          showOpBanner('success', 'Pruned ' + (result.deleted || 0) + ' snapshot(s), kept ' + (result.kept != null ? result.kept : 5) + '.');
           App.Toast.success('Pruned ' + (result.deleted || 0) + ' snapshot(s)');
-          setTimeout(() => location.reload(), 600);
+          setTimeout(() => location.reload(), 800);
         } catch (e) {}
       },
       'Prune',
@@ -382,33 +480,41 @@
   };
 
   // Replication health
-  async function loadReplication() {
+  async function loadReplication(btn) {
     const body = document.getElementById('replication-body');
+    if (btn) { btn.disabled = true; }
     try {
-      const data = await fetch('/api/replication/status').then(r => r.json());
-      if (data.error) throw new Error(data.error);
+      const resp = await fetch('/api/replication/status');
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
       const pct = data.total_blobs > 0 ? Math.round((data.fully_replicated / data.total_blobs) * 100) : 0;
       const color = pct >= 80 ? 'green' : pct >= 50 ? 'yellow' : 'red';
       let backendRows = '';
-      for (const [name, count] of Object.entries(data.per_backend || {})) {
-        backendRows += '<div class="flex justify-between" style="padding:0.4rem 0;border-bottom:1px solid var(--border-subtle);">' +
-          '<span class="text-sm"><span class="badge badge-gray">' + name + '</span></span>' +
-          '<span class="font-mono text-sm">' + count + ' blobs</span></div>';
+      const entries = Object.entries(data.per_backend || {});
+      for (const [name, count] of entries) {
+        backendRows += '<div class="u3-meta-row">' +
+          '<span class="u3-meta-label"><span class="badge badge-gray">' + App.escapeHtml(name) + '</span></span>' +
+          '<span class="u3-meta-value u3-num">' + App.formatNumber(count) + ' blobs</span></div>';
       }
       body.innerHTML =
         '<div class="flex items-center gap-3 mb-3">' +
           '<span class="badge badge-' + color + '" style="font-size:1rem;padding:0.5rem 1rem;">' + pct + '% replicated</span>' +
         '</div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.75rem;">' +
-          '<div class="text-sm"><span class="text-muted">Fully replicated (2+):</span> <strong>' + data.fully_replicated + '</strong></div>' +
-          '<div class="text-sm"><span class="text-muted">Single copy:</span> <strong style="color:var(--orange);">' + data.single_copy + '</strong></div>' +
+          '<div class="text-sm"><span class="text-muted">Fully replicated (2+):</span> <strong class="u3-num">' + App.formatNumber(data.fully_replicated) + '</strong></div>' +
+          '<div class="text-sm"><span class="text-muted">Single copy:</span> <strong class="u3-num" style="color:var(--orange);">' + App.formatNumber(data.single_copy) + '</strong></div>' +
         '</div>' +
-        '<div class="text-xs text-muted font-semibold mb-2" style="text-transform:uppercase;">Per Backend</div>' +
-        backendRows +
+        (entries.length
+          ? '<div class="text-xs text-muted font-semibold mb-2" style="text-transform:uppercase;">Per Backend</div>' + backendRows
+          : '<div class="u3-state-note">No per-backend replication counts available.</div>') +
         '<div class="mt-3"><button class="btn btn-secondary btn-sm" onclick="restoreFromConsensus()"><i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Restore from Consensus</button></div>';
       App.initIcons();
     } catch (e) {
-      body.innerHTML = '<div class="empty-state"><p>Failed to load replication status</p></div>';
+      body.innerHTML =
+        '<div class="u3-state-note is-error">Failed to load replication status — ' + App.escapeHtml(e.message || String(e)) + '</div>' +
+        '<button class="btn btn-secondary btn-sm mt-2" onclick="loadReplication()">Retry</button>';
+    } finally {
+      if (btn) { btn.disabled = false; }
     }
   }
   loadReplication();

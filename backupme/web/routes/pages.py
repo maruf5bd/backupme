@@ -4,6 +4,7 @@ GET / HTML pages: dashboard, files, backends, ingest, logs, database,
 report, settings. JSON APIs live in the sibling domain modules.
 """
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Request
@@ -19,7 +20,75 @@ from .common import _get_backends, _get_backups, _get_cfg_dict, _search_files_sa
 log = get_logger("web.routes.pages")
 
 
+# ── Presentation filters (UI polish only — no route or API shape changes) ──
+_SIZE_UNITS = ("B", "KB", "MB", "GB", "TB", "PB")
+
+
+def _filesize_filter(value):
+    """Human-readable byte size ('1.2 GB'). Falsy values render as '0 B';
+    non-numeric input passes through unchanged so a bad value can never
+    crash the page or render 'None B'."""
+    if value in (None, ""):
+        return "0 B"
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if size <= 0:
+        return "0 B"
+    unit_idx = 0
+    scaled = size
+    while scaled >= 1024.0 and unit_idx < len(_SIZE_UNITS) - 1:
+        scaled /= 1024.0
+        unit_idx += 1
+    if unit_idx == 0:
+        return f"{int(scaled)} B"
+    return f"{scaled:.1f} {_SIZE_UNITS[unit_idx]}"
+
+
+def _dtime_filter(value):
+    """Compact human timestamp ('May 30, 09:44'); the year is included when
+    it differs from the current year. Empty input renders as '' (callers
+    keep their own 'never'/'unknown' fallbacks); unparseable text passes
+    through unchanged."""
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        stamp = value
+    else:
+        text = str(value).strip()
+        try:
+            stamp = datetime.fromisoformat(text.replace("T", " "))
+        except ValueError:
+            return text
+    now = datetime.now()
+    if stamp.year != now.year:
+        return stamp.strftime("%b %d, %Y %H:%M")
+    return stamp.strftime("%b %d, %H:%M")
+
+
+def _nfmt_filter(value):
+    """Thousands-separated number for server-rendered stat values.
+    Mirrors App.formatNumber so the pre-poll paint matches the polled one."""
+    if value is None or value == "":
+        return "0"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        try:
+            return f"{float(value):,.0f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+
 def register(app, ctx):
+    # Attach the presentation filters to the shared Jinja environment.
+    # pages.register runs first in routes.register_routes, so every template
+    # rendered later can use them; setdefault keeps any existing filter.
+    env = ctx.templates.env
+    env.filters.setdefault("filesize", _filesize_filter)
+    env.filters.setdefault("dtime", _dtime_filter)
+    env.filters.setdefault("nfmt", _nfmt_filter)
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):

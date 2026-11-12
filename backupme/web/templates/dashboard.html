@@ -9,7 +9,7 @@
   <span class="status-label">System Online</span>
   {% if last_checkpoint %}
   <span class="text-muted">•</span>
-  <span>Last checkpoint: <strong>{{ last_checkpoint.op_type or 'unknown' }}</strong> {{ last_checkpoint.started_at[:16] if last_checkpoint.started_at else '' }}</span>
+  <span>Last checkpoint: <strong>{{ last_checkpoint.op_type or 'unknown' }}</strong> {{ last_checkpoint.started_at|dtime }}</span>
   {% endif %}
   <span class="text-muted">•</span>
   <span>Generation: <strong id="gen-value">{{ generation }}</strong></span>
@@ -27,7 +27,7 @@
       <i data-lucide="files" style="width:20px;height:20px;"></i>
     </div>
     <div class="stat-label">Total Files</div>
-    <div class="stat-value" id="stat-files">{{ total_files }}</div>
+    <div class="stat-value" id="stat-files">{{ total_files|nfmt }}</div>
     <div class="stat-sub">across {{ backends|length }} backend(s)</div>
   </div>
   <div class="stat-card">
@@ -35,7 +35,7 @@
       <i data-lucide="database" style="width:20px;height:20px;"></i>
     </div>
     <div class="stat-label">Stored Size</div>
-    <div class="stat-value" id="stat-stored">{{ "{:,.0f}".format(stored_bytes|default(0)) }}</div>
+    <div class="stat-value" id="stat-stored">{{ stored_bytes|default(0)|filesize }}</div>
     <div class="stat-sub">
       dedup ratio: <strong id="stat-ratio">{{ "%.2f"|format(ratio|default(1.0)) }}x</strong>
     </div>
@@ -45,7 +45,7 @@
       <i data-lucide="hash" style="width:20px;height:20px;"></i>
     </div>
     <div class="stat-label">Unique Blobs</div>
-    <div class="stat-value" id="stat-blobs">{{ blob_count }}</div>
+    <div class="stat-value" id="stat-blobs">{{ blob_count|nfmt }}</div>
     <div class="stat-sub">content-addressed storage</div>
   </div>
   <div class="stat-card">
@@ -64,7 +64,7 @@
         <span class="badge badge-gray">Unknown</span>
       {% endif %}
     </div>
-    <div class="stat-sub">last verified: {{ (report.completed_at or report.started_at)[:10] if report else 'never' }}</div>
+    <div class="stat-sub">last verified: {{ (report.completed_at or report.started_at)|dtime if report else 'never' }}</div>
   </div>
   <div class="stat-card" style="cursor:pointer;" onclick="window.location='/ingest'" title="Open Ingest page">
     <div class="stat-icon orange">
@@ -306,7 +306,7 @@
             <div class="text-xs text-muted">{{ be.type }}</div>
           </div>
         </div>
-        <span class="badge badge-gray">{{ be.type }}</span>
+        <span class="badge {% if be.connected %}badge-green{% else %}badge-red{% endif %}">{% if be.connected %}online{% else %}offline{% endif %}</span>
       </div>
       {% endfor %}
       {% if not backends %}
@@ -328,10 +328,10 @@
         {% for f in recent_files[:5] %}
         <div class="timeline-item">
           <div class="timeline-dot blue"></div>
-          <div class="timeline-time">{{ f.created_at[:16] if f.created_at else '' }}</div>
+          <div class="timeline-time">{{ f.created_at|dtime }}</div>
           <div class="timeline-content">
             <strong class="truncate" style="max-width:200px;display:inline-block;vertical-align:bottom;" title="{{ f.relative_path }}">{{ f.relative_path }}</strong>
-            <span class="text-muted">— {{ "{:,.0f}".format(f.size) }} bytes</span>
+            <span class="text-muted">— {{ f.size|filesize }}</span>
           </div>
         </div>
         {% endfor %}
@@ -358,7 +358,7 @@
         {% for cp in checkpoints %}
         <tr>
           <td><span class="badge badge-accent">{{ cp.op_type or 'unknown' }}</span></td>
-          <td class="text-muted">{{ cp.started_at[:19] if cp.started_at else '' }}</td>
+          <td class="text-muted">{{ cp.started_at|dtime }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -506,8 +506,26 @@
     }
   };
 
+  // ── Chart fallbacks: never leave a blank card behind when the chart
+  // library fails to load (offline machine) or a stats API errors out ──
+  function chartsAvailable() {
+    return typeof Chart !== 'undefined' && window.Charts;
+  }
+  function chartUnavailable(canvasId, message) {
+    const canvas = document.getElementById(canvasId);
+    if (canvas && canvas.parentElement) {
+      canvas.parentElement.innerHTML =
+        '<div class="empty-state" style="padding:2rem;"><p>' +
+        App.escapeHtml(message || 'Chart data unavailable') + '</p></div>';
+    }
+  }
+
   // Storage Distribution Chart
   async function loadStorageChart() {
+    if (!chartsAvailable()) {
+      chartUnavailable('storageChart', 'Charts unavailable — the chart library failed to load');
+      return;
+    }
     try {
       const data = await fetch('/api/status').then(r => r.json());
       const backends = data.backends || [];
@@ -537,12 +555,17 @@
       }
     } catch (e) {
       console.error('Storage chart error:', e);
+      chartUnavailable('storageChart', 'Storage distribution unavailable');
     }
   }
 
 
   // Activity Chart (7-day trend)
   async function loadActivityChart() {
+    if (!chartsAvailable()) {
+      chartUnavailable('activityChart', 'Charts unavailable — the chart library failed to load');
+      return;
+    }
     try {
       const data = await fetch('/api/stats/trend').then(r => r.json());
       const labels = data.map(d => d.date);
@@ -552,6 +575,10 @@
         formatY: v => v.toLocaleString(),
       });
     } catch (e) {
+      if (!chartsAvailable()) {
+        chartUnavailable('activityChart', 'Activity chart unavailable');
+        return;
+      }
       // Fallback: empty chart
       const days = [];
       for (let i = 6; i >= 0; i--) {
@@ -584,6 +611,10 @@
 
   // cPanel Ingest stat card + trend chart
   async function loadIngestTrendChart() {
+    if (!chartsAvailable()) {
+      chartUnavailable('ingestTrendChart', 'Charts unavailable — the chart library failed to load');
+      return;
+    }
     try {
       const data = await fetch('/api/stats/ingest-trend?days=30').then(r => r.json());
       Charts.line('ingestTrendChart', data.map(d => d.date), [
@@ -592,6 +623,10 @@
         formatY: v => v.toLocaleString(),
       });
     } catch (e) {
+      if (!chartsAvailable()) {
+        chartUnavailable('ingestTrendChart', 'Ingest trend unavailable');
+        return;
+      }
       Charts.line('ingestTrendChart', [], [
         { label: 'Archives ingested', data: [], color: Charts.COLORS.accent },
       ]);
@@ -618,14 +653,23 @@
   App.Poller.start('/api/ingest/status', pollIngestCard, 15000, { onError: () => {} });
 
   async function loadStorageTrendChart() {
+    if (!chartsAvailable()) {
+      chartUnavailable('storageTrendChart', 'Charts unavailable — the chart library failed to load');
+      return;
+    }
     try {
       const data = await fetch('/api/stats/storage-trend').then(r => r.json());
-      if (!data.length) return;
+      if (!data.length) {
+        chartUnavailable('storageTrendChart', 'No operations recorded in the last 30 days');
+        return;
+      }
       Charts.line('storageTrendChart', data.map(d => d.date), [
         { label: 'Total Ops', data: data.map(d => d.total), color: Charts.COLORS.accent },
         { label: 'Completed', data: data.map(d => d.completed), color: '#22c55e' },
       ], { formatY: v => v.toLocaleString() });
-    } catch (e) {}
+    } catch (e) {
+      chartUnavailable('storageTrendChart', 'Operations trend unavailable');
+    }
   }
 
   // ── Scan Drive ────────────────────────────────────────────
@@ -665,6 +709,21 @@
     const excludes = excludeRaw ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
     const deleteSource = document.getElementById('scan-delete-source').checked;
 
+    // Deleting the originals is destructive — always confirm first.
+    if (deleteSource) {
+      App.Modal.confirm(
+        'Delete Source Files After Backup',
+        'The scanned files at <strong>' + App.escapeHtml(path) + '</strong> will be removed from disk once the backup succeeds. This cannot be undone. Continue?',
+        () => beginScan(path, backend, redundancy, excludes, deleteSource),
+        'Scan & Delete',
+        true
+      );
+      return;
+    }
+    beginScan(path, backend, redundancy, excludes, deleteSource);
+  };
+
+  async function beginScan(path, backend, redundancy, excludes, deleteSource) {
     closeScanModal();
     const card = document.getElementById('scan-progress-card');
     card.style.display = 'block';

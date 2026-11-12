@@ -14,7 +14,7 @@
     transition: all .15s ease;
   }
   .status-chip:hover { color: var(--text-primary); }
-  .status-chip.active { background: var(--accent, #3b82f6); color: #fff; border-color: transparent; }
+  .status-chip.active { background: var(--accent, #3b82f6); color: var(--text-inverse, #fff); border-color: transparent; }
   .status-chip .chip-count { opacity: .75; font-weight: 600; }
   .log-row {
     border-bottom: 1px solid var(--border, rgba(255,255,255,.06));
@@ -27,7 +27,7 @@
   .log-time { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-muted); white-space: nowrap; }
   .log-duration { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
   .log-summary { font-size: 13px; color: var(--text-secondary); flex: 1; min-width: 200px; }
-  .log-summary.has-error { color: #ef4444; }
+  .log-summary.has-error { color: var(--red, #ef4444); }
   .log-detail { display: none; margin-top: 10px; }
   .log-row.expanded .log-detail { display: block; }
   .log-detail-grid {
@@ -66,9 +66,9 @@
 <!-- Status overview -->
 <div class="stat-grid grid-4 mb-4" id="log-stats">
   <div class="stat-card"><div class="stat-value" id="stat-total">–</div><div class="stat-label">Total events</div></div>
-  <div class="stat-card"><div class="stat-value" id="stat-completed" style="color:#22c55e;">–</div><div class="stat-label">Completed</div></div>
-  <div class="stat-card"><div class="stat-value" id="stat-failed" style="color:#ef4444;">–</div><div class="stat-label">Failed</div></div>
-  <div class="stat-card"><div class="stat-value" id="stat-running" style="color:#eab308;">–</div><div class="stat-label">Running</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-completed" style="color:var(--green, #22c55e);">–</div><div class="stat-label">Completed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-failed" style="color:var(--red, #ef4444);">–</div><div class="stat-label">Failed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-running" style="color:var(--yellow, #eab308);">–</div><div class="stat-label">Running</div></div>
 </div>
 
 <!-- Filters -->
@@ -296,7 +296,7 @@
             <dt>Started</dt><dd>${esc(row.started_at || '–')}</dd>
             <dt>Completed</dt><dd>${esc(row.completed_at || '– (still running)')}</dd>
             <dt>Idempotency key</dt><dd>${esc(row.idempotency_key || '–')}</dd>
-            ${hasErr ? `<dt style="color:#ef4444;">Last error</dt><dd style="color:#ef4444;">${esc(row.last_error)}</dd>` : ''}
+            ${hasErr ? `<dt style="color:var(--red, #ef4444);">Last error</dt><dd style="color:var(--red, #ef4444);">${esc(row.last_error)}</dd>` : ''}
           </dl>
           <pre class="log-json" id="json-${row.id}"></pre>
           <button class="btn btn-secondary btn-xs" onclick="copyRowJson(${row.id})">
