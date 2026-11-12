@@ -324,7 +324,20 @@ class SFTPBackend(StorageBackend):
         # banner_timeout a blackholed server hangs transport.connect()
         # forever (it waits on a threading.Event, not on the socket).
         sock = socket.create_connection((self.host, self.port), timeout=15)
-        t = paramiko.Transport(sock)
+        # Large window + packet sizes are required for real throughput:
+        # paramiko's defaults (2 MiB window, 32 KiB packets) turn every
+        # read/write into hundreds of synchronous round trips — measured
+        # ~80 KB/s on the Storage Box link vs tens of MB/s after this.
+        try:
+            t = paramiko.Transport(
+                sock,
+                default_window_size=64 * 1024 * 1024,
+                default_max_packet_size=1024 * 1024,
+            )
+        except TypeError:  # very old paramiko without the kwargs
+            t = paramiko.Transport(sock)
+            t.window_size = 64 * 1024 * 1024
+            t.max_packet_size = 1024 * 1024
         # Older paramiko versions don't take these as constructor kwargs;
         # they are plain instance attributes on Transport.
         t.banner_timeout = 15
