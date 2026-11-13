@@ -5,3 +5,4 @@ from . import encrypt_cmd, report_cmd, backend_cmd, gc_cmd
 from . import ingest_cmd
 from . import health_cmd, verify_cmd
 from . import archive_cmd
+from . import ftp_cmd

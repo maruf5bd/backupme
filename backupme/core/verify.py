@@ -11,12 +11,123 @@ from backupme.core import hasher as hasher_mod
 from backupme.core.downloader import download_file
 from backupme.core.manifest import read_manifest
 from backupme.backends import get_all_backends
+from backupme.log import get_logger
+
+log = get_logger("verify")
+
+
+def resolve_repair_donor(blob_id: str, damaged_backend: str | None = None) -> tuple[str | None, str | None, str | None]:
+    """
+    Finds a donor source to repair a damaged or missing blob.
+    1. Check alternate backends for healthy stored copy
+    2. Fall back to local source file on disk
+    """
+    # 1. Check alternate backends
+    if damaged_backend:
+        row = execute(
+            "SELECT backend_name, storage_path FROM blob_storage "
+            "WHERE blob_id = ? AND backend_name != ? ORDER BY uploaded_at DESC LIMIT 1",
+            (blob_id, damaged_backend),
+        ).fetchone()
+    else:
+        row = execute(
+            "SELECT backend_name, storage_path FROM blob_storage "
+            "WHERE blob_id = ? ORDER BY uploaded_at DESC LIMIT 1",
+            (blob_id,),
+        ).fetchone()
+
+    if row:
+        return ("backend", row["backend_name"], row["storage_path"])
+
+    # 2. Check live source on disk
+    file_ref = execute(
+        "SELECT f.source_root, f.relative_path, f.sha256 FROM files f "
+        "JOIN file_chunks fc ON f.id = fc.file_id "
+        "WHERE fc.blob_id = ? AND f.deleted_at IS NULL LIMIT 1",
+        (blob_id,),
+    ).fetchone()
+
+    if file_ref:
+        full_path = os.path.join(file_ref["source_root"], file_ref["relative_path"])
+        if os.path.exists(full_path):
+            return ("source", full_path, file_ref["sha256"])
+
+    return (None, None, None)
+
+
+def heal_damaged_file(file_id: int, target_backend: str | None = None) -> dict:
+    """
+    Attempts to heal all missing or corrupt blobs for a given file.
+    """
+    from backupme.config import load_config
+    config = load_config()
+    backends_list = get_all_backends(config)
+    backends = {b.name: b for b in backends_list}
+
+    chunks = execute(
+        "SELECT blob_id FROM file_chunks WHERE file_id = ? ORDER BY seq",
+        (file_id,),
+    ).fetchall()
+
+    if not chunks:
+        return {"status": "error", "message": "No chunks found"}
+
+    healed_count = 0
+    errors = []
+
+    for chunk in chunks:
+        blob_id = chunk["blob_id"]
+        donor_type, src, aux = resolve_repair_donor(blob_id, target_backend)
+
+        if donor_type == "backend":
+            donor_be = backends.get(src)
+            target_be = backends.get(target_backend) if target_backend else None
+
+            # If no specific target backend, restore to first available local backend
+            if not target_be:
+                for b in backends_list:
+                    if getattr(b, "type", "") == "local":
+                        target_be = b
+                        break
+
+            if donor_be and target_be:
+                try:
+                    # Bundle-safe transfer: if it's a bundle member, aux has "@offset:len"
+                    remote_file = aux.split("@", 1)[0] if "@" in aux else aux
+                    with tempfile.NamedTemporaryFile(delete=False) as tf:
+                        tmp_name = tf.name
+                    try:
+                        donor_be.download(remote_file, tmp_name)
+                        target_be.upload(tmp_name, remote_file)
+                        healed_count += 1
+                        log.info(f"Healed blob {blob_id[:16]} from backend {src} to {target_be.name}")
+                    finally:
+                        if os.path.exists(tmp_name):
+                            os.remove(tmp_name)
+                except Exception as e:
+                    errors.append(f"Failed donor transfer for {blob_id[:16]}: {e}")
+
+        elif donor_type == "source":
+            # Live source re-back
+            try:
+                from backupme.core import uploader as uploader_mod
+                uploader_mod.upload_file(src, config=config)
+                healed_count += 1
+                log.info(f"Healed blob {blob_id[:16]} directly from live disk source {src}")
+            except Exception as e:
+                errors.append(f"Failed source re-upload for {blob_id[:16]}: {e}")
+        else:
+            errors.append(f"No donor or live source found for {blob_id[:16]}")
+
+    status = "healed" if healed_count > 0 and len(errors) == 0 else ("partial" if healed_count > 0 else "failed")
+    return {"status": status, "healed_chunks": healed_count, "errors": errors}
 
 
 def run_integrity_check(
     check_type: str = "random",
     count: int = 5,
     backend_name: str | None = None,
+    auto_heal: bool = False,
 ) -> dict:
     execute(
         "INSERT INTO integrity_checks (check_type, status, total_files, checked_files, failed_files) VALUES (?, 'running', ?, 0, 0)",
@@ -58,12 +169,29 @@ def run_integrity_check(
             ok = actual == f["sha256"]
             if ok:
                 checked += 1
+                details.append({"file_id": f["id"], "file": f["relative_path"], "status": "ok", "expected": f["sha256"], "actual": actual})
             else:
-                failed += 1
-            details.append({"file_id": f["id"], "file": f["relative_path"], "status": "ok" if ok else "failed", "expected": f["sha256"], "actual": actual})
+                healed = False
+                if auto_heal:
+                    heal_res = heal_damaged_file(f["id"], backend_name)
+                    if heal_res.get("status") in ("healed", "partial"):
+                        healed = True
+                        checked += 1
+                        details.append({"file_id": f["id"], "file": f["relative_path"], "status": "healed", "expected": f["sha256"], "actual": actual, "heal_details": heal_res})
+                if not healed:
+                    failed += 1
+                    details.append({"file_id": f["id"], "file": f["relative_path"], "status": "failed", "expected": f["sha256"], "actual": actual})
         except Exception as e:
-            failed += 1
-            details.append({"file_id": f["id"], "file": f["relative_path"], "status": "error", "error": str(e)})
+            healed = False
+            if auto_heal:
+                heal_res = heal_damaged_file(f["id"], backend_name)
+                if heal_res.get("status") in ("healed", "partial"):
+                    healed = True
+                    checked += 1
+                    details.append({"file_id": f["id"], "file": f["relative_path"], "status": "healed", "error": str(e), "heal_details": heal_res})
+            if not healed:
+                failed += 1
+                details.append({"file_id": f["id"], "file": f["relative_path"], "status": "error", "error": str(e)})
 
     execute(
         "UPDATE integrity_checks SET status = ?, checked_files = ?, failed_files = ?, completed_at = datetime('now'), details = ? WHERE id = ?",

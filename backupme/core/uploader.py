@@ -539,6 +539,25 @@ def upload_bundle(
             version_group = file_info.get("version_group")
             version_seq = file_info.get("version_seq", 1)
 
+            # Strict disk presence check: ensure file physically exists and is accessible
+            if not os.path.exists(src_path):
+                log.warning("upload skipped: file '%s' does not exist on disk", local_path)
+                results.append({
+                    "local_path": local_path,
+                    "status": "error",
+                    "error": f"file not found on disk: '{local_path}'"
+                })
+                continue
+
+            if not os.path.isfile(src_path):
+                log.warning("upload skipped: '%s' is not a regular file", local_path)
+                results.append({
+                    "local_path": local_path,
+                    "status": "error",
+                    "error": f"not a regular file: '{local_path}'"
+                })
+                continue
+
             st = os.stat(src_path)
             file_size = st.st_size
             mtime = st.st_mtime
