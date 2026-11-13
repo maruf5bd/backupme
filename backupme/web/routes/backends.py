@@ -18,6 +18,7 @@ from backupme.log import get_logger
 
 from .common import (_get_backend, _get_backends, _config_as_dict,
                      _rebalance_state, _rebalance_lock, _reset_rebalance,
+                     _process_state, _process_lock, _reset_process,
                      make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.backends")
@@ -237,6 +238,74 @@ def register(app, ctx):
             return JSONResponse(await asyncio.to_thread(rescan_backend, be))
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
+
+    # ── Serial files-ingest (download -> pipeline -> store back) ─────
+
+    def _process_progress_cb(done, skipped, errors, total):
+        with _process_lock:
+            _process_state["done"] = done
+            _process_state["skipped"] = skipped
+            _process_state["errors"] = errors
+            _process_state["total"] = total
+
+    def _process_worker(backend_name, prefix, target, delete):
+        try:
+            from backupme.core.files_ingest import ingest_files
+            cfg = _config_as_dict(ctx)
+            result = ingest_files(
+                backend_name=backend_name,
+                config=cfg,
+                prefix=prefix,
+                target_backend_name=target or None,
+                delete=bool(delete),
+                progress_cb=_process_progress_cb,
+            )
+            with _process_lock:
+                _process_state["result"] = result
+                if result.get("status") == "error":
+                    _process_state["errors_list"].append(str(result.get("error")))
+        except Exception as e:
+            with _process_lock:
+                _process_state["errors_list"].append(str(e))
+        finally:
+            with _process_lock:
+                _process_state["running"] = False
+                _process_state["completed"] = True
+            db.close_connection()
+
+    @app.post("/api/backends/{name}/process-files")
+    async def api_backend_process_files(name: str, data: dict = Body(...)):
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be the literal boolean true"}, status_code=400)
+        be = _get_backend(ctx, name)
+        if be is None:
+            return JSONResponse({"error": f"backend '{name}' not found"}, status_code=404)
+        with _process_lock:
+            if _process_state["running"]:
+                return JSONResponse(
+                    {"status": "busy",
+                     "message": "another process-files job is already running"},
+                    status_code=409)
+            prefix = str(data.get("prefix") or "")
+            target = str(data.get("target") or "") or None
+            delete = bool(data.get("delete") or False)
+            _reset_process(name, prefix, target, delete)
+        start_daemon_thread(_process_worker, name, prefix, target, delete)
+        return JSONResponse({"status": "started", "backend": name,
+                             "prefix": prefix, "target": target or "",
+                             "delete": delete})
+
+    @app.get("/api/backends/{name}/process-files/status")
+    async def api_backend_process_files_status(name: str):
+        with _process_lock:
+            snapshot = dict(_process_state)
+        snapshot["errors_list"] = snapshot.get("errors_list", [])[-5:]
+        return JSONResponse(snapshot)
+
+    @app.get("/api/backends/{name}/process-files/stream")
+    async def api_backend_process_files_stream(name: str):
+        return make_sse_stream(_process_state, _process_lock)
 
     # ── Backends: onboard / rebalance / drain ────────────────────
 

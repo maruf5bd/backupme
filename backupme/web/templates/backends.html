@@ -123,6 +123,9 @@
       <button class="btn btn-ghost btn-sm" onclick="rescanBackend('{{ be.name }}', this)" title="Rescan (walk vs DB diff)">
         <i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>
       </button>
+      <button class="btn btn-ghost btn-sm" onclick="openProcessModal('{{ be.name }}')" title="Process loose files: download one at a time, run through the pipeline, store the result back">
+        <i data-lucide="package-open" style="width:14px;height:14px;"></i>
+      </button>
       <button class="btn btn-ghost btn-sm" onclick="editBackend('{{ be.name }}', '{{ be.type }}')" title="Edit">
         <i data-lucide="pencil" style="width:14px;height:14px;"></i>
       </button>
@@ -666,5 +669,138 @@
     }
   });
 })();
+</script>
+<script>
+  // ── Process Files helper (serial download -> pipeline -> store back) ──
+  let _pfPollTimer = null;
+
+  function ensureProcessModal() {
+    if (document.getElementById('process-modal')) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <div id="process-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:520px;">
+          <h2 id="pf-title">Process Files</h2>
+          <p class="text-sm text-muted mt-1">Downloads loose files from the backend <strong>one at a
+          time</strong>, runs each through the real pipeline (dedup, compression, chunking), and
+          stores the processed result back. Already-indexed files are skipped.</p>
+          <div class="mt-3">
+            <label class="text-xs text-muted">Prefix (only process under this path; empty = whole backend)</label>
+            <input id="pf-prefix" type="text" placeholder="e.g. filebase" style="width:100%;">
+          </div>
+          <div class="mt-2">
+            <label class="text-xs text-muted">Store processed blobs on</label>
+            <select id="pf-target" style="width:100%;"><option value="">same backend</option></select>
+          </div>
+          <div class="mt-2">
+            <label style="display:flex;gap:0.5rem;align-items:center;">
+              <input id="pf-delete" type="checkbox">
+              <span class="text-sm">Delete each source file after its processed copy is stored</span>
+            </label>
+          </div>
+          <div class="mt-3" id="pf-progress" style="display:none;">
+            <div class="flex justify-between text-xs text-muted mb-1">
+              <span id="pf-counts">0 / 0</span>
+              <span id="pf-errs"></span>
+            </div>
+            <div class="progress-bar"><div id="pf-bar" class="progress-fill accent" style="width:0%;"></div></div>
+            <pre id="pf-result" class="text-xs" style="max-height:180px;overflow:auto;margin-top:8px;"></pre>
+          </div>
+          <div class="flex justify-end gap-2 mt-3">
+            <button class="btn btn-ghost btn-sm" id="pf-close">Close</button>
+            <button class="btn btn-primary btn-sm" id="pf-start">Start Processing</button>
+          </div>
+      </div>
+    </div>`;
+    document.body.appendChild(wrap.firstElementChild);
+  }
+
+  async function openProcessModal(name) {
+    ensureProcessModal();
+    document.getElementById('pf-title').textContent = 'Process Files: ' + name;
+    document.getElementById('pf-progress').style.display = 'none';
+    document.getElementById('pf-result').textContent = '';
+    document.getElementById('pf-start').disabled = false;
+    // target options: every configured backend except the source itself
+    const sel = document.getElementById('pf-target');
+    sel.innerHTML = '<option value="">same backend</option>';
+    try {
+      const list = await fetch('/api/backends').then(r => r.json());
+      for (const b of list) {
+        if (b.name === name) continue;
+        const o = document.createElement('option');
+        o.value = b.name; o.textContent = b.name + ' (' + b.type + ')';
+        sel.appendChild(o);
+      }
+    } catch (e) { /* select stays with same-backend option */ }
+    document.getElementById('process-modal').style.display = 'flex';
+    document.getElementById('pf-close').onclick = () => {
+      document.getElementById('process-modal').style.display = 'none';
+      if (_pfPollTimer) { clearInterval(_pfPollTimer); _pfPollTimer = null; }
+    };
+    document.getElementById('pf-start').onclick = () => startProcessFiles(name);
+    pollProcessStatus(name); // pick up a job that is already running
+  }
+
+  function startProcessFiles(name) {
+    const prefix = document.getElementById('pf-prefix').value.trim();
+    const target = document.getElementById('pf-target').value;
+    const del = document.getElementById('pf-delete').checked;
+    const go = () => {
+      fetch(`/api/backends/${encodeURIComponent(name)}/process-files`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prefix, target, delete: del, confirm: true})
+      }).then(async r => {
+        const d = await r.json();
+        if (!r.ok) { App.Toast.show(d.error || d.message || 'failed to start', 'error'); return; }
+        document.getElementById('pf-progress').style.display = 'block';
+        pollProcessStatus(name);
+      }).catch(e => App.Toast.error('Start failed: ' + (e.message || e)));
+    };
+    if (del) {
+      App.Modal.confirm(
+        'Delete source files?',
+        'Each source file on <strong>' + App.escapeHtml(name) + '</strong> will be deleted '
+        + 'only after its processed copy is stored and verified. Files that fail to process '
+        + 'stay in place. Continue?',
+        go, 'Start Processing', true);
+    } else {
+      go();
+    }
+  }
+
+  function pollProcessStatus(name) {
+    if (_pfPollTimer) { clearInterval(_pfPollTimer); _pfPollTimer = null; }
+    const tick = async () => {
+      try {
+        const s = await fetch(`/api/backends/${encodeURIComponent(name)}/process-files/status`).then(r => r.json());
+        const bar = document.getElementById('pf-bar');
+        const counts = document.getElementById('pf-counts');
+        const errs = document.getElementById('pf-errs');
+        const res = document.getElementById('pf-result');
+        if (s.running || s.completed) {
+          document.getElementById('pf-progress').style.display = 'block';
+          const total = s.total || 0;
+          const processed = (s.done || 0) + (s.skipped || 0);
+          const pct = total > 0 ? Math.round(processed / total * 100) : (s.running ? 0 : 100);
+          bar.style.width = pct + '%';
+          bar.className = 'progress-fill ' + (s.errors ? 'yellow' : 'accent');
+          counts.textContent = `${s.done || 0} processed, ${s.skipped || 0} skipped / ${total}`;
+          errs.textContent = s.errors ? (s.errors + ' errors') : '';
+          if (s.completed) {
+            res.textContent = JSON.stringify(s.result, null, 2);
+            if (_pfPollTimer) { clearInterval(_pfPollTimer); _pfPollTimer = null; }
+            const btn = document.getElementById('pf-start');
+            if (btn) btn.disabled = false;
+          }
+        }
+      } catch (e) { /* transient — next tick retries */ }
+    };
+    tick();
+    _pfPollTimer = setInterval(tick, 2000);
+  }
+
+  window.openProcessModal = openProcessModal;
+  App.initIcons();
 </script>
 {% endblock %}

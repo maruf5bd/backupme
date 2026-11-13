@@ -108,6 +108,7 @@ SWEEP_PATHS = {
     "/api/health/purge-candidates",
     "/api/archives",
     "/api/archives/{archive_id}",
+    "/api/backends/{name}/process-files/status",
 }
 
 # Requested instead of the bare template where the bare call is a
@@ -139,6 +140,7 @@ STREAM_PATHS = {
     "/api/ingest/stream",
     "/api/backends/rebalance/stream",  # covered by test_web_ingest.py
     "/api/health/scan/stream",
+    "/api/backends/{name}/process-files/stream",  # closes after one idle snapshot pre-op
 }
 
 # Read-only GETs asserted outside the JSON sweep (non-JSON bodies).

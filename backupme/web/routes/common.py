@@ -390,6 +390,37 @@ def _reset_rebalance(kind, backend):
     mark_op_started(_rebalance_state)
 
 
+# Serial files-ingest (process-files, backends.py)
+_process_state = {
+    "running": False,
+    "backend": "",
+    "prefix": "",
+    "target": "",
+    "delete": False,
+    "done": 0,
+    "skipped": 0,
+    "errors": 0,
+    "total": 0,
+    "current": "",
+    "errors_list": [],
+    "completed": False,
+    "result": None,
+}
+_process_lock = threading.RLock()  # reentrant: launch sites hold it while calling _reset_process
+
+
+def _reset_process(backend, prefix, target, delete):
+    with _process_lock:
+        _process_state.update({
+            "running": True, "backend": backend, "prefix": prefix,
+            "target": target or "", "delete": bool(delete),
+            "done": 0, "skipped": 0, "errors": 0, "total": 0,
+            "current": "", "errors_list": [], "completed": False,
+            "result": None,
+        })
+    mark_op_started(_process_state)
+
+
 # Data-health physical scan (health.py)
 _health_scan_state = {
     "running": False,
@@ -432,6 +463,13 @@ def reset_background_state():
         _health_scan_state.update({
             "running": False, "started_at": 0.0, "finished_at": 0.0,
             "completed": False, "results": {}, "remote": [], "errors": [],
+        })
+    with _process_lock:
+        _process_state.update({
+            "running": False, "backend": "", "prefix": "", "target": "",
+            "delete": False, "done": 0, "skipped": 0, "errors": 0,
+            "total": 0, "current": "", "errors_list": [],
+            "completed": False, "result": None,
         })
     _ops_ever_started.clear()
     _restore_event.set()

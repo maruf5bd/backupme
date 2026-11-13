@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sys
 import tempfile
 import time
 import uuid
@@ -75,6 +76,7 @@ def convert_backend(
     target_backend_name: str | None = None,
     delete: bool = False,
     resume: bool = False,
+    progress_cb=None,
 ):
     from backupme.config import load_config
     config = load_config()
@@ -92,11 +94,29 @@ def convert_backend(
     files = backend.walk(prefix)
 
     checkpoint = _load_checkpoint() if resume else {"completed": [], "current": 0}
-    skip_dirs = {"__backupme_db__", "manifests", "objects", "tree"}
+    # 'bundle' MUST be skipped: a backend that holds BackupMe objects has its
+    # bundle store under bundle/<2>/<2>/<sha> — without this filter convert
+    # re-ingests its own backup artifacts as fake user files (probe-proven).
+    skip_dirs = {"__backupme_db__", "manifests", "objects", "tree", "bundle"}
 
     completed = 0
     skipped = 0
     errors = 0
+
+    total = 0
+    for f in files:
+        top_dir = f["path"].split("/")[0] if "/" in f["path"] else f["path"]
+        if top_dir not in skip_dirs:
+            total += 1
+
+    def _report_progress():
+        if progress_cb is not None:
+            try:
+                progress_cb(completed, skipped, errors, total)
+            except Exception:
+                pass
+
+    _report_progress()
 
     for i, f in enumerate(files):
         rel_path = f["path"]
@@ -132,13 +152,16 @@ def convert_backend(
                 redundancy=1,
             )
 
-            if delete:
-                blob_ids = [file_sha256]
-                if result.get("chunked"):
-                    chunks = execute(
-                        "SELECT blob_id FROM file_chunks WHERE file_id = ?", (result["file_id"],)
-                    ).fetchall()
-                    blob_ids = [c[0] for c in chunks]
+            if delete and result.get("file_id"):
+                # The delete gate must check the blob ids the file ACTUALLY
+                # landed on (file_chunks), not the file sha — bundled small
+                # files live inside bundle/member blobs whose ids differ from
+                # the file sha, so the old file-sha check never matched and
+                # sources were never deleted.
+                chunks = execute(
+                    "SELECT blob_id FROM file_chunks WHERE file_id = ?", (result["file_id"],)
+                ).fetchall()
+                blob_ids = [c[0] for c in chunks] or [file_sha256]
 
                 if _redudancy_met(blob_ids, min_copies=1):
                     if result.get("chunked"):
@@ -164,7 +187,10 @@ def convert_backend(
             errors += 1
             import traceback
             traceback.print_exc()
+            _report_progress()
             continue
 
+        _report_progress()
+
     _save_checkpoint(checkpoint)
-    return {"completed": completed, "skipped": skipped, "errors": errors}
+    return {"completed": completed, "skipped": skipped, "errors": errors, "total": total}

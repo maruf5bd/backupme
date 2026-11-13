@@ -556,9 +556,18 @@ def upload_bundle(
             # multiply refs and duplicate chunk rows. The donor's content_text
             # rides along: same sha256 means same content, so its snippet (or
             # its NULL for binary/encrypted/oversized content) is authoritative.
+            # A donor is only valid if its chunks actually have storage
+            # coverage. Without this guard, re-uploading a file whose blobs
+            # lost all blob_storage rows (DB-loss residue) would resolve the
+            # donor to the file ITSELF (oldest id with its sha) and silently
+            # re-map onto the same dead blobs — "dedup ok" but nothing
+            # uploaded and the file stays unrestorable.
             donor = execute(
-                "SELECT id, content_text FROM files WHERE sha256 = ? AND deleted_at IS NULL "
-                "ORDER BY id ASC LIMIT 1",
+                "SELECT f.id, f.content_text FROM files f WHERE f.sha256 = ? AND f.deleted_at IS NULL "
+                "AND EXISTS ("
+                "  SELECT 1 FROM file_chunks dc JOIN blob_storage bs ON bs.blob_id = dc.blob_id"
+                "  WHERE dc.file_id = f.id) "
+                "ORDER BY f.id ASC LIMIT 1",
                 (file_sha256,),
             ).fetchone()
             prior_chunks = (
