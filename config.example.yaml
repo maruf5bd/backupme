@@ -43,6 +43,17 @@ backends:
     type: rclone
     remote: gdrive:backupme
     bwlimit: 10MB
+    # Optional: explicit rclone config file, passed as --config on EVERY call.
+    # Use this when the remote lives outside the default rclone.conf, so ops
+    # never silently fall back to it.
+    config_path: ""
+    # Optional: extra CLI flags appended to every rclone call, e.g.
+    # --sftp-set-modtime=false (servers that refuse chmod/utimes), --transfers=4.
+    extra_args: []
+    # Optional: per-operation timeout in seconds (default 21600 = 6 hours).
+    # Multi-GB transfers over slow links need hours (3 MB/s = ~6 GB/h);
+    # hashsum on SFTP remotes downloads the file, so it needs the same budget.
+    timeout_s: 21600
     priority: 80
   9drive:
   - name: my_9drive

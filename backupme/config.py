@@ -138,6 +138,9 @@ class BackendDef:
     share: str = ""
     remote: str = ""
     bwlimit: str = ""
+    config_path: str = ""
+    extra_args: list[str] = field(default_factory=list)
+    timeout_s: int = 21600
     quota: str = ""
     priority: int = 50
     weight: int = 10
@@ -216,7 +219,7 @@ def _filter_fields(cls, data: dict) -> dict:
 
 def _build_backend(name: str, btype: str, data: dict) -> BackendDef:
     b = BackendDef(type=btype, name=name)
-    _int_fields = {"port", "priority", "weight"}
+    _int_fields = {"port", "priority", "weight", "timeout_s"}
     for k, v in data.items():
         if hasattr(b, k):
             if k in _int_fields:
@@ -224,6 +227,14 @@ def _build_backend(name: str, btype: str, data: dict) -> BackendDef:
                     v = int(v)
                 except (ValueError, TypeError):
                     continue
+            elif k == "extra_args":
+                # rclone passthrough flags: accept a YAML list or a
+                # whitespace-separated string, always store list[str].
+                if isinstance(v, str):
+                    v = v.split()
+                elif not isinstance(v, (list, tuple)):
+                    continue
+                v = [str(flag) for flag in v]
             setattr(b, k, v)
     return b
 

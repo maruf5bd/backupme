@@ -437,10 +437,26 @@ def backend_drain(ctx, name, dry_run, as_json):
 
 @backend.command("rescan")
 @click.argument("name")
+@click.option("--register", "register_flag", is_flag=True,
+              help="After the scan, verify+register objects the DB has no "
+                   "rows for (content-addressed, hash+decompress verified; "
+                   "resumable via register_checkpoint_<name>.json)")
+@click.option("--dry-run", is_flag=True,
+              help="With --register: verify only, write nothing")
+@click.option("--limit", type=int, default=None,
+              help="With --register: process at most N blobs this run")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
-def backend_rescan(ctx, name, as_json):
-    """Walk backend NAME and diff its real contents against the index."""
+def backend_rescan(ctx, name, register_flag, dry_run, limit, as_json):
+    """Walk backend NAME and diff its real contents against the index.
+
+    With --register, objects found on the backend that the DB lost the
+    blob_storage rows for are verified (stored sha + decompressed plaintext
+    sha must equal the content-addressed blob tail) and registered.
+    Exit code with --register: 1 only if registration failed outright
+    (unknown backend, connect failure, concurrent run) — per-blob failures
+    and not_found entries are reported, not fatal.
+    """
     from ..backends import get_all_backends
     from ..core.backend_scan import rescan_backend
 
@@ -458,6 +474,22 @@ def backend_rescan(ctx, name, as_json):
     result = rescan_backend(bk)
     result["status"] = "ok"
 
+    reg_report = None
+    if register_flag:
+        from ..core.backend_register import register_backend_objects
+
+        def _progress(blob_id, done, total):
+            # Human-mode heartbeat on stderr only; --json stdout stays clean.
+            if as_json:
+                return
+            if total and done % 200 == 0:
+                click.echo(f"  register {done}/{total}", err=True)
+
+        reg_report = register_backend_objects(
+            bk, ctx.obj.get("config"), dry_run=dry_run, limit=limit,
+            progress_cb=None if as_json else _progress)
+        result["register"] = reg_report
+
     def human(d):
         click.echo(f"{d['backend']}: walk={d['walk_files']} file(s) "
                    f"(walk_errors={d['walk_errors']}), db={d['db_paths']} path(s)")
@@ -471,8 +503,31 @@ def backend_rescan(ctx, name, as_json):
             click.echo(f"  extra  : {p}")
         for m in d["size_mismatch"][:10]:
             click.echo(f"  size   : {m['path']} db={m['db_size']} box={m['box_size']}")
+        r = d.get("register")
+        if r is not None:
+            if r.get("dry_run"):
+                click.echo(f"register (dry-run): planned={r['planned']} "
+                           f"would_register={r['would_register']} "
+                           f"failed={len(r['failed'])} not_found={len(r['not_found'])}")
+            else:
+                click.echo(f"register: planned={r['planned']} registered={r['registered']} "
+                           f"bundle_parents={r.get('bundle_parents', 0)} "
+                           f"failed={len(r['failed'])} not_found={len(r['not_found'])} "
+                           f"elapsed={r.get('elapsed', 0)}s")
+            for f in r["failed"][:10]:
+                click.echo(f"  rejected: {f['blob_id']}: {f['reason']}")
+            for nf in r["not_found"][:10]:
+                click.echo(f"  not found: {nf['blob_id']}")
 
     emit(result, as_json=as_json, human=human)
+    if register_flag:
+        # Registration mode: only an outright failure (unknown backend was
+        # already handled above; connect failure / concurrent run / internal
+        # error) is fatal. Data findings (failed blobs, not_found) are honest
+        # report entries, not command failures.
+        if reg_report.get("status") not in ("ok", "partial"):
+            raise SystemExit(1)
+        return
     if result["missing_on_box"] or result["size_mismatch"]:
         raise SystemExit(1)
 
@@ -570,4 +625,86 @@ def backend_sync_namespace(ctx, target, sources, namespaces, dry_run, as_json):
 
     emit(result, as_json=as_json, human=human)
     if result.get("status") != "ok":
+        raise SystemExit(1)
+
+
+@backend.command("prune-phantom-rows")
+@click.argument("name")
+@click.option("--apply", "apply_flag", is_flag=True,
+              help="Delete the phantom DB rows (DEFAULT: report only, "
+                   "nothing is deleted). Only rows whose blob still has "
+                   "another blob_storage row somewhere are pruned; a "
+                   "phantom row that is the LAST row for its blob is kept "
+                   "and flagged last_copy_missing.")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def backend_prune_phantom_rows(ctx, name, apply_flag, as_json):
+    """Find (and with --apply delete) blob_storage rows on backend NAME that
+    point at objects which do not physically exist.
+
+    REPORT-ONLY by default. --apply deletes ONLY database rows — never
+    files — and only after re-verifying per row that the object is still
+    missing and the blob is still covered by another row. Bundle member
+    rows (storage_path with @offset:len) are never candidates. Exit 1 on
+    unknown backend, connect failure, or --apply errors/refusals.
+    """
+    from ..backends import get_all_backends
+    from ..core.phantom_prune import apply_prune, find_phantom_rows
+
+    bk = next((b for b in get_all_backends(ctx.obj["config"]) if b.name == name), None)
+    if bk is None:
+        out = {"status": "error", "error": f"no backend named {name!r}"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    if not bk.connected and not bk.connect():
+        out = {"status": "error", "error": f"backend {name!r} failed to connect"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+
+    def _progress(blob_id, done, total):
+        # Human-mode heartbeat on stderr only; --json stdout stays clean.
+        if as_json:
+            return
+        if total and done % 500 == 0:
+            click.echo(f"  phantom scan {done}/{total}", err=True)
+
+    if apply_flag:
+        result = apply_prune(bk, ctx.obj.get("config"),
+                             progress_cb=None if as_json else _progress)
+    else:
+        result = find_phantom_rows(bk, ctx.obj.get("config"),
+                                   progress_cb=None if as_json else _progress)
+
+    def human(d):
+        if d.get("status") not in ("ok", "partial"):
+            click.echo(d.get("error", d.get("status", "unknown error")))
+            return
+        if d.get("applied"):
+            click.echo(f"prune-phantom-rows {d['backend']} — APPLIED (DB rows only, no files touched)")
+            click.echo(f"  deleted {d['deleted']} row(s) in {d['batches']} batch(es)")
+            click.echo(f"  kept: {d['kept_last_copy']} last-copy-missing, "
+                       f"{d['reappeared']} reappeared, {d['uncovered_now']} uncovered-now, "
+                       f"{d['skipped_member']} member rows")
+        else:
+            click.echo(f"prune-phantom-rows {d['backend']} — REPORT ONLY "
+                       f"(nothing was deleted; pass --apply to prune)")
+            click.echo(f"  scanned {d['scanned']} top-level row(s), "
+                       f"member rows skipped {d['member_rows_skipped']}")
+            click.echo(f"  phantom rows: {d['phantom']} "
+                       f"(safe to prune: {d['safe_candidates']}, "
+                       f"last-copy-missing kept: {d['last_copy_missing']})")
+            if d.get("all_phantom_suspicious"):
+                click.echo("  WARNING: every scanned row looks phantom — check the "
+                           "backend root/remote config before any --apply")
+            for s in d["phantom_sample"]:
+                tag = "  LAST COPY" if s["last_copy_missing"] else ""
+                click.echo(f"    phantom: {s['path']}  blob={s['blob_id']}{tag}")
+        if d.get("errors"):
+            click.echo(f"  errors: {len(d['errors'])}")
+            for e in d["errors"][:5]:
+                click.echo(f"    {e}")
+
+    emit(result, as_json=as_json, human=human)
+    if result.get("status") not in ("ok", "partial"):
         raise SystemExit(1)
