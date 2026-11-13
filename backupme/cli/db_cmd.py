@@ -375,3 +375,130 @@ def backfill_content_cmd(ctx, limit, max_size, backend_name, dry_run, as_json):
 
     emit(result, as_json=as_json, human=human)
     ctx.exit(0)
+
+
+@db.command("audit")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def audit(ctx, as_json):
+    """Read-only vault audit: refcount drift, phantom refs, chunk/storage
+    coverage, missing physical paths (local backends only)."""
+    from ..core import vault_audit
+    result = vault_audit.audit_vault(ctx.obj["config"])
+
+    def human(d):
+        click.echo(f"vault audit: {d['status']} (elapsed {d['elapsed']}s)")
+        click.echo(f"refcount drift: {d['refcount_drift']} "
+                   f"(phantom refs: {d['phantom_refs']})")
+        for row in d["refcount_drift_sample"]:
+            click.echo(f"  {row['blob_id']}: ref_count={row['ref_count']} "
+                       f"expected={row['expected']}")
+        click.echo(f"live files with rowless chunks: {d['rowless_chunks_live_files']} "
+                   f"(fully rowless: {d['fully_rowless']})")
+        for row in d["rowless_chunks_live_files_sample"]:
+            click.echo(f"  file {row['file_id']}: {row['source_root']}/{row['relative_path']}")
+        click.echo(f"archive files with rowless chunks: {d['archive_broken']}")
+        for backend, entry in (d["rows_missing_paths"] or {}).items():
+            click.echo(f"missing paths on {backend}: {entry['missing']} "
+                       f"of {entry['checked']} checked")
+        for row in d["rows_missing_paths_sample"]:
+            click.echo(f"  {row['backend']}: {row['path']}")
+        if d["rows_missing_paths_skipped_backends"]:
+            click.echo("skipped (non-local) backends: "
+                       + ", ".join(d["rows_missing_paths_skipped_backends"]))
+        click.echo(f"bundle members with rowless parents: {d['members_rowless_parents']}")
+        click.echo(f"storagebox coverage missing: {d['box_coverage']} "
+                   f"({d['box_coverage_status']})")
+
+    emit(result, as_json=as_json, human=human)
+
+
+@db.command("reconcile-refs")
+@click.option("--apply", is_flag=True,
+              help="Write corrected ref_counts (default: REPORT ONLY, no writes)")
+@click.option("--limit", type=int, default=None,
+              help="Max drifted blobs to fix in this run")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def reconcile_refs_cmd(ctx, apply, limit, as_json):
+    """Recompute blob ref_counts from file_chunks truth (report only without --apply)."""
+    from ..core import db_reconcile
+    result = db_reconcile.reconcile_refs(ctx.obj["config"], apply=apply, limit=limit)
+
+    def human(d):
+        if d["apply"]:
+            click.echo(f"APPLIED: fixed {d['fixed']} blob ref_count(s) "
+                       f"(drift total: {d['drift_total']}, elapsed {d['elapsed']}s)")
+        else:
+            click.echo("REPORT ONLY — dry run, nothing written (pass --apply to fix)")
+            click.echo(f"refcount drift: {d['drift_total']}  would fix: {d['would_fix']} "
+                       f"(elapsed {d['elapsed']}s)")
+        for row in d["sample"]:
+            click.echo(f"  {row['blob_id']}: ref_count={row['ref_count']} "
+                       f"expected={row['expected']}")
+
+    emit(result, as_json=as_json, human=human)
+
+
+@db.command("reback-sources")
+@click.option("--apply", is_flag=True,
+              help="Perform the actual re-backs through the real pipeline "
+                   "(default: REPORT ONLY, zero uploads, zero writes)")
+@click.option("--limit", type=int, default=None,
+              help="Max candidates to process in this run")
+@click.option("--state-file", "state_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help='Campaign JSON {"ok": {file_id: {path, sha256, size}}} — '
+                   "when the original source is gone, a state-file copy with "
+                   "matching sha256 is used as the upload source instead")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+@click.pass_context
+def reback_sources_cmd(ctx, apply, limit, state_file, as_json):
+    """Re-back rowless live files (DB-loss residue: no blob_storage rows for
+    any chunk) from their ORIGINAL source files, in place (report only
+    without --apply). Resumable via reback_checkpoint.json; delete that file
+    to re-scan healed/skipped ids."""
+    from ..core import source_reback
+    progress = None
+    if not as_json:
+        def progress(message):
+            click.echo(message)
+    try:
+        result = source_reback.reback_sources(
+            ctx.obj["config"], dry_run=not apply, limit=limit,
+            state_file=state_file, progress_cb=progress)
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        ctx.exit(1)
+
+    def human(d):
+        if d["apply"]:
+            click.echo(f"APPLIED: healed {d['healed']} of {d['processed']} "
+                       f"processed ({d['candidates']} rowless candidates, "
+                       f"{d['already_processed']} already processed from "
+                       f"checkpoint)")
+        else:
+            click.echo("REPORT ONLY — dry run, zero uploads, zero writes "
+                       "(pass --apply to re-back)")
+            click.echo(f"would heal: {d['would_heal']}  would skip: "
+                       f"{d['would_skip']} (of {d['processed']} processed, "
+                       f"{d['candidates']} rowless candidates)")
+        reasons = d.get("skip_reasons") or {}
+        if reasons:
+            click.echo("skip reasons: "
+                       + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())))
+        for row in d["failures"]:
+            click.echo(f"  FAILED file {row['file_id']}: {row['reason']} "
+                       f"— {row['error']} (retried on next run)")
+        for row in d["sample"]:
+            src = " [state-file]" if row.get("source_kind") == "state_file" else ""
+            reason = f" ({row['reason']})" if row.get("reason") else ""
+            click.echo(f"  {row['outcome']:<10} file {row['file_id']}: "
+                       f"{row['path']}{src}{reason}")
+        if d.get("refcounts_reconciled"):
+            click.echo(f"refcounts reconciled: {d['refcounts_reconciled']}")
+        if d.get("checkpoint"):
+            click.echo(f"checkpoint: {d['checkpoint']}")
+        click.echo(f"elapsed: {d['elapsed']}s")
+
+    emit(result, as_json=as_json, human=human)

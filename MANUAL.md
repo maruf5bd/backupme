@@ -977,10 +977,15 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 | `backupme verify` | Restore-and-hash verification (exit 1 on failure) | `backupme verify --count 10` |
 | `backupme health` | Data health summary (broken files, purge candidates) | `backupme health --json` |
 | `backupme backend rescan NAME` | Walk a backend, diff vs index (exit 1 on missing/mismatch) | `backupme backend rescan storagebox` |
+| `backupme backend rescan NAME --register` | Verify+register on-box objects the DB has no rows for (sha+decompress verified, resumable; never deletes; exit 1 only on outright failure) | `backupme backend rescan storagebox --register --json` |
 | `backupme backend sync-namespace TARGET` | Copy manifests/tree/__backupme_db__ namespaces to TARGET (additive, idempotent; exit 1 on failures) | `backupme backend sync-namespace storagebox` |
+| `backupme backend prune-phantom-rows NAME [--apply]` | Rows claiming objects that don't exist on NAME: REPORT-ONLY by default; `--apply` deletes only those DB rows (files never touched, bundle member rows never touched, last-copy rows always kept) | `backupme backend prune-phantom-rows "hostraj Gdrive" --apply` |
 | `backupme report verify` | Run an integrity check, store a report | `backupme report verify --count 10` |
 | `backupme convert BACKEND` | Convert backend storage layout | `backupme convert ftp --delete --resume` |
 | `backupme db check` | Database integrity (read-only unless `--repair`) | `backupme db check --full` |
+| `backupme db audit` | Read-only vault audit: refcount drift, phantom refs, chunk/storage coverage, missing physical paths | `backupme db audit --json` |
+| `backupme db reconcile-refs` | Recompute blob ref_counts from chunk truth (REPORT ONLY without `--apply`) | `backupme db reconcile-refs --apply --limit 5000` |
+| `backupme db reback-sources` | Re-back rowless live files (DB-loss residue: no blob_storage rows for any chunk) from their ORIGINAL source files, in place (REPORT ONLY without `--apply`) | `backupme db reback-sources --apply --limit 2000 --json` |
 | `backupme db snapshot` | Create snapshot | `backupme db snapshot` |
 | `backupme db restore` | Restore DB from backend replicas (consensus) | `backupme db restore` |
 | `backupme db rebuild` | Rebuild index from manifests | `backupme db rebuild` |
@@ -1022,6 +1027,28 @@ backupme convert BACKEND_NAME [--prefix PATH] [--delete] [--target BACKEND] [--r
 backupme recompress [--algo zstd] [--level 3] [-b/--backend NAME]
 backupme gc [--apply] [--json]       # DESTRUCTIVE with --apply; default dry run
 backupme db check [--full] [--repair] [--json]
+backupme db audit [--json]
+                                # read-only vault audit: refcount drift,
+                                # phantom refs, chunk/storage coverage,
+                                # physical paths on local backends,
+                                # member->parent coverage, storagebox coverage
+backupme db reconcile-refs [--apply] [--limit N] [--json]
+                                # recompute blob ref_counts from file_chunks
+                                # truth; REPORT ONLY without --apply; counts
+                                # only, never deletes anything
+backupme db reback-sources [--apply] [--limit N] [--state-file PATH] [--json]
+                                # heal DB-loss residue (live files whose chunks
+                                # reference blobs with NO blob_storage rows) by
+                                # re-backing the ORIGINAL source file through
+                                # the real pipeline, in place (same
+                                # source_root/relative_path, no version churn);
+                                # REPORT ONLY without --apply; sources must
+                                # match size AND sha256 (SOURCE_GONE /
+                                # SOURCE_SIZE_CHANGED / SOURCE_CHANGED /
+                                # VIRTUAL_ROOT reported honestly); resumable
+                                # via reback_checkpoint.json (delete it to
+                                # re-scan); failed uploads are retried on the
+                                # next run
 backupme db snapshot [--json]
 backupme db restore [--json]         # no options; consensus from replicas
 backupme db rebuild [--json]
@@ -1061,7 +1088,18 @@ backupme backend onboard NAME [--rebalance] [--dry-run] [--json]
 backupme backend rebalance NAME [--limit N] [--dry-run] [--json]
 backupme backend drain NAME [--dry-run] [--json]
                                      # exit 1 on unknown name; never deletes
-backupme backend rescan NAME [--json]
+backupme backend rescan NAME [--register] [--dry-run] [--limit N] [--json]
+                                     # --register: verify+register orphaned objects
+                                     # (checkpointed, resumable); exit 1 only on
+                                     # outright failure, not per-blob findings
+backupme backend prune-phantom-rows NAME [--apply] [--json]
+                                     # DB-row cleanup for rows claiming objects
+                                     # that don't exist on the backend; REPORT
+                                     # ONLY by default (nothing deleted), --apply
+                                     # deletes rows (NEVER files; member rows and
+                                     # last-copy rows always kept); exit 1 on
+                                     # unknown backend, connect failure, or
+                                     # --apply errors/refusals
 
 # encryption, ingest, servers
 backupme encrypt init
