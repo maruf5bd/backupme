@@ -308,6 +308,48 @@ _backend_status_cache = TTLCache(_STATUS_TTL_SECONDS)
 # dashboard serves it from this cache and recomputes on a worker thread
 # at most once per TTL window.
 _dedup_savings_cache = TTLCache(_STATUS_TTL_SECONDS)
+_dedup_compute_lock = threading.Lock()
+
+
+def _compute_dedup_savings_once() -> dict:
+    """Single-flight sync compute of the dedup-savings aggregate.
+
+    If another thread is already computing, this waits for it instead of
+    duplicating the scan — on the live store the first cold compute is
+    minutes-class (cold pages on a multi-GB database), so concurrent first
+    hits must share ONE scan. Always ends with the cache populated and the
+    computing thread's own SQLite handle dropped."""
+    cached = _dedup_savings_cache.get("savings")
+    if cached is not None:
+        return cached
+    with _dedup_compute_lock:
+        cached = _dedup_savings_cache.get("savings")
+        if cached is not None:
+            return cached
+
+        def _compute():
+            try:
+                return dedup.total_dedup_savings()
+            finally:
+                db.close_connection()
+
+        result = _compute()
+        _dedup_savings_cache.set("savings", result)
+        return result
+
+
+def warm_dedup_savings_cache() -> None:
+    """Pre-compute the dedup-savings aggregate off the request path.
+
+    Started as a daemon thread at create_app time: the first live-store
+    compute is minutes-class (124 s measured on the 2.6 GB index with cold
+    pages), so it must never be paid by the first dashboard visitor. Skipped
+    under pytest — fixtures swap dbmod.DB_PATH underneath a running thread,
+    which could cache a wrong-DB aggregate."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    threading.Thread(target=_compute_dedup_savings_once, name="dedup-warm",
+                     daemon=True).start()
 
 
 async def _cached_dedup_savings() -> dict:
@@ -315,24 +357,16 @@ async def _cached_dedup_savings() -> dict:
     cache.
 
     dedup.total_dedup_savings() is a full COUNT/SUM over blob_storage JOIN
-    blobs: trivial on the test fixture but 517 ms at 450k blob_storage rows
-    and seconds-class on the live store, so the number is computed on a
-    worker thread at most once per TTL window (Phase A page-perf; shared by
-    the GET / page handler and GET /api/status since Phase C A2). The
-    executor thread always drops its own SQLite handle."""
+    blobs: trivial on the test fixture but seconds warm / minutes cold on
+    the live store, so the number is computed on a worker thread at most
+    once per TTL window, single-flighted across concurrent callers (Phase A
+    page-perf; shared by the GET / page handler and GET /api/status since
+    Phase C A2; daemon-warmed at create_app so the first visitor never pays
+    the cold compute)."""
     cached = _dedup_savings_cache.get("savings")
     if cached is not None:
         return cached
-
-    def _compute():
-        try:
-            return dedup.total_dedup_savings()
-        finally:
-            db.close_connection()
-
-    result = await asyncio.to_thread(_compute)
-    _dedup_savings_cache.set("savings", result)
-    return result
+    return await asyncio.to_thread(_compute_dedup_savings_once)
 
 
 # ── File mutation ─────────────────────────────────────────────

@@ -409,3 +409,52 @@ def test_db_info_reports_last_recorded_check_without_running_it(client, env, bac
     body2 = r2.json()
     assert body2["integrity_status"] == "ok", body2
     assert body2["last_check_at"] == started, body2
+
+
+def test_dedup_savings_compute_single_flights(monkeypatch):
+    """Concurrent cold computes must share ONE scan — the live-store cold
+    compute is minutes-class (124 s measured on the 2.6 GB index), so two
+    dashboard visitors arriving together would otherwise double the I/O
+    storm instead of waiting on the same compute."""
+    import threading
+
+    from backupme.core import dedup as dedup_mod
+    from backupme.web.routes import common as web_common
+
+    web_common._dedup_savings_cache.clear()
+    calls = {"n": 0}
+    gate = threading.Event()
+
+    def fake_savings():
+        calls["n"] += 1
+        gate.wait(timeout=10)
+        return {"total_blobs": 1, "raw_bytes": 10, "stored_bytes": 5,
+                "savings_bytes": 5, "ratio": 2.0}
+
+    monkeypatch.setattr(dedup_mod, "total_dedup_savings", fake_savings)
+
+    results = []
+
+    def worker():
+        results.append(web_common._compute_dedup_savings_once())
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    gate.set()
+    for t in threads:
+        t.join(timeout=15)
+    assert calls["n"] == 1, f"aggregate computed {calls['n']} times concurrently"
+    assert len(results) == 2 and results[0] == results[1]
+    web_common._dedup_savings_cache.clear()
+
+
+def test_warm_dedup_cache_is_noop_under_pytest():
+    """The create_app warm-up thread must not run under pytest: fixtures
+    swap dbmod.DB_PATH underneath a running thread, which would cache a
+    wrong-DB aggregate and serve it to the page."""
+    from backupme.web.routes import common as web_common
+
+    web_common._dedup_savings_cache.clear()
+    web_common.warm_dedup_savings_cache()
+    assert web_common._dedup_savings_cache.get("savings") is None

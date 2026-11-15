@@ -45,6 +45,11 @@ def create_app(config: cfgmod.Config) -> FastAPI:
     app.add_middleware(NoCacheMiddleware)
     register_routes(app, config)
     _auth_middleware(app, getattr(config.web, "token", "") or None)
+    # Pre-compute the dashboard dedup-savings aggregate so the first visitor
+    # never pays the minutes-class cold scan on the live store (no-op under
+    # pytest). Must run AFTER register_routes, which resets the caches.
+    from .routes.common import warm_dedup_savings_cache
+    warm_dedup_savings_cache()
     return app
 
 
