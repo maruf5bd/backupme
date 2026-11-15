@@ -33,7 +33,33 @@ pip install -e .
 backupme --help
 ```
 
-### 1.2 Create Your Configuration
+### 1.2 First-Run Init (`backupme init`)
+
+The fastest way to set up a new backup directory:
+
+```bash
+backupme init
+```
+
+What it does:
+
+1. Copies `config.example.yaml` to `config.yaml` (a straight, byte-for-byte
+   copy — every option is documented by comments in that file).
+2. Creates the SQLite database (`backupme.db`) in the current directory.
+3. Prints the next steps (`backend add`, first `backup`, `web` dashboard).
+
+Notes:
+
+- **Never overwrites**: if `config.yaml` already exists, `init` changes
+  nothing and prints `already exists — nothing changed` (exit code 0;
+  `--json` reports `"status": "already_initialized"`). It is always safe to
+  re-run.
+- A missing or empty `config.yaml` also produces a loud warning on every
+  other command, so defaults-in-effect can never pass silently.
+- `--json` gives the machine-readable payload
+  (`status`, `config`, `config_created`, `database`, `next_steps`).
+
+### 1.3 Create Your Configuration
 
 Create `config.yaml` in your project directory:
 
@@ -60,7 +86,7 @@ compression:
   default_algorithm: zstd
 ```
 
-### 1.3 Initialize Encryption (Recommended)
+### 1.4 Initialize Encryption (Recommended)
 
 ```bash
 # Generate your encryption key
@@ -75,7 +101,7 @@ Output:
 Encryption key exists at C:\Users\Maruf\.backupme\key.enc
 ```
 
-### 1.4 Run Your First Backup
+### 1.5 Run Your First Backup
 
 ```bash
 backupme backup C:/Users/Maruf/Documents -b my_usb_drive --recursive
@@ -965,6 +991,7 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 
 | Command | Description | Example |
 |---|---|---|
+| `backupme init` | Scaffold config.yaml from config.example.yaml + create the DB; never overwrites (exit 0, "already_initialized" on re-run) | `backupme init --json` |
 | `backupme backup PATHS` | Backup files/directories (exit 1 on a missing path) | `backupme backup ~/Docs -b local --recursive --move` |
 | `backupme upload-bundle DIR` | Batch-upload small files (1KB–64KB) as a bundle | `backupme upload-bundle ~/Photos -b local` |
 | `backupme download FILE_ID` | Restore one file by index id | `backupme download 142 -o ./restored/` |
@@ -998,6 +1025,9 @@ every invocation: `--config/-c PATH`, `--db-path/--db PATH`, `--verbose/-V`.
 ### All CLI Options
 
 ```bash
+# setup
+backupme init [--json]               # scaffold config.yaml + create DB; never overwrites
+
 # files & backup
 backupme backup [PATHS]... [-b/--backend NAME] [-n/--redundancy N] [-r/--recursive]
                              [--no-skip] [--force] [-m/--move] [--json]

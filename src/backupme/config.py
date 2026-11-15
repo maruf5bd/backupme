@@ -246,10 +246,23 @@ def load_config(path: str | None = None) -> Config:
     if path is None:
         path = os.environ.get("BACKUPME_CONFIG", "config.yaml")
     if not os.path.exists(path):
+        # Loud, not fatal: a missing config used to be a silent no-op — commands
+        # "succeeded" while backing up nothing (audit P0-2). Name the path so a
+        # user running from the wrong directory can spot it immediately.
+        _log.warning(
+            "config: no config file at %s — built-in defaults are in effect; "
+            "copy config.example.yaml to config.yaml (or run 'backupme init')",
+            path,
+        )
         return Config()
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     if not raw:
+        _log.warning(
+            "config: %s is empty — built-in defaults are in effect; "
+            "copy config.example.yaml to config.yaml (or run 'backupme init')",
+            path,
+        )
         return Config()
     _resolve_dict(raw)
 
