@@ -133,9 +133,9 @@ def test_help_documents_key_options(runner, env):
 
 
 def test_phantom_manual_commands_do_not_exist(runner, env):
-    """MANUAL.md section 10 documents these; they must at least not be
+    """docs/MANUAL.md section 10 documents these; they must at least not be
     silently implemented as something else. Today they simply do not exist
-    (doc drift, qa_report_cli.md table)."""
+    (doc drift, docs/archive/qa_report_cli.md table)."""
     for name in PHANTOM_COMMANDS:
         assert name not in cli.commands, f"{name} unexpectedly exists now: update MANUAL"
         result = invoke(runner, env, name)

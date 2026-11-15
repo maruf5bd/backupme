@@ -1,7 +1,7 @@
 # Brain — living knowledge base
 
 This folder is BackupMe's memory. Every significant finding, decision, or status change
-gets written here the moment it is known. AGENTS.md holds the rules; BACKLOG.md holds the
+gets written here the moment it is known. AGENTS.md holds the rules; docs/BACKLOG.md holds the
 task register; `brain/` holds the state, reasoning, and history that connect them.
 
 Update discipline: append, never rewrite history; date every entry; link evidence files
@@ -20,5 +20,6 @@ instead of duplicating them.
 ## Related registers
 
 - `AGENTS.md` — mandatory rules (language, fix-first, subagent discipline, shell workarounds)
-- `BACKLOG.md` — improvement backlog B01-B15 with evidence and done-when criteria
+- `docs/BACKLOG.md` — improvement backlog B01-B16 with evidence and done-when criteria
+- `docs/MANUAL.md` — full command reference and walkthroughs
 - `diagnostics/` (gitignored) — scan/scan/verify artifacts and reports referenced from here

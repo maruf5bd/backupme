@@ -45,7 +45,7 @@ tree/
 # HTML docs (already have manual.html, docs.html)
 # Keep them - they're intentionally created
 
-# Local user config (may contain backend credentials; config.yaml.example is the template)
+# Local user config (may contain backend credentials; config.example.yaml is the template)
 config.yaml
 
 # Database runtime artifacts
