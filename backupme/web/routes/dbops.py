@@ -1,11 +1,22 @@
 """Database operation routes (backlog B05): info, snapshots (list/download/
-delete/prune with confirm gates), recovery events, check, snapshot, replicate,
-restore/rebuild (confirm gates), checkpoint.
+delete/prune with confirm gates), recovery events, check (blocking +
+background start/status/stream), snapshot, replicate, restore/rebuild
+(confirm gates), checkpoint.
 
 Snapshot delete/prune and db restore/rebuild are destructive and require
 ``confirm: true`` in the body (backlog B03).
+
+Phase A page-perf: the PRAGMA integrity_check moved out of every
+synchronous path — /api/db/info reads the newest integrity_checks row
+instead of re-running the PRAGMA, and the full check runs as a background
+op (POST /api/db/check/start -> /api/db/check/status | /api/db/check/stream)
+that persists its result as a 'pragma' row in integrity_checks plus an
+op_log audit entry. The old blocking POST /api/db/check keeps its exact
+response shapes (pinned by tests/test_web_d18b.py).
 """
 import asyncio
+import json
+import time
 from pathlib import Path
 
 from fastapi import Body
@@ -16,9 +27,37 @@ from backupme.core import recover as recover_mod
 from backupme.core import snapshot as snapmod
 from backupme.log import get_logger
 
-from .common import _config_as_dict, _get_backends, op_log_start, op_log_finish
+from .common import (_config_as_dict, _get_backends, op_log_start, op_log_finish,
+                     _db_check_state, _db_check_lock, mark_op_started,
+                     make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.dbops")
+
+
+def _last_integrity_row() -> dict | None:
+    """Newest integrity_checks row (any check_type) with a parsed errors
+    list — the shared "last integrity check" source for /api/db/info and
+    the /database page."""
+    row = db.execute(
+        "SELECT * FROM integrity_checks ORDER BY started_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    details = result.get("details")
+    parsed: list = []
+    if details:
+        try:
+            loaded = json.loads(details)
+            if isinstance(loaded, list):
+                parsed = loaded
+            else:
+                parsed = [str(loaded)]
+        except (TypeError, ValueError):
+            parsed = [str(details)]
+    # verify-type rows store per-file dicts; pragma rows store plain strings.
+    result["errors"] = [e if isinstance(e, str) else json.dumps(e) for e in parsed]
+    return result
 
 
 def register(app, ctx):
@@ -26,14 +65,16 @@ def register(app, ctx):
     @app.get("/api/db/info")
     async def api_db_info():
         def _run_info():
-            # check_integrity() is the PRAGMA integrity_check — the 29s class
-            # on the live DB (qa defect D18). The executor thread always
+            # Phase A page-perf: the PRAGMA integrity_check (29s class on the
+            # live DB, qa defect D18) left this endpoint — integrity now
+            # comes from the newest integrity_checks row (written by the
+            # background check op / verify runs). The executor thread always
             # drops its own SQLite handle so no pooled connection outlives
             # the request.
             try:
                 gen = db.get_generation()
                 instance_id = db.get_instance_id()
-                integrity = db.check_integrity()
+                last_check = _last_integrity_row()
                 page_count = db.execute("PRAGMA page_count").fetchone()[0]
                 page_size = db.execute("PRAGMA page_size").fetchone()[0]
                 try:
@@ -42,12 +83,24 @@ def register(app, ctx):
                 except Exception as e:
                     log.warning("journal_mode PRAGMA read failed for /api/db/info: %s", e)
                     wal_mode = False
+                if last_check is None:
+                    integrity_status = "unknown"
+                    integrity_errors = []
+                    last_check_at = None
+                else:
+                    integrity_status = ("ok" if last_check.get("status") == "completed"
+                                        else "corrupt")
+                    integrity_errors = last_check.get("errors", [])
+                    last_check_at = last_check.get("completed_at") or last_check.get("started_at")
                 return {
                     "generation": gen,
                     "instance_id": instance_id,
                     "size": page_count * page_size,
-                    "integrity_status": "ok" if not integrity else "corrupt",
-                    "integrity_errors": integrity,
+                    "page_count": page_count,
+                    "page_size": page_size,
+                    "integrity_status": integrity_status,
+                    "integrity_errors": integrity_errors,
+                    "last_check_at": last_check_at,
                     "wal_mode": wal_mode,
                 }
             finally:
@@ -87,6 +140,83 @@ def register(app, ctx):
         if errors:
             return JSONResponse({"status": "error", "errors": errors})
         return JSONResponse({"status": "ok"})
+
+    # ── Background integrity check (Phase A page-perf) ───────────
+    # The dashboard page launches the PRAGMA check here and follows the
+    # progress on the SSE stream; the result is persisted as a 'pragma' row
+    # in integrity_checks (so the page can show "last integrity check")
+    # and audited in op_log like every other background op.
+
+    def _db_check_worker(op_id: int | None):
+        try:
+            def _run_check():
+                try:
+                    return db.check_integrity()
+                finally:
+                    db.close_connection()
+
+            errors = _run_check()
+            try:
+                db.execute(
+                    "INSERT INTO integrity_checks (check_type, status, total_files, "
+                    "checked_files, failed_files, completed_at, details) "
+                    "VALUES ('pragma', ?, 0, 0, ?, datetime('now'), ?)",
+                    ("completed" if not errors else "failed", len(errors),
+                     json.dumps(errors)),
+                )
+                db.commit()
+            except Exception:
+                log.exception("failed to persist the pragma integrity_check result")
+            final_status = "ok" if not errors else "corrupt"
+            with _db_check_lock:
+                _db_check_state.update({
+                    "status": final_status,
+                    "errors": errors,
+                    "error": "",
+                    "finished_at": time.time(),
+                })
+            op_log_finish(op_id, "completed",
+                          target_json={"status": final_status, "errors": errors})
+        except Exception as e:
+            with _db_check_lock:
+                _db_check_state.update({
+                    "status": "error",
+                    "error": str(e),
+                    "finished_at": time.time(),
+                })
+            op_log_finish(op_id, "failed", last_error=str(e))
+        finally:
+            with _db_check_lock:
+                _db_check_state["running"] = False
+                _db_check_state["completed"] = True
+
+    @app.post("/api/db/check/start")
+    async def api_db_check_start():
+        with _db_check_lock:
+            if _db_check_state["running"]:
+                return JSONResponse(
+                    {"status": "busy",
+                     "message": "an integrity check is already running"},
+                    status_code=409)
+            _db_check_state.update({
+                "running": True, "started_at": time.time(), "finished_at": 0.0,
+                "status": "", "errors": [], "error": "", "completed": False,
+            })
+        mark_op_started(_db_check_state)
+        op_id = op_log_start("db_check", f"db_check:{int(time.time())}", {})
+        start_daemon_thread(_db_check_worker, op_id)
+        return JSONResponse({"status": "started"})
+
+    @app.get("/api/db/check/status")
+    async def api_db_check_status():
+        with _db_check_lock:
+            snapshot = dict(_db_check_state)
+        snapshot["errors"] = snapshot.get("errors", [])[-10:]
+        return JSONResponse(snapshot)
+
+    @app.get("/api/db/check/stream")
+    async def api_db_check_stream():
+        return make_sse_stream(_db_check_state, _db_check_lock)
 
     @app.post("/api/db/snapshot")
     async def api_db_snapshot():

@@ -1,10 +1,11 @@
 """Backend routes (backlog B05): list/add/remove/test/detail/update, usage,
-verify, rescan, onboard, rebalance, drain + the rebalance SSE stream.
+status, verify, rescan, onboard, rebalance, drain + the rebalance SSE stream.
 
-ORDER CRITICAL inside this module: GET /api/backends/usage is registered
-BEFORE GET /api/backends/{name} so "usage" is not captured by the path
-parameter. The verify/rescan/onboard/rebalance/drain group keeps the exact
-relative order the monolith had.
+ORDER CRITICAL inside this module: GET /api/backends/usage and GET
+/api/backends/status are registered BEFORE GET /api/backends/{name} so
+"usage"/"status" are not captured by the path parameter. The
+verify/rescan/onboard/rebalance/drain group keeps the exact relative order
+the monolith had.
 """
 import asyncio
 from pathlib import Path
@@ -16,12 +17,17 @@ from backupme.core import database as db
 from backupme.core import verify
 from backupme.log import get_logger
 
-from .common import (_get_backend, _get_backends, _config_as_dict,
+from .common import (_get_backend, _get_backends, _config_as_dict, _config_dict,
+                     _backend_fingerprint, _backend_status_cache,
+                     _list_backend_configs,
                      _rebalance_state, _rebalance_lock, _reset_rebalance,
                      _process_state, _process_lock, _reset_process,
                      make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.backends")
+
+# Backend types in the same fixed order _get_backends walks the config.
+_BACKEND_TYPE_ORDER = ("local", "ftp", "sftp", "smb", "ssh", "rclone", "ninedrive")
 
 
 def register(app, ctx):
@@ -140,6 +146,96 @@ def register(app, ctx):
                 "free_space": free, "total_space": total,
             })
         return JSONResponse({"backends": out})
+
+    # NOTE: registered before /api/backends/{name} so "status" is not captured.
+    @app.get("/api/backends/status")
+    async def api_backends_status():
+        """Cheap per-backend status for the dashboard cards (Phase A page-perf).
+
+        Returns a JSON list, one row per configured backend:
+            {"name", "type", "connected", "free_space", "total_space",
+             "priority", "quota", "error"}          # error is null when fine
+
+        Resolution + probes run on a worker thread (never the event loop)
+        and results are cached per backend config fingerprint with a ~30 s
+        TTL — a second call inside the TTL returns the cached rows without
+        any probing. NEVER calls walk(): connect + free/total only. A
+        failing backend degrades to connected:false plus an error string;
+        the endpoint itself never raises to the client.
+        """
+
+        def _probe_row(be, name: str) -> dict:
+            status = {
+                "name": name,
+                "type": getattr(be, "type", ""),
+                "connected": False,
+                "free_space": None,
+                "total_space": None,
+                "priority": be.config.get("priority", 50),
+                "quota": be.config.get("quota", None),
+                "error": None,
+            }
+            try:
+                connected = bool(be.connected) or bool(be.connect())
+            except Exception as e:
+                status["error"] = f"connect failed: {e}"
+                return status
+            status["connected"] = connected
+            if connected:
+                try:
+                    status["free_space"] = be.free_space()
+                    status["total_space"] = be.total_space()
+                except Exception as e:
+                    status["error"] = f"space probe failed: {e}"
+            return status
+
+        def _probe_all() -> list[dict]:
+            # Worker thread (to_thread): connect + free/total only — never
+            # walk(). Per-backend rows cache by config fingerprint; the pool
+            # is resolved only when at least one backend needs a probe.
+            cfg = _config_dict(ctx)
+            ordered = []  # [fingerprint, name, row-or-None]
+            needs_probe = False
+            for btype in _BACKEND_TYPE_ORDER:
+                for entry in cfg.get(btype, []):
+                    name = entry.get("name", "")
+                    if not name:
+                        continue
+                    fingerprint = _backend_fingerprint(entry)
+                    cached = _backend_status_cache.get(fingerprint)
+                    ordered.append([fingerprint, name, cached])
+                    if cached is None:
+                        needs_probe = True
+            if needs_probe:
+                by_name = {b.name: b for b in _get_backends(ctx)}
+                for slot in ordered:
+                    if slot[2] is not None:
+                        continue
+                    fingerprint, name = slot[0], slot[1]
+                    be = by_name.get(name)
+                    row = _probe_row(be, name) if be is not None else {
+                        "name": name, "type": "", "connected": False,
+                        "free_space": None, "total_space": None,
+                        "priority": 50, "quota": None,
+                        "error": "backend could not be resolved",
+                    }
+                    _backend_status_cache.set(fingerprint, row)
+                    slot[2] = row
+            return [row for _, _, row in ordered if row is not None]
+
+        try:
+            result = await asyncio.to_thread(_probe_all)
+            return JSONResponse(result)
+        except Exception as e:
+            # Never raise to the client: degrade every configured backend to
+            # an honest offline row (config-only listing, no further probes).
+            log.exception("backend status probe failed; serving offline rows")
+            offline = [{"name": b["name"], "type": b["type"], "connected": False,
+                        "free_space": None, "total_space": None,
+                        "priority": b["priority"], "quota": b["quota"],
+                        "error": f"status probe failed: {e}"}
+                       for b in _list_backend_configs(ctx)]
+            return JSONResponse(offline)
 
     @app.get("/api/backends/{name}")
     async def api_backend_detail(name: str):

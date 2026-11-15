@@ -15,9 +15,34 @@ from backupme.core import dedup, state, verify
 from backupme.core import index as index_mod
 from backupme.log import get_logger
 
-from .common import _get_backends, _get_backups, _get_cfg_dict, _search_files_safe
+from .common import (_get_backends, _get_backups, _get_cfg_dict,
+                     _search_files_safe, _list_backend_configs,
+                     _dedup_savings_cache)
 
 log = get_logger("web.routes.pages")
+
+
+async def _cached_dedup_savings() -> dict:
+    """Dashboard dedup-savings aggregate served from a ~30 s TTL cache.
+
+    dedup.total_dedup_savings() is a full COUNT/SUM over blob_storage JOIN
+    blobs: trivial on the test fixture but 517 ms at 450k blob_storage rows
+    and seconds-class on the live store, so the number is computed on a
+    worker thread at most once per TTL window (Phase A page-perf). The
+    executor thread always drops its own SQLite handle."""
+    cached = _dedup_savings_cache.get("savings")
+    if cached is not None:
+        return cached
+
+    def _compute():
+        try:
+            return dedup.total_dedup_savings()
+        finally:
+            db.close_connection()
+
+    result = await asyncio.to_thread(_compute)
+    _dedup_savings_cache.set("savings", result)
+    return result
 
 
 # ── Presentation filters (UI polish only — no route or API shape changes) ──
@@ -92,14 +117,38 @@ def register(app, ctx):
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
+        """Dashboard page — cheap-only request path (Phase A page-perf).
+
+        Nothing here connects a backend or runs a heavy aggregate: backend
+        cards render as skeletons from the config-only listing and fill
+        asynchronously from /api/backends/status; the dedup-savings
+        aggregate is served from a TTL cache on a worker thread; the
+        integrity card reads the stored integrity_checks row instead of
+        verify.get_report() (whose unrecoverable-files LEFT JOIN over
+        file_chunks is minutes-class on the live store)."""
         total_files = index_mod.file_count()
-        savings = dedup.total_dedup_savings()
-        rpt = verify.get_report()
-        report_data = rpt.get("last_integrity_check") if rpt else None
-        backends = _get_backends(ctx)
-        be_list = [{"name": b.name, "type": b.type, "connected": b.connected} for b in backends]
+        savings = await _cached_dedup_savings()
+        # The integrity card only needs the newest integrity_checks row —
+        # same dict shape verify.get_report() exposed as
+        # last_integrity_check (status/completed_at/started_at), without
+        # the report's full-table scans.
+        try:
+            row = db.execute(
+                "SELECT * FROM integrity_checks ORDER BY started_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            report_data = dict(row) if row else None
+        except Exception as e:
+            log.warning("last integrity_checks row query failed for dashboard page: %s", e)
+            report_data = None
+        # Config-only listing: name/type for the skeleton cards, no connects.
+        be_list = _list_backend_configs(ctx)
         last_cp = state.get_last_checkpoint()
-        recent = index_mod.get_all_files(limit=10)
+        # Recent files by id DESC: the rowid index answers instantly even on
+        # millions of rows (created_at has no index — an ORDER BY created_at
+        # sort measured 46 ms at 300k rows vs ~0 ms by id).
+        recent = [dict(r) for r in db.execute(
+            "SELECT * FROM files WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 10"
+        ).fetchall()]
         gen = db.get_generation()
         try:
             cps = db.execute(
@@ -238,17 +287,20 @@ def register(app, ctx):
         })
 
     def _collect_database_page_info() -> dict:
-        """All blocking work behind the /database page: PRAGMA
-        integrity_check alone ran 29s on the live DB, plus the journal_mode /
-        page_count / page_size PRAGMAs, the recovery-events query, and the
-        snapshot directory glob+stat. Extracted as a plain sync helper so the
-        async handler can run it via asyncio.to_thread instead of wedging the
-        event loop (qa defect D18). This worker thread always closes its own
-        SQLite handle so no pooled connection outlives the request."""
+        """Cheap-only snapshot behind the /database page (Phase A page-perf).
+
+        The full PRAGMA integrity_check (29s+ on the live DB, >120s wall on
+        the whole page) left the request path: it now runs as a background
+        op (POST /api/db/check/start) that persists its result as a 'pragma'
+        row in integrity_checks. The page renders from the cheap PRAGMAs
+        (generation / instance_id / page_count*page_size / journal_mode),
+        the newest integrity_checks row as "last integrity check", the
+        recovery-events tail and the snapshot directory glob+stat. This
+        worker thread always closes its own SQLite handle so no pooled
+        connection outlives the request."""
         try:
             gen = db.get_generation()
             instance_id = db.get_instance_id()
-            integrity = db.check_integrity()
             try:
                 wal_row = db.execute("PRAGMA journal_mode").fetchone()
                 wal_mode = bool(wal_row and wal_row[0].upper() == "WAL")
@@ -257,6 +309,14 @@ def register(app, ctx):
                 wal_mode = False
             page_count = db.execute("PRAGMA page_count").fetchone()[0]
             page_size = db.execute("PRAGMA page_size").fetchone()[0]
+            try:
+                row = db.execute(
+                    "SELECT * FROM integrity_checks ORDER BY started_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+                last_check = dict(row) if row else None
+            except Exception as e:
+                log.warning("last integrity_checks row query failed for database page: %s", e)
+                last_check = None
             recovery = db.execute(
                 "SELECT * FROM recovery_events ORDER BY id DESC LIMIT 20"
             ).fetchall()
@@ -267,12 +327,11 @@ def register(app, ctx):
                     "generation": gen,
                     "instance_id": instance_id,
                     "size": page_count * page_size,
-                    "integrity_status": "ok" if not integrity else "corrupt",
-                    "integrity_errors": integrity,
                     "wal_mode": wal_mode,
                     "page_count": page_count,
                     "page_size": page_size,
                 },
+                "last_check": last_check,
                 "snapshots": snapshots,
                 "recovery": [dict(r) for r in recovery],
             }

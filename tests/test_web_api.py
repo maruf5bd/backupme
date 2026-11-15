@@ -67,6 +67,7 @@ SWEEP_PATHS = {
     "/api/status",
     "/api/backends",
     "/api/backends/usage",
+    "/api/backends/status",
     "/api/backends/{name}",
     "/api/backends/test/{name}",
     "/api/files",
@@ -83,6 +84,7 @@ SWEEP_PATHS = {
     "/api/db/info",
     "/api/db/snapshots",
     "/api/db/recovery",
+    "/api/db/check/status",  # Phase A background integrity op (tests/test_web_perf_pages.py)
     "/api/report",
     "/api/reports",
     "/api/reports/{report_id}",
@@ -141,6 +143,7 @@ STREAM_PATHS = {
     "/api/backends/rebalance/stream",  # covered by test_web_ingest.py
     "/api/health/scan/stream",
     "/api/backends/{name}/process-files/stream",  # closes after one idle snapshot pre-op
+    "/api/db/check/stream",  # covered by tests/test_web_perf_pages.py (Phase A)
 }
 
 # Read-only GETs asserted outside the JSON sweep (non-JSON bodies).

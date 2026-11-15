@@ -10,8 +10,9 @@ register(app, ctx) and the cross-cutting pieces live here exactly once:
 - search helpers: _fts_phrase/_search_files_like/_search_files_safe
 - file mutation: _soft_delete_file (the only soft-delete path)
 - fs helpers: _safe_stat/_lp (long-path aware stat), _coerce_int
-- background-task state dicts + locks + resets (restore/scan/ingest/rebalance/health scan)
+- background-task state dicts + locks + resets (restore/scan/ingest/rebalance/health scan/db check)
 - one task runner (B06): op_log_start/op_log_finish/make_sse_stream/start_daemon_thread
+- TTL caches (Phase A page-perf): per-backend status rows + dashboard dedup savings
 
 Route registration itself never lives here — see the domain modules.
 """
@@ -20,6 +21,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from fastapi.responses import StreamingResponse
@@ -203,6 +205,103 @@ def _probe_space(be) -> tuple:
         log.warning("space probe failed for backend %s: %s", be.name, e)
         errors.append(f"space probe failed: {e}")
     return free, total, errors
+
+
+_STATUS_TTL_SECONDS = 30.0
+
+
+def _list_backend_configs(ctx: RouteContext) -> list[dict]:
+    """Config-only backend listing in the same order _get_backends uses —
+    never connects, never probes, never touches the network.
+
+    The dashboard page renders its backend cards from this (name + type
+    skeleton) and fills the live status asynchronously from
+    /api/backends/status, so a dead SFTP backend can no longer hold the
+    page render hostage (Phase A page-perf)."""
+    cfg_backends = getattr(ctx.config, "backends", {}) or {}
+    out = []
+    for btype in ("local", "ftp", "sftp", "smb", "ssh", "rclone", "ninedrive"):
+        for entry in (cfg_backends.get(btype) or []):
+            name = getattr(entry, "name", "") or ""
+            if not name:
+                continue
+            out.append({
+                "name": name,
+                "type": btype,
+                "priority": getattr(entry, "priority", 50),
+                "quota": getattr(entry, "quota", None),
+            })
+    return out
+
+
+def _backend_fingerprint(entry) -> str:
+    """Stable cache key for one backend config entry: the entry's fields
+    serialized canonically. Any config change (password, host, path, ...)
+    produces a new fingerprint, so a cached probe result can never leak
+    across a reconfigured backend."""
+    try:
+        payload = {k: v for k, v in entry.items()}
+    except AttributeError:
+        payload = {k: getattr(entry, k, None) for k in
+                   ("type", "name", "path", "host", "port", "username", "key_file",
+                    "share", "remote", "bwlimit", "quota", "priority", "weight",
+                    "base_url", "api_key", "email", "refresh_token", "folder")}
+    try:
+        return json.dumps(payload, sort_keys=True, default=str)
+    except Exception:
+        return repr(payload)
+
+
+# ── TTL caches (Phase A page-perf) ────────────────────────────
+
+class TTLCache:
+    """Tiny thread-safe TTL cache on monotonic time.
+
+    `get` returns None on miss/expiry (never raises), `set` overwrites,
+    `clear` drops everything — reset_background_state calls clear() on the
+    module-level caches at every registration so each fresh app instance
+    re-probes from scratch (per-app test isolation, same contract as the
+    background-task state dicts)."""
+
+    def __init__(self, ttl_seconds: float = 30.0):
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+        self._store: dict[str, tuple[float, object]] = {}
+
+    def get(self, key: str):
+        with self._lock:
+            hit = self._store.get(key)
+            if hit is None:
+                return None
+            expires_at, value = hit
+            if time.monotonic() >= expires_at:
+                return None
+            return value
+
+    def set(self, key: str, value) -> None:
+        with self._lock:
+            self._store[key] = (time.monotonic() + self._ttl, value)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+
+# Per-backend status rows for GET /api/backends/status (backends.py),
+# keyed by backend config fingerprint (~30 s TTL: the second dashboard
+# poll inside the window returns the cached probe without any I/O).
+_backend_status_cache = TTLCache(_STATUS_TTL_SECONDS)
+
+# dedup.total_dedup_savings() for the dashboard stat cards: a full
+# COUNT/SUM aggregate over blob_storage JOIN blobs — 517 ms measured at
+# 450k blob_storage rows, seconds-class at the live store's size, so the
+# dashboard serves it from this cache and recomputes on a worker thread
+# at most once per TTL window.
+_dedup_savings_cache = TTLCache(_STATUS_TTL_SECONDS)
 
 
 # ── File mutation ─────────────────────────────────────────────
@@ -435,6 +534,22 @@ _health_scan_lock = threading.Lock()
 _health_scan_event = threading.Event()
 
 
+# Database PRAGMA integrity check (dbops.py) — minutes-class on the live
+# hot store (29s+ measured, >120s wall on the 2.6 GB DB), so it runs as a
+# background op with its own status snapshot + SSE stream and persists the
+# result as a 'pragma' row in integrity_checks (Phase A page-perf).
+_db_check_state = {
+    "running": False,
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "status": "",      # "" while running; then "ok" | "corrupt" | "error"
+    "errors": [],      # PRAGMA integrity_check rows != 'ok' (corrupt branch)
+    "error": "",       # worker-level crash text when the op itself failed
+    "completed": False,
+}
+_db_check_lock = threading.Lock()
+
+
 def reset_background_state():
     """Reset every background-task state dict to its idle value.
 
@@ -464,6 +579,11 @@ def reset_background_state():
             "running": False, "started_at": 0.0, "finished_at": 0.0,
             "completed": False, "results": {}, "remote": [], "errors": [],
         })
+    with _db_check_lock:
+        _db_check_state.update({
+            "running": False, "started_at": 0.0, "finished_at": 0.0,
+            "status": "", "errors": [], "error": "", "completed": False,
+        })
     with _process_lock:
         _process_state.update({
             "running": False, "backend": "", "prefix": "", "target": "",
@@ -472,6 +592,8 @@ def reset_background_state():
             "completed": False, "result": None,
         })
     _ops_ever_started.clear()
+    _backend_status_cache.clear()
+    _dedup_savings_cache.clear()
     _restore_event.set()
     _restore_event.clear()
     _scan_event.set()

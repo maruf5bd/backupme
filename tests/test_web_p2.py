@@ -85,14 +85,20 @@ def _file_row(rel_path: str):
 # ---------------------------------------------------------------------------
 
 def test_database_page_renders_correct_db_info(client, env, backends):
+    """Updated for the Phase A page-perf wave: the /database page no longer
+    runs the inline PRAGMA integrity_check, so a fresh scratch DB (no
+    integrity_checks rows) honestly renders the 'no check recorded yet'
+    state instead of claiming a verified DB. The cheap db info renders
+    unchanged."""
     result = _upload(env, backends, "seed/doc.txt", b"database page seed")
     assert "file_id" in result, result
     from backupme.core import database as db
     gen = db.get_generation()
     r = client.get("/database")
     assert r.status_code == 200, r.text[:300]
-    assert "Database integrity verified" in r.text, \
-        "db_info.integrity_status must be 'ok' on a healthy scratch DB"
+    assert "No integrity check recorded yet" in r.text, \
+        "fresh scratch DB must render the last-check section as 'no check yet' " \
+        "(the inline PRAGMA check left the page — it runs as a background op now)"
     assert "Enabled" in r.text, "db_info.wal_mode must render the WAL badge"
     assert f'id="db-generation">{gen}</span>' in r.text, \
         "db_info.generation must render the real generation number"

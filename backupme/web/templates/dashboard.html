@@ -298,15 +298,15 @@
     </div>
     <div class="card-body">
       {% for be in backends %}
-      <div class="flex items-center justify-between" style="padding: 0.6rem 0; {% if not loop.last %}border-bottom: 1px solid var(--border-subtle);{% endif %}">
+      <div class="flex items-center justify-between" style="padding: 0.6rem 0; {% if not loop.last %}border-bottom: 1px solid var(--border-subtle);{% endif %}" data-backend-status="{{ be.name }}">
         <div class="flex items-center gap-2">
-          <span class="dot {% if be.connected %}dot-green{% else %}dot-red{% endif %}"></span>
+          <span class="dot dot-yellow dot-pulse" data-backend-dot></span>
           <div>
             <div class="font-semibold text-sm">{{ be.name }}</div>
             <div class="text-xs text-muted">{{ be.type }}</div>
           </div>
         </div>
-        <span class="badge {% if be.connected %}badge-green{% else %}badge-red{% endif %}">{% if be.connected %}online{% else %}offline{% endif %}</span>
+        <span class="badge badge-gray" data-backend-badge>checking…</span>
       </div>
       {% endfor %}
       {% if not backends %}
@@ -602,6 +602,54 @@
     if (el('gen-value')) el('gen-value').textContent = data.generation;
   }, 10000, {
     onError: () => {} // silent
+  });
+
+  // ── Backend status cards (Phase A page-perf) ─────────────────
+  // The page renders skeleton cards straight from config (no backend
+  // connects in the request path) and fills them from
+  // /api/backends/status, whose connect+free/total probe is cached
+  // server-side for 30 s. On fetch failure the cards switch to an honest
+  // "status unavailable" state instead of pretending everything is fine.
+  function setBackendCardsUnavailable(reason) {
+    document.querySelectorAll('[data-backend-status]').forEach(card => {
+      const dot = card.querySelector('[data-backend-dot]');
+      const badge = card.querySelector('[data-backend-badge]');
+      if (dot) dot.className = 'dot dot-yellow';
+      if (badge) {
+        badge.className = 'badge badge-yellow';
+        badge.textContent = 'status unavailable';
+        if (reason) badge.title = String(reason);
+      }
+    });
+  }
+
+  function paintBackendCards(list) {
+    if (!Array.isArray(list)) {
+      setBackendCardsUnavailable('backend status endpoint returned an error');
+      return;
+    }
+    const byName = {};
+    list.forEach(b => { byName[b.name] = b; });
+    document.querySelectorAll('[data-backend-status]').forEach(card => {
+      const name = card.getAttribute('data-backend-status');
+      const st = byName[name];
+      const dot = card.querySelector('[data-backend-dot]');
+      const badge = card.querySelector('[data-backend-badge]');
+      if (!st) {
+        if (badge) { badge.className = 'badge badge-gray'; badge.textContent = 'unknown'; }
+        return;
+      }
+      if (dot) dot.className = 'dot ' + (st.connected ? 'dot-green' : 'dot-red');
+      if (badge) {
+        badge.className = 'badge ' + (st.connected ? 'badge-green' : 'badge-red');
+        badge.textContent = st.connected ? 'online' : 'offline';
+        badge.title = st.error || '';
+      }
+    });
+  }
+
+  App.Poller.start('/api/backends/status', paintBackendCards, 30000, {
+    onError: (err) => setBackendCardsUnavailable(err && err.message)
   });
 
   // Init charts

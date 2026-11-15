@@ -6,10 +6,10 @@
 <div class="page-header">
   <h1><i data-lucide="hard-drive" style="width:28px;height:28px;"></i> Database Health</h1>
   <div class="page-header-actions">
-    <button class="btn btn-secondary btn-sm" onclick="runIntegrityCheck(this)">
-      <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Integrity Check
+    <button class="btn btn-secondary btn-sm" onclick="runIntegrityCheck(this)" title="Runs the full PRAGMA integrity check as a background operation">
+      <i data-lucide="shield-check" style="width:14px;height:14px;"></i> Run Integrity Check
     </button>
-    <button class="btn btn-secondary btn-sm" onclick="refreshDbInfo(this)" title="Refresh info + integrity (full PRAGMA check)">
+    <button class="btn btn-secondary btn-sm" onclick="refreshDbInfo(this)" title="Refresh info (cheap PRAGMAs + last recorded check result)">
       <i data-lucide="info" style="width:14px;height:14px;"></i> Refresh Info
     </button>
     <button class="btn btn-secondary btn-sm" onclick="createSnapshot(this)">
@@ -50,11 +50,18 @@
     </div>
     <div class="stat-label">Integrity</div>
     <div class="stat-value">
-      {% if db_info and db_info.integrity_status == 'ok' %}
+      {% if last_check and last_check.status == 'completed' %}
         <span class="badge badge-green" id="integrity-badge">OK</span>
+      {% elif last_check and last_check.status == 'failed' %}
+        <span class="badge badge-red" id="integrity-badge">Corrupt</span>
+      {% elif last_check and last_check.status == 'running' %}
+        <span class="badge badge-yellow" id="integrity-badge">Running…</span>
       {% else %}
-        <span class="badge badge-yellow" id="integrity-badge">Unknown</span>
+        <span class="badge badge-gray" id="integrity-badge">Unknown</span>
       {% endif %}
+    </div>
+    <div class="stat-sub" id="last-check-sub">
+      {% if last_check %}last check: {{ (last_check.completed_at or last_check.started_at)|dtime }}{% else %}last check: never{% endif %}
     </div>
   </div>
   <div class="stat-card">
@@ -82,13 +89,18 @@
       <div id="integrity-gauge"></div>
     </div>
     <div class="text-center text-sm text-muted" id="integrity-text">
-      {% if db_info and db_info.integrity_status == 'ok' %}
-        Database integrity verified
-      {% elif db_info and db_info.integrity_errors %}
-        {{ db_info.integrity_errors | length }} integrity error(s) found — run an integrity check
+      {% if last_check and last_check.status == 'completed' %}
+        Last integrity check ({{ last_check.check_type }}): database integrity verified
+      {% elif last_check and last_check.status == 'failed' %}
+        Last integrity check ({{ last_check.check_type }}): {{ last_check.failed_files or 0 }} error(s) found — corrupt
+      {% elif last_check and last_check.status == 'running' %}
+        Integrity check running…
       {% else %}
-        Run an integrity check to verify database health
+        No integrity check recorded yet — run one from this page
       {% endif %}
+    </div>
+    <div class="text-center text-xs text-muted" id="last-check-meta">
+      {% if last_check %}checked {{ (last_check.completed_at or last_check.started_at)|dtime }}{% endif %}
     </div>
   </div>
 
@@ -222,11 +234,14 @@
 {% block scripts %}
 <script>
 (function() {
-  // Integrity gauge
-  const isOk = {{ 'true' if db_info and db_info.integrity_status == 'ok' else 'false' }};
-  Charts.createGauge('integrity-gauge', isOk ? 100 : 0, 100, {
+  // Integrity gauge — reflects the LAST RECORDED integrity check (the full
+  // PRAGMA check runs as a background op now; the page itself never blocks
+  // on it). No recorded check => honest "unknown" state.
+  const lastCheckKnown = {{ 'true' if last_check else 'false' }};
+  const lastCheckOk = {{ 'true' if last_check and last_check.status == 'completed' else 'false' }};
+  Charts.createGauge('integrity-gauge', lastCheckKnown && lastCheckOk ? 100 : 0, 100, {
     size: 140,
-    color: isOk ? 'green' : 'red',
+    color: !lastCheckKnown ? 'yellow' : (lastCheckOk ? 'green' : 'red'),
     label: 'integrity',
     colorThresholds: { green: 80, yellow: 50 },
   });
@@ -252,47 +267,126 @@
     App.initIcons();
   }
 
-  window.runIntegrityCheck = async function(btn) {
-    const origHtml = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Checking...';
-    showOpBanner('info', 'Integrity check running — this can take a while on a large database…');
+  // ── Background integrity check (Phase A page-perf) ──────────
+  // The full PRAGMA integrity_check is minutes-class on a large database,
+  // so it runs as a background operation: POST /api/db/check/start arms
+  // the op (and writes the op_log audit entry), /api/db/check/stream
+  // carries the progress, and the result is persisted as a 'pragma' row
+  // in integrity_checks — the sections below repaint from it when the op
+  // completes.
+  let _checkSSE = null;
+
+  function setLastCheckUi(status, errors, errorText) {
+    const badge = document.getElementById('integrity-badge');
+    const sub = document.getElementById('last-check-sub');
+    const meta = document.getElementById('last-check-meta');
+    if (sub) sub.textContent = 'last check: just now';
+    if (meta) meta.textContent = 'checked just now';
+    if (status === 'ok') {
+      if (badge) { badge.className = 'badge badge-green'; badge.textContent = 'OK'; }
+      setText('integrity-text', 'Last integrity check (pragma): database integrity verified');
+      Charts.createGauge('integrity-gauge', 100, 100, { size: 140, color: 'green', label: 'integrity' });
+      showOpBanner('success', 'Integrity check passed — no errors found.');
+      App.Toast.success('Integrity check passed');
+    } else if (status === 'corrupt') {
+      const errs = errors || [];
+      if (badge) { badge.className = 'badge badge-red'; badge.textContent = 'Corrupt'; }
+      setText('integrity-text', 'Last integrity check (pragma): ' + errs.length
+        + ' error(s) found — corrupt');
+      Charts.createGauge('integrity-gauge', 0, 100, { size: 140, color: 'red', label: 'integrity' });
+      showOpBanner('error', 'Integrity check FAILED — ' + errs.length + ' error(s): '
+        + errs.slice(0, 3).join('; ') + (errs.length > 3 ? ' …' : ''));
+      App.Toast.error('Integrity issues found');
+    } else {
+      if (badge) { badge.className = 'badge badge-yellow'; badge.textContent = 'Unknown'; }
+      showOpBanner('error', 'Integrity check failed — ' + (errorText || 'unknown error'));
+      App.Toast.error('Integrity check failed');
+    }
+  }
+
+  function onCheckDone(s) {
+    setLastCheckUi(s.status, s.errors, s.error);
+  }
+
+  function connectCheckSSE() {
+    if (_checkSSE) _checkSSE.close();
+    _checkSSE = new EventSource('/api/db/check/stream');
+    _checkSSE.onmessage = function(ev) {
+      try {
+        const s = JSON.parse(ev.data);
+        if (s.running) {
+          showOpBanner('info', 'Integrity check running — this can take a while on a large database…');
+        }
+        if (s.completed && !s.running) {
+          _checkSSE.close();
+          _checkSSE = null;
+          onCheckDone(s);
+        }
+      } catch (e) {}
+    };
+    _checkSSE.onerror = function() {
+      // Stream hiccup: fall back to polling the status snapshot.
+      _checkSSE.close();
+      _checkSSE = null;
+      pollCheckStatus();
+    };
+  }
+
+  async function pollCheckStatus() {
     try {
-      const result = await App.fetchAPI('/api/db/check', { method: 'POST' });
-      if (result.status === 'ok') {
-        App.Toast.success('Integrity check passed');
-        showOpBanner('success', 'Integrity check passed — no errors found.');
-        Charts.createGauge('integrity-gauge', 100, 100, { size: 140, color: 'green', label: 'integrity' });
-        const badge = document.getElementById('integrity-badge');
-        badge.className = 'badge badge-green';
-        badge.textContent = 'OK';
-        setText('integrity-text', 'Database integrity verified');
-      } else {
-        const errors = result.errors || [];
-        App.Toast.error('Integrity issues found');
-        showOpBanner('error', 'Integrity check FAILED — ' + errors.length + ' error(s): '
-          + errors.slice(0, 3).join('; ') + (errors.length > 3 ? ' …' : ''));
-        Charts.createGauge('integrity-gauge', 0, 100, { size: 140, color: 'red', label: 'integrity' });
-        const badge = document.getElementById('integrity-badge');
-        badge.className = 'badge badge-red';
-        badge.textContent = 'Corrupt';
-        setText('integrity-text', errors.length + ' integrity error(s) found');
+      const s = await App.fetchAPI('/api/db/check/status');
+      if (s.running) {
+        showOpBanner('info', 'Integrity check running — this can take a while on a large database…');
+        setTimeout(pollCheckStatus, 1000);
+      } else if (s.completed) {
+        onCheckDone(s);
       }
     } catch (e) {
-      showOpBanner('error', 'Integrity check request failed — ' + (e.message || e));
+      showOpBanner('error', 'Lost track of the integrity check — ' + (e.message || e));
+    }
+  }
+
+  window.runIntegrityCheck = async function(btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Starting…';
+    try {
+      const start = await App.fetchAPI('/api/db/check/start', { method: 'POST' });
+      if (start.status === 'busy') {
+        showOpBanner('info', 'An integrity check is already running — following its progress.');
+        connectCheckSSE();
+        return;
+      }
+      showOpBanner('info', 'Integrity check started in the background — this can take a while on a large database…');
+      connectCheckSSE();
+    } catch (e) {
+      showOpBanner('error', 'Failed to start integrity check — ' + (e.message || e));
     } finally {
       btn.disabled = false;
-      btn.innerHTML = origHtml;
+      btn.innerHTML = '<i data-lucide="shield-check" style="width:14px;height:14px;"></i> Run Integrity Check';
       App.initIcons();
     }
   };
 
-  // Pull /api/db/info and repaint the info card + stat badges.
+  // If a check is already running (e.g. the page was reloaded mid-op),
+  // pick its progress back up instead of showing a stale idle state.
+  (async function checkExistingCheck() {
+    try {
+      const s = await App.fetchAPI('/api/db/check/status');
+      if (s.running) {
+        showOpBanner('info', 'Integrity check running — this can take a while on a large database…');
+        connectCheckSSE();
+      }
+    } catch (e) {}
+  })();
+
+  // Pull /api/db/info and repaint the info card + stat badges. The
+  // endpoint is cheap-only now: integrity comes from the last recorded
+  // check (never a fresh PRAGMA run).
   window.refreshDbInfo = async function(btn) {
     const origHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Reading…';
-    showOpBanner('info', 'Reading database info (includes a full PRAGMA integrity check — can take a while)…');
+    showOpBanner('info', 'Reading database info (cheap PRAGMAs + last recorded check result)…');
     try {
       const d = await App.fetchAPI('/api/db/info');
       setText('db-size', App.formatBytes(d.size));
@@ -306,24 +400,38 @@
         walBadge.textContent = d.wal_mode ? 'Enabled' : 'Disabled';
       }
       const ok = d.integrity_status === 'ok';
+      const unknown = !d.integrity_status || d.integrity_status === 'unknown';
       const badge = document.getElementById('integrity-badge');
       if (badge) {
-        badge.className = 'badge ' + (ok ? 'badge-green' : 'badge-red');
-        badge.textContent = ok ? 'OK' : 'Corrupt';
+        badge.className = 'badge ' + (unknown ? 'badge-gray' : (ok ? 'badge-green' : 'badge-red'));
+        badge.textContent = unknown ? 'Unknown' : (ok ? 'OK' : 'Corrupt');
       }
       Charts.createGauge('integrity-gauge', ok ? 100 : 0, 100, {
-        size: 140, color: ok ? 'green' : 'red', label: 'integrity',
+        size: 140, color: unknown ? 'yellow' : (ok ? 'green' : 'red'), label: 'integrity',
         colorThresholds: { green: 80, yellow: 50 },
       });
       const errors = d.integrity_errors || [];
-      setText('integrity-text', ok ? 'Database integrity verified' : errors.length + ' integrity error(s) found');
-      if (ok) {
+      if (unknown) {
+        setText('integrity-text', 'No integrity check recorded yet — run one from this page');
+      } else if (ok) {
+        setText('integrity-text', 'Last integrity check: database integrity verified');
+      } else {
+        setText('integrity-text', errors.length + ' integrity error(s) found');
+      }
+      const sub = document.getElementById('last-check-sub');
+      if (sub) sub.textContent = 'last check: ' + (d.last_check_at ? App.formatDate(d.last_check_at) : 'never');
+      if (unknown) {
+        showOpBanner('info', 'Info refreshed — ' + App.formatBytes(d.size) + ' on disk, '
+          + App.formatNumber(d.page_count || 0) + ' pages, WAL ' + (d.wal_mode ? 'enabled' : 'disabled')
+          + '. No integrity check recorded yet.');
+        App.Toast.info('Database info refreshed');
+      } else if (ok) {
         showOpBanner('success', 'Info refreshed — ' + App.formatBytes(d.size) + ' on disk, '
           + App.formatNumber(d.page_count || 0) + ' pages, WAL ' + (d.wal_mode ? 'enabled' : 'disabled')
-          + ', integrity OK.');
+          + ', last integrity check OK.');
         App.Toast.success('Database info refreshed');
       } else {
-        showOpBanner('error', 'Info refreshed — integrity FAILED with ' + errors.length + ' error(s): '
+        showOpBanner('error', 'Info refreshed — last integrity check FAILED with ' + errors.length + ' error(s): '
           + errors.slice(0, 3).join('; ') + (errors.length > 3 ? ' …' : ''));
         App.Toast.error('Integrity issues found');
       }
