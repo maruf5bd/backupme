@@ -464,3 +464,30 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   3 sftp-connect (other stream's uncommitted ftp_sftp.py WIP — FakeTransport lacks
   `set_keepalive`) + 1 pre-existing at HEAD (test_logging::test_processing_failure_is_logged)
   + 1 flake (test_web_ingest scan_flow, monkeypatch.undo() CWD leak — fix queued).
+
+## 2026-11-15 (update 24)
+
+- **All update-23 standing failures CLOSED (`c46e0e4`)**: overseer stream committed
+  the other stream's WIP (ftp_sftp.py keepalive + 3-attempt upload retry;
+  cli/backup_cmd.py exit-code-1 on archive/backup errors) together with the two
+  fixes the gate demanded: tests/test_sftp_connect.py FakeTransport gained
+  `set_keepalive(interval)` (fake drift vs real paramiko API — the WIP's new
+  `transport.set_keepalive(10)` call broke every fake connect), and uploader.py's
+  strict disk-presence guards log at ERROR ("upload failed: ...") instead of
+  WARNING — result status is "error", so the observability contract
+  (test_processing_failure_is_logged) requires ERROR with the filename.
+- **backup_cmd.py latent NameError fixed before it could fire**: the WIP's new
+  `sys.exit(1)` referenced `sys` while the module never imported it (only a local
+  `import sys` inside `_safe_echo`'s except-branch) — the exit-code path would have
+  raised NameError exactly when a backup failed. Module-level `import sys` added.
+- Evidence: targeted gate re-runs green (sftp-connect 3/3, logging+upload 4 files,
+  web_phaseC 6 tests incl. the previously untracked test_web_phaseC.py, now
+  committed with its feature); full suite minus phaseC ran 1 failure only
+  (test_logging, fixed above) — every other test green. Fresh full-suite
+  confirmation run queued.
+- Repo hygiene: `nul` (Windows reserved-name junk) removed; overseer scratch
+  outputs cleaned. Remaining untracked: 7 ops scripts under scripts/
+  (transfer_to_gdrive, transfer_dashboard, ingest_5tb_archives, live_monitor,
+  queue_gate_transfer, run_all_remaining, watcher_service — Nov 13 one-off
+  transfer/monitoring drivers) — need a commit-as-product or archive-to-diagnostics
+  decision.
