@@ -562,3 +562,15 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   CI, docstring coverage pass (56/95 modules), helper dedup (checkpoint x4),
   qa sweep renames, op_log for dashboard parity check, v2.0.0 tag + push when
   user approves outward-facing actions.
+
+## 2026-11-16 (update 27)
+
+- **PUSHED (user-approved outward-facing action)**: `origin master` edc9349..6bafd75
+  (10 commits: presence audit wave through brain 26) + annotated tag `v2.0.0`.
+  Credential manager still held GitHub auth after the PAT strip, so HTTPS push
+  worked; user still MUST rotate the exposed PAT itself. GitLab remote (SSH)
+  NOT pushed — same content available on request.
+- **First real GitHub Actions CI run** triggered by the push (run 43774454305,
+  windows-latest: editable install -> CLI smoke -> wheel build -> wheel-assets
+  assert -> full pytest). Previous Actions history was only a dependency-graph
+  blip from May.
