@@ -327,3 +327,34 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - **Box limiter learned the hard way:** paramiko parallel sessions get refused after storms (run-1 8 workers x 143 min -> 10054s; run-2/3 refused fresh connects; even 4 workers refused). rclone connection pattern is immune (10 h run). All future box work goes through rclone (window fix 32e3174 helps single sessions).
 - **UI overhaul (agents U1/U2/U3, user-directed): 13 files, committed 746168c.** filesize/dtime/nfmt filters, status badges, chart empty-states, danger confirms, working archives member pagination + fingerprint copy + client-side dest validation mirroring _unsafe_dest, hash-mode auto-routing, backends verify result-field bug FIXED (always showed 0/0), inverted ingest progress markup FIXED, ingest errors card surfaced, history table with pagination. Full suite green; dashboards smoke-tested on ports 8091-8093. Dashboard restarted on 8081 serving the new UI.
 - **Pending:** box registration pipeline (verify+register the ~38.6k phase-1 objects) was stopped externally after a too-slow serial lsjson Phase A; improved plan ready (rclone copy-down 86.5 GiB + local decompress-sha verify, no listing needed) awaiting owner go. Owner questions open: what the overnight mover was (schedule?) and whether emptying K was intentional. P4b namespace sync + guard snapshot + P5 box-only sandbox restore still queued.
+
+## 2026-11-15 (update 19)
+
+- **Repo restructure landed (`64810ec`)**: project root cleaned — 883 scratch entries
+  (probe scripts, grep dumps, one-off outputs) relocated to
+  `diagnostics/root-sweep-2026-11-15/`; 9 stale docs (PLAN.md, PLAN_FIXED.md,
+  implement.md, old HTML renders, the old config template, the 3 QA reports) archived
+  to `docs/archive/`; `MANUAL.md` + `BACKLOG.md` moved into `docs/` with every live
+  reference rewired (AGENTS.md, brain/README.md, the backend CLI help comment,
+  tests/qa2_cli_sweep.py, docs/PROJECT.md). New **`docs/PROJECT.md`** — comprehensive
+  project documentation (features, pipeline, architecture map, safety model, run
+  commands, repo layout, current status, standing decisions). Root now holds only
+  entry points, top-level docs, and gitignored runtime data.
+- **Suite currently RED — 4 failures, single external root cause (552 passed /
+  4 failed / 1 skip)**: uncommitted WIP in `backupme/backends/ftp_sftp.py` calls
+  `transport.set_keepalive`, but the tests' `FakeTransport` double in
+  tests/test_sftp_connect.py lacks that attribute — 3 sftp-connect tests +
+  test_logging::test_processing_failure_is_logged fail with
+  `'FakeTransport' object has no attribute 'set_keepalive'`. The WIP belongs to the
+  Nov 13-14 work stream; left untouched per in-flight protection. Unblock: that
+  stream adds a `set_keepalive` no-op to FakeTransport and lands, or the WIP is
+  reverted. Last landed commit is green.
+- **Queued — src/ package layout move** (`backupme/` → `src/backupme/`, the standard
+  professional Python structure): blocked behind the two running dashboard-wave
+  agents whose territories are inside the package. Steps pre-planned: `git mv`,
+  `setup.py` package_dir + find_packages(where="src"), tests/conftest.py sys.path
+  fix, main.py bootstrap path, editable reinstall, full-suite gate.
+- `restored_local_archives/` (~19 GB restore-verification scratch) flagged as a
+  reclaim candidate — deletion awaits user approval.
+- Dashboard wave: Phase A (perf) + Phase B (polish) agents running with disjoint
+  territories; Phase C (features) queued behind A.
