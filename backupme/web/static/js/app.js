@@ -107,7 +107,7 @@ const App = (() => {
       }
     },
 
-    confirm(title, message, onConfirm, confirmText = 'Confirm', danger = false) {
+    confirm(title, message, onConfirm, confirmText = 'Confirm', danger = false, onCancel = null) {
       let existing = document.getElementById('confirm-modal');
       if (existing) existing.remove();
 
@@ -124,7 +124,7 @@ const App = (() => {
           </div>
           <p style="color: var(--text-secondary); font-size: 0.9rem;">${message}</p>
           <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="App.Modal.close('confirm-modal')">Cancel</button>
+            <button class="btn btn-secondary" id="confirm-modal-cancel">Cancel</button>
             <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" id="confirm-modal-btn">${escapeHtml(confirmText)}</button>
           </div>
         </div>
@@ -136,6 +136,11 @@ const App = (() => {
       document.getElementById('confirm-modal-btn').addEventListener('click', () => {
         this.close('confirm-modal');
         if (onConfirm) onConfirm();
+      });
+      // Optional explicit Cancel path (backdrop/X close stays a plain dismiss).
+      document.getElementById('confirm-modal-cancel').addEventListener('click', () => {
+        this.close('confirm-modal');
+        if (onCancel) onCancel();
       });
 
       requestAnimationFrame(() => this.open('confirm-modal'));
@@ -223,6 +228,30 @@ const App = (() => {
     return d.toLocaleString('en-US', {
       month: 'short', day: 'numeric',
       hour: '2-digit', minute: '2-digit',
+    });
+  }
+
+  /* Compact local timestamp: "May 30 09:44" (year only when it differs from
+     the current one). Accepts both ISO T-strings and SQLite "YYYY-MM-DD
+     HH:MM:SS" stamps; unparseable input passes through unchanged. */
+  function compactStamp(iso) {
+    if (!iso) return '';
+    const d = new Date(String(iso).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(iso);
+    const opts = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleDateString('en-US', opts) + ' ' + d.toTimeString().slice(0, 5);
+  }
+
+  /* Humanize every [data-ts] element under root: the element shows the
+     compact local form and the exact stored value moves to the title
+     attribute (visible on hover). Keeps raw data available to sorters. */
+  function decorateTimestamps(root) {
+    (root || document).querySelectorAll('[data-ts]').forEach(el => {
+      const raw = el.getAttribute('data-ts');
+      if (!raw) return;
+      el.textContent = compactStamp(raw);
+      el.title = raw;
     });
   }
 
@@ -342,6 +371,7 @@ const App = (() => {
     ThemeManager.init();
     initIcons();
     initGlobalSearch();
+    decorateTimestamps(document);
 
     const sidebarOverlay = document.querySelector('.sidebar-overlay');
     if (sidebarOverlay) {
@@ -366,6 +396,8 @@ const App = (() => {
     formatBytes,
     formatDate,
     formatTimestamp,
+    compactStamp,
+    decorateTimestamps,
     formatNumber,
     copyToClipboard,
     debounce,

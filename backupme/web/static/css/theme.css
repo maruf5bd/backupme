@@ -1703,3 +1703,78 @@ select {
 }
 .u3-pager-info { font-size: 0.72rem; color: var(--text-muted); }
 .u2-copyable:hover { color: var(--accent); }
+
+/* ═══════════════════════════════════════════════════════════
+   Phase B polish helpers (append-only).
+   Sort indicators for clickable table headers, active-filter
+   chips for the Files page, and empty-state action spacing.
+   ═══════════════════════════════════════════════════════════ */
+
+/* Sort direction indicator on th.sortable (set via JS .sort-asc/.sort-desc) */
+thead th.sort-asc::after,
+thead th.sort-desc::after {
+  display: inline-block;
+  margin-left: 0.3rem;
+  font-size: 0.62rem;
+  line-height: 1;
+  color: var(--accent);
+}
+thead th.sort-asc::after { content: '\25B2'; }   /* ▲ */
+thead th.sort-desc::after { content: '\25BC'; }  /* ▼ */
+
+/* Active filter chips row (Files page) */
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.filter-chips .chips-title {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--accent-muted);
+  color: var(--accent);
+  border-radius: var(--radius-full);
+  padding: 0.15rem 0.4rem 0.15rem 0.65rem;
+  font-size: 0.75rem;
+  max-width: 280px;
+}
+.filter-chip .chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.filter-chip .chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.filter-chip .chip-clear:hover {
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+.filter-chips .chips-clear-all {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-decoration: underline;
+  margin-left: 0.25rem;
+}
+.filter-chips .chips-clear-all:hover { color: var(--text); }
+
+/* Optional action row inside the shared empty-state pattern */
+.empty-state .empty-action { margin-top: 0.75rem; }

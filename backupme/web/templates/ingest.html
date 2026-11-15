@@ -109,7 +109,14 @@
   <div class="card-body">
     <table class="table" id="accounts-table">
       <thead><tr><th>Account</th><th>Status</th><th>Files</th><th>Bytes</th><th></th></tr></thead>
-      <tbody id="accounts-body"><tr><td colspan="5" class="u3-state-note">Loading…</td></tr></tbody>
+      <tbody id="accounts-body">
+        <tr><td colspan="5">
+          <div class="empty-state" style="padding: 1.5rem;">
+            <span class="u2-spinner"></span>
+            <p class="text-sm text-muted mt-2">Loading accounts…</p>
+          </div>
+        </td></tr>
+      </tbody>
     </table>
   </div>
 </div>
@@ -262,7 +269,12 @@ const Ingest = {
             <td></td>
           </tr>`;
       } else {
-        tbody.innerHTML = '<tr><td colspan="5" class="u3-state-note">No cpanel/ accounts ingested yet — place cpmove archives under the drop root and scan.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state" style="padding: 1.5rem;">'
+          + '<i data-lucide="archive" style="width:40px;height:40px;"></i>'
+          + '<h3>No accounts ingested yet</h3>'
+          + '<p>Place cpmove archives under the drop root and click "Scan drop folder".</p>'
+          + '</div></td></tr>';
+        App.initIcons();
       }
     } catch (e) {
       const note = document.getElementById('status-note');
@@ -312,7 +324,9 @@ const Ingest = {
     document.getElementById('generations-card').style.display = 'block';
     document.getElementById('generations-title').textContent = 'Generations — ' + account;
     const tbody = document.getElementById('generations-body');
-    tbody.innerHTML = '<tr><td colspan="5" class="u3-state-note">Loading…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state" style="padding: 1rem;">'
+      + '<span class="u2-spinner"></span>'
+      + '<p class="text-sm text-muted mt-2">Loading generations…</p></div></td></tr>';
     try {
       const resp = await fetch(`/api/ingest/generations?account=${encodeURIComponent(account)}`);
       const d = await resp.json();
@@ -325,10 +339,16 @@ const Ingest = {
           <td class="u3-num" title="${App.escapeHtml(g.created || '')}">${fmtStamp(g.created)}</td>
           <td><button class="btn btn-ghost btn-sm" onclick="Ingest.restore('${App.escapeHtml(account)}', ${g.generation})">Restore</button></td>
         </tr>`).join('')
-        || '<tr><td colspan="5" class="u3-state-note">No generations for this account</td></tr>';
+        || '<tr><td colspan="5"><div class="empty-state" style="padding: 1rem;">'
+          + '<i data-lucide="archive" style="width:36px;height:36px;"></i>'
+          + '<p>No generations for this account</p></div></td></tr>';
+      App.initIcons();
     } catch (e) {
-      tbody.innerHTML = '<tr><td colspan="5" class="u3-state-note is-error">Failed to load generations — '
-        + App.escapeHtml(e.message || String(e)) + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state" style="padding: 1rem;">'
+        + '<i data-lucide="alert-triangle" style="width:36px;height:36px;color:var(--red);"></i>'
+        + '<p class="text-red">Failed to load generations — ' + App.escapeHtml(e.message || String(e)) + '</p>'
+        + '</div></td></tr>';
+      App.initIcons();
     }
   },
 

@@ -46,10 +46,11 @@
           <div class="font-semibold" style="font-size: 1.05rem;">{{ be.name }}</div>
           <div class="flex items-center gap-2 mt-1">
             <span class="badge u3-type-badge {% if be.type in known_types %}u3-type-{{ be.type }}{% else %}badge-gray{% endif %}">{{ be.type }}</span>
-            <span class="flex items-center gap-1 text-xs">
-              <span class="dot {% if be.connected %}dot-green{% else %}dot-red{% endif %}"></span>
-              {% if be.connected %}Online{% else %}Offline{% endif %}
-            </span>
+            {% if be.connected %}
+            <span class="badge badge-green"><span class="dot dot-green"></span>Connected</span>
+            {% else %}
+            <span class="badge badge-red"><span class="dot dot-red"></span>Not connected</span>
+            {% endif %}
           </div>
         </div>
       </div>
@@ -72,22 +73,31 @@
           {% endif %}
         </span>
       </div>
-      <div class="progress-bar">
-        <div class="progress-fill {% if used_pct > 85 %}red{% elif used_pct > 65 %}yellow{% else %}accent{% endif %}"
+      <div class="progress-bar" data-usage-bar="{{ used_pct if has_space else '' }}">
+        <div class="progress-fill {% if has_space and used_pct > 85 %}red{% elif has_space and used_pct > 65 %}yellow{% else %}accent{% endif %}"
              style="width: {{ used_pct if has_space else 0 }}%;"
              title="{% if has_space %}{{ used_pct }}% used{% endif %}"></div>
       </div>
     </div>
     {% endif %}
 
-    <!-- Raw capacity (only when no quota string is configured) -->
+    <!-- Raw capacity usage bar (only when no quota string is configured) -->
     {% if not be.quota and be.free_space is not none %}
     <div class="mb-3">
-      <div class="u3-meta-row">
-        <span class="u3-meta-label">Free space</span>
-        <span class="u3-meta-value u3-num">
-          {{ be.free_space | filesize }}{% if be.total_space %} of {{ be.total_space | filesize }}{% endif %} free
+      <div class="flex justify-between text-xs text-muted mb-1" style="gap: 0.5rem;">
+        <span style="white-space: nowrap;">Capacity</span>
+        <span class="u3-num" style="text-align: right;">
+          {% if has_space %}
+            {{ (be.total_space - be.free_space) | filesize }} of {{ be.total_space | filesize }} used ({{ used_pct }}%)
+          {% else %}
+            {{ be.free_space | filesize }} free (total unknown)
+          {% endif %}
         </span>
+      </div>
+      <div class="progress-bar" data-usage-bar="{{ used_pct if has_space else '' }}">
+        <div class="progress-fill {% if has_space and used_pct > 85 %}red{% elif has_space and used_pct > 65 %}yellow{% else %}accent{% endif %}"
+             style="width: {{ used_pct if has_space else 0 }}%;"
+             title="{% if has_space %}{{ used_pct }}% used{% endif %}"></div>
       </div>
     </div>
     {% endif %}
@@ -355,14 +365,26 @@
     };
   }
 
-  window.startRebalance = async function(name) {
-    if (!confirm(`Backfill all missing blobs onto "${name}"? This copies data; nothing is deleted.`)) return;
-    const r = await fetch(`/api/backends/${encodeURIComponent(name)}/rebalance`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
-    });
-    const d = await r.json();
-    if (!r.ok) { App.Toast.show(d.error || 'failed to start', 'error'); return; }
-    watchRebalanceStream();
+  window.startRebalance = function(name) {
+    App.Modal.confirm(
+      'Rebalance Backend',
+      'Backfill all missing blobs onto <strong>' + App.escapeHtml(name) + '</strong>? '
+      + 'This copies data; nothing is deleted.',
+      async () => {
+        try {
+          const r = await fetch(`/api/backends/${encodeURIComponent(name)}/rebalance`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+          });
+          const d = await r.json();
+          if (!r.ok) { App.Toast.show(d.error || 'failed to start', 'error'); return; }
+          watchRebalanceStream();
+        } catch (e) {
+          App.Toast.error('Rebalance request failed: ' + (e.message || e));
+        }
+      },
+      'Start Rebalance',
+      false
+    );
   };
 
   window.startDrain = function(name) {
@@ -388,10 +410,9 @@
     );
   };
 
-  window.openOnboardWizard = function() {
-    const name = prompt('Backend name to onboard (must already exist in config.yaml):');
-    if (!name) return;
-    const doRebalance = confirm('Backfill existing vault data onto it after the connection test?');
+  // Shared onboard request (confirm modal decides the rebalance flag; the
+  // Cancel path keeps the old behavior of onboarding without backfill).
+  function onboardRequest(name, doRebalance) {
     fetch('/api/backends/onboard', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name, rebalance: doRebalance})
@@ -405,6 +426,21 @@
         loadUsage();
       }
     }).catch(e => App.Toast.show(String(e), 'error'));
+  }
+
+  window.openOnboardWizard = function() {
+    const name = prompt('Backend name to onboard (must already exist in config.yaml):');
+    if (!name) return;
+    App.Modal.confirm(
+      'Onboard Backend',
+      'Connect <strong>' + App.escapeHtml(name) + '</strong>, then backfill '
+      + 'existing vault data onto it after the connection test?',
+      () => onboardRequest(name, true),
+      'Onboard + Backfill',
+      false,
+      // Cancel = onboard without backfill (same as the old confirm() = false).
+      () => onboardRequest(name, false)
+    );
   };
 
   const fieldConfigs = {

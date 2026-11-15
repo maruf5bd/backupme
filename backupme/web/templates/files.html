@@ -13,6 +13,24 @@
   {%- endif -%}
 {%- endmacro %}
 
+{# URL back to /files with every active filter EXCEPT the named one —
+   used by the per-chip clear buttons (presentation only). #}
+{% macro chip_clear_url(drop) -%}
+  {%- set parts = [] -%}
+  {%- if q and drop != 'q' -%}{% set _ = parts.append('q=' ~ (q|urlencode)) %}{% endif -%}
+  {%- if backend and drop != 'backend' -%}{% set _ = parts.append('backend=' ~ (backend|urlencode)) %}{% endif -%}
+  {%- if source and drop != 'source' -%}{% set _ = parts.append('source=' ~ (source|urlencode)) %}{% endif -%}
+  {%- if mode and drop != 'mode' -%}{% set _ = parts.append('mode=' ~ (mode|urlencode)) %}{% endif -%}
+  /files{%- if parts %}?{{ parts|join('&') }}{% endif -%}
+{%- endmacro %}
+
+{# Active filter set (path mode is the default, so it never earns a chip). #}
+{% set chips = namespace(items=[]) %}
+{% if q %}{% set _ = chips.items.append({'key': 'q', 'label': 'query', 'value': q}) %}{% endif %}
+{% if backend %}{% set _ = chips.items.append({'key': 'backend', 'label': 'backend', 'value': backend}) %}{% endif %}
+{% if source %}{% set _ = chips.items.append({'key': 'source', 'label': 'source', 'value': source}) %}{% endif %}
+{% if mode in ('content', 'hash') %}{% set _ = chips.items.append({'key': 'mode', 'label': 'mode', 'value': mode}) %}{% endif %}
+
 {% block content %}
 <div class="page-header">
   <h1><i data-lucide="files" style="width:28px;height:28px;"></i> Files</h1>
@@ -461,6 +479,21 @@
   </div>
 </div>
 
+<!-- Active Filter Chips (only when at least one filter is set) -->
+{% if chips.items %}
+<div class="filter-chips" id="active-filter-chips">
+  <span class="chips-title">Active filters:</span>
+  {% for c in chips.items %}
+  <span class="filter-chip" data-filter-key="{{ c.key }}">
+    <span class="chip-label" title="{{ c.value }}">{{ c.label }}: {{ c.value }}</span>
+    <a class="chip-clear" href="{{ chip_clear_url(c.key) }}"
+       title="Remove this filter" aria-label="Remove {{ c.label }} filter">&times;</a>
+  </span>
+  {% endfor %}
+  <a class="chips-clear-all" href="/files">Clear all</a>
+</div>
+{% endif %}
+
 <!-- Files Table -->
 <div class="card">
   <div class="flex items-center justify-between" style="padding:0.6rem 1rem;border-bottom:1px solid var(--border-subtle);flex-wrap:wrap;gap:0.5rem;">
@@ -481,15 +514,15 @@
   </div>
   <div class="table-wrapper">
     <table>
-      <thead>
+      <thead id="files-table-head">
         <tr>
           <th style="width:32px;"><input type="checkbox" id="select-all" onchange="toggleSelectAll(this)"></th>
-          <th>Path</th>
-          <th class="sortable" data-sort="size">Size</th>
+          <th class="sortable" data-sort="path" title="Sort by path">Path</th>
+          <th class="sortable" data-sort="size" title="Sort by size">Size</th>
           <th>SHA256</th>
           <th>Backend</th>
           <th>Version</th>
-          <th class="sortable" data-sort="date">Created</th>
+          <th class="sortable" data-sort="date" title="Sort by created date">Created</th>
           <th style="width: 108px;"></th>
         </tr>
       </thead>
@@ -521,7 +554,7 @@
               <span class="badge badge-gray">v{{ f.version_seq or 1 }}</span>
             </button>
           </td>
-          <td class="text-muted text-sm">{{ f.created_at[:10] if f.created_at else '' }}</td>
+          <td class="text-muted text-sm" data-ts="{{ f.created_at or '' }}" title="{{ f.created_at or '' }}">{{ f.created_at|dtime if f.created_at else '' }}</td>
           <td>
             <div class="flex gap-1">
               <a href="/api/download/{{ f.id }}" class="btn btn-ghost btn-icon sm" title="Download">
@@ -957,34 +990,67 @@
   searchMode.addEventListener('change', doSearch);
   updateSearchHint();
 
-  // Client-side sorting
-  sortSelect.addEventListener('change', () => {
+  // ── Client-side sorting (dependency-free) ─────────────
+  // One helper serves both the sort <select> and clickable headers:
+  // rows are re-ordered in place and the th indicator classes are synced.
+  // Column indexes in a .file-row: 0 checkbox, 1 path, 2 size, 3 sha256,
+  // 4 backend, 5 version, 6 created, 7 actions.
+
+  function applySort(sortBy) {
     const tbody = document.getElementById('files-tbody');
+    if (!tbody || !sortBy) return;
     const rows = Array.from(tbody.querySelectorAll('.file-row'));
-    const sortBy = sortSelect.value;
+    const sep = sortBy.lastIndexOf('_');
+    const key = sortBy.slice(0, sep);          // size | date | name
+    const asc = sortBy.endsWith('_asc');
+    const dir = asc ? 1 : -1;
 
     rows.sort((a, b) => {
-      if (sortBy === 'size_desc' || sortBy === 'size_asc') {
+      let cmp = 0;
+      if (key === 'size') {
         // Exact bytes live in data-size; the visible cell is human-formatted.
-        const aSize = parseFloat(a.children[2].dataset.size) || 0;
-        const bSize = parseFloat(b.children[2].dataset.size) || 0;
-        return sortBy === 'size_desc' ? bSize - aSize : aSize - bSize;
+        cmp = (parseFloat(a.children[2].dataset.size) || 0)
+            - (parseFloat(b.children[2].dataset.size) || 0);
+      } else if (key === 'date') {
+        // Raw stored ISO lives in data-ts (the visible cell is a compact
+        // local form, which would not sort chronologically).
+        cmp = (a.children[6].dataset.ts || '')
+              .localeCompare(b.children[6].dataset.ts || '');
+      } else {
+        cmp = a.children[1].textContent.trim().toLowerCase()
+              .localeCompare(b.children[1].textContent.trim().toLowerCase());
       }
-      if (sortBy === 'date_desc' || sortBy === 'date_asc') {
-        const aDate = a.children[6].textContent.trim();
-        const bDate = b.children[6].textContent.trim();
-        return sortBy === 'date_desc' ? bDate.localeCompare(aDate) : aDate.localeCompare(bDate);
-      }
-      if (sortBy === 'name_asc' || sortBy === 'name_desc') {
-        const aName = a.children[1].textContent.trim().toLowerCase();
-        const bName = b.children[1].textContent.trim().toLowerCase();
-        return sortBy === 'name_asc' ? aName.localeCompare(bName) : bName.localeCompare(aName);
-      }
-      return 0;
+      return cmp * dir;
     });
 
     rows.forEach(row => tbody.appendChild(row));
+    updateSortIndicators(key, asc);
+  }
+
+  function updateSortIndicators(key, asc) {
+    document.querySelectorAll('#files-table-head th.sortable').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.dataset.sort === key) th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+    });
+  }
+
+  sortSelect.addEventListener('change', () => applySort(sortSelect.value));
+
+  // Header click toggles asc -> desc on the clicked column (mirrors the select).
+  document.querySelectorAll('#files-table-head th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;               // path | size | date
+      const current = sortSelect.value || 'date_desc';
+      const curKey = current.slice(0, current.lastIndexOf('_'));
+      const curAsc = current.endsWith('_asc');
+      const next = (curKey === key && curAsc) ? key + '_desc' : key + '_asc';
+      sortSelect.value = next;
+      applySort(next);
+    });
   });
+
+  // Initial paint: apply the select's default (date_desc) so the indicator is honest.
+  applySort(sortSelect.value);
 
   // File detail modal
   window.showFileDetail = async function(fileId) {
