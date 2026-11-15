@@ -525,3 +525,40 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   sites migrated to the (request, name) form — the per-run DeprecationWarning
   storm is gone; requirements.txt duckdb floor synced to >=1.0 with a note
   that pyproject is authoritative.
+
+## 2026-11-16 (update 26)
+
+- **Pro-app polish fan-out complete — 3 sequential waves (harness allowed only
+  1 concurrent agent, W2 initially bounced on "user concurrency limit exceeded"
+  and was resumed when W1 freed the slot)**:
+  - W1 `70603f5` front door: `backupme init` (scaffold from config.example.yaml,
+    never overwrites, `already_initialized` JSON status, next-steps guidance),
+    load_config warns by name on missing/empty config, group callback skips all
+    side effects for `--help` (no more backupme.db scattered by help — smoke
+    verified on a clean dir), README rewritten from live --help captures
+    (866→~330 lines, dead commands removed), MANUAL 1.2 First-Run Init. 14 new
+    tests; 703 green.
+  - W2 `fdefaa2` op_log integrity: `gc --apply` appends before first delete and
+    marks committed/failed; `hard_purge_versions` same with `hard_purge:<ts>`
+    key and returns op_log_id; phantom_prune batch loop no longer strands
+    pending rows. Core-layer wiring means the scheduler's purge/gc ticks are
+    audited too, zero double-logging; web/routes/common.py intentionally
+    untouched (its never-raise variant is a different semantic). 7 new tests;
+    710 green.
+  - W3 `650f7b1` surface polish: help text for ALL 22 bare commands (auditor's
+    ~17 undercounted; help-only diff verified), `backends` kept as first-class
+    connectivity view (referenced by MANUAL/tests — removal would be
+    dishonest), dead `manual_select_backend` removed after grep-proving zero
+    callers (`backup -b` uses exact get_backend), presence_auditor `__main__`
+    print block dropped (subset of verify --audit-*), stale pre-src-layout
+    root egg-info deleted. qa sweeps NOT moved — they are git-tracked
+    collectible suites (132+83+37 tests) pinned by name in routes/misc.py and
+    test_web_phaseC.py; renaming to test_qa1_*.py is the proper follow-up.
+    Overseer added the root `cli` group intro docstring W3 flagged as left
+    for it. Full suite gate twice: 710 passed / 1 skip / 0 failed.
+- Audit reports archived to diagnostics/audit_2026-11/ (product + engineering
+  + W1/W2/W3 fix reports). Root scratch evidence swept.
+- Remaining P1/P2 from the audits (not yet scheduled): ruff lint+type gates in
+  CI, docstring coverage pass (56/95 modules), helper dedup (checkpoint x4),
+  qa sweep renames, op_log for dashboard parity check, v2.0.0 tag + push when
+  user approves outward-facing actions.
