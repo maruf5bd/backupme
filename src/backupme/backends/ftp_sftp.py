@@ -305,6 +305,7 @@ class SFTPBackend(StorageBackend):
         try:
             transport = self._open_transport(paramiko)
             transport.connect(username=self.username, password=self.password)
+            transport.set_keepalive(10)
             self._open_channel(transport, paramiko)
             self._transport = transport
             self._sftp.chdir(self.base_path)
@@ -362,6 +363,10 @@ class SFTPBackend(StorageBackend):
         self._transport = None
 
     def _reconnect(self):
+        if self._connected:
+            if not self._transport or not self._transport.is_active():
+                log.info("SFTP transport dead for %s, resetting connection...", self.name)
+                self.disconnect()
         if not self._connected:
             self.connect()
 
@@ -378,20 +383,29 @@ class SFTPBackend(StorageBackend):
         return f"{self.base_path}/{rel_path}".replace("//", "/")
 
     def upload(self, local_path: str, remote_rel_path: str) -> str:
-        self._reconnect()
-        dir_part = remote_rel_path.rsplit("/", 1)[0] if "/" in remote_rel_path else ""
-        if dir_part:
-            self._ensure_dir(dir_part)
-        sha = hashlib.sha256()
-        with open(local_path, "rb") as src:
-            with self._sftp.open(remote_rel_path, "wb") as dst:
-                while True:
-                    chunk = src.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    dst.write(chunk)
-                    sha.update(chunk)
-        return sha.hexdigest()
+        for attempt in range(3):
+            try:
+                self._reconnect()
+                dir_part = remote_rel_path.rsplit("/", 1)[0] if "/" in remote_rel_path else ""
+                if dir_part:
+                    self._ensure_dir(dir_part)
+                sha = hashlib.sha256()
+                with open(local_path, "rb") as src:
+                    with self._sftp.open(remote_rel_path, "wb") as dst:
+                        while True:
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            dst.write(chunk)
+                            sha.update(chunk)
+                return sha.hexdigest()
+            except Exception as e:
+                log.warning("SFTP upload failure on %s (%s, attempt %d/3): %s",
+                            self.name, remote_rel_path, attempt + 1, e)
+                self.disconnect()
+                if attempt == 2:
+                    raise
+                time.sleep(1.0)
 
     def download(self, remote_rel_path: str, local_path: str):
         self._reconnect()

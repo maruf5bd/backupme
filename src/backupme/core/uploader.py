@@ -541,7 +541,7 @@ def upload_bundle(
 
             # Strict disk presence check: ensure file physically exists and is accessible
             if not os.path.exists(src_path):
-                log.warning("upload skipped: file '%s' does not exist on disk", local_path)
+                log.error("upload failed: file '%s' does not exist on disk", local_path)
                 results.append({
                     "local_path": local_path,
                     "status": "error",
@@ -550,7 +550,7 @@ def upload_bundle(
                 continue
 
             if not os.path.isfile(src_path):
-                log.warning("upload skipped: '%s' is not a regular file", local_path)
+                log.error("upload failed: '%s' is not a regular file", local_path)
                 results.append({
                     "local_path": local_path,
                     "status": "error",

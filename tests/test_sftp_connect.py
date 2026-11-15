@@ -60,6 +60,9 @@ class FakeTransport:
     def connect(self, username=None, password=None, pkey=None):
         self.connect_calls += 1
 
+    def set_keepalive(self, interval: int):
+        self.keepalive_interval = interval
+
     def close(self):
         self.closed = True
 

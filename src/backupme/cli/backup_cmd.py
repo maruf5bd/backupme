@@ -1,4 +1,6 @@
 import os
+import sys
+
 import click
 
 from .base import cli
@@ -308,3 +310,5 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, a
                 _safe_echo(f"  Error running backup: {e}")
     if as_json:
         emit(payload, as_json=True)
+    if archive_error_count or (files_to_backup and errors):
+        sys.exit(1)
