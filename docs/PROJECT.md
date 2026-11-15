@@ -141,7 +141,7 @@ notifications, cpanel ingest, db lifecycle, scheduler, guard, backends, web).
 ## Repository layout
 
 ```
-backupme/            package: cli, core, backends, web
+src/backupme/        package: cli, core, backends, web (standard src layout)
 tests/               pytest suite (isolated fixtures; see tests/conftest.py)
 docs/                this document + MANUAL.md + BACKLOG.md; docs/archive/ holds
                      historical plans and QA reports

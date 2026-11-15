@@ -171,7 +171,7 @@ def main():
 
     # 10. web app: /ingest page + APIs
     from fastapi.testclient import TestClient
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     os.chdir(ws)
     from backupme.web.app import create_app
     from backupme.config import load_config

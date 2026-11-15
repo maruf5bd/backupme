@@ -211,7 +211,7 @@ def test_files_page_sort_helper_script_present(client, env, backends):
 
 def test_app_js_exposes_timestamp_humanizer():
     js_path = (Path(__file__).resolve().parents[1]
-               / "backupme" / "web" / "static" / "js" / "app.js")
+               / "src" / "backupme" / "web" / "static" / "js" / "app.js")
     text = js_path.read_text(encoding="utf-8")
     assert "compactStamp" in text
     assert "decorateTimestamps" in text
