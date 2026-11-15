@@ -25,8 +25,7 @@ classifiers = [
 dependencies = [
     "click>=8.1",
     "pyyaml>=6.0",
-    "paramiko>=3.0",
-    "smbclient>=0.5",
+    "paramiko>=3.0,<5",
     "cryptography>=41.0",
     "argon2-cffi>=23.1",
     "zstandard>=0.22",
@@ -44,6 +43,11 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "build>=1.2",
+]
+# smbclient publishes no Python 3.13 distribution; the SMB backend lazy-imports
+# it and degrades gracefully when absent, so it rides as an extra.
+smb = [
+    "smbclient>=0.5",
 ]
 
 [project.urls]

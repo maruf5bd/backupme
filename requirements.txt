@@ -1,7 +1,9 @@
 click>=8.1
 pyyaml>=6.0
-paramiko>=3.0
-smbclient>=0.5
+paramiko>=3.0,<5
+# optional: SMB backend (smbclient has no Python 3.13 distribution; lazy import,
+# feature degrades without it — install via the 'smb' extra)
+# smbclient>=0.5
 cryptography>=41.0
 argon2-cffi>=23.1
 zstandard>=0.22
