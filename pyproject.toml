@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backupme"
+dynamic = ["version"]
+description = "Deduplicating backup tool for Windows: click CLI, FastAPI dashboard, pluggable storage backends, SQLite hot store + zstd parquet cold history."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+authors = [{ name = "BackupMe contributors" }]
+keywords = ["backup", "dedup", "deduplication", "windows", "storage", "sftp", "rclone"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: System Administrators",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Archiving :: Backup",
+]
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "paramiko>=3.0",
+    "smbclient>=0.5",
+    "cryptography>=41.0",
+    "argon2-cffi>=23.1",
+    "zstandard>=0.22",
+    "fastapi>=0.100",
+    "uvicorn>=0.22",
+    "jinja2>=3.1",
+    "watchfiles>=0.19",
+    "httpx>=0.24",
+    "pydantic>=2.0",
+    "pyarrow>=15.0",
+    "duckdb>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "build>=1.2",
+]
+
+[project.urls]
+Changelog = "https://github.com/hostraj/backupme/blob/master/CHANGELOG.md"
+
+[project.scripts]
+backupme = "backupme.cli.base:cli"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "backupme.__version__" }

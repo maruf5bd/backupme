@@ -1,7 +1,10 @@
 import click
 
+from .. import __version__
+
 
 @click.group()
+@click.version_option(__version__, "--version", prog_name="backupme")
 @click.option("--config", "-c", default="config.yaml", help="Config file path")
 @click.option("--db-path", "--db", default="backupme.db", help="Database path")
 @click.option("--verbose", "-V", is_flag=True, help="Verbose (debug) logging")
