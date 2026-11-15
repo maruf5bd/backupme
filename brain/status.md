@@ -485,6 +485,11 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   committed with its feature); full suite minus phaseC ran 1 failure only
   (test_logging, fixed above) — every other test green. Fresh full-suite
   confirmation run queued.
+- Also closed the queued flake: tests/test_web_ingest.py::test_api_ingest_scan_flow
+  now restores `ci.ingest_archive` via targeted monkeypatch.setattr instead of
+  `monkeypatch.undo()` — undo() also tore down the env fixture's
+  BACKUPME_CONFIG/chdir patches (the CWD leak). Same pattern the sibling pause
+  test already used. web_ingest + p2 + defects re-runs green.
 - Repo hygiene: `nul` (Windows reserved-name junk) removed; overseer scratch
   outputs cleaned. Remaining untracked: 7 ops scripts under scripts/
   (transfer_to_gdrive, transfer_dashboard, ingest_5tb_archives, live_monitor,

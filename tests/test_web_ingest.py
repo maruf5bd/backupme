@@ -76,6 +76,7 @@ def test_api_ingest_scan_flow(client, env, backends, monkeypatch):
 
     first_called = threading.Event()
     release = threading.Event()
+    original_ingest = ci.ingest_archive
 
     def slow_first(path, account, backends_arg, config, **kw):
         first_called.set()
@@ -100,7 +101,9 @@ def test_api_ingest_scan_flow(client, env, backends, monkeypatch):
     assert execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0  # fake wrote nothing
 
     # Real pass: the worker ingests and joins before the test ends.
-    monkeypatch.undo()
+    # (Targeted restore — monkeypatch.undo() would also undo the env
+    # fixture's BACKUPME_CONFIG/chdir patches, leaking CWD into later tests.)
+    monkeypatch.setattr(ci, "ingest_archive", original_ingest)
     assert client.post("/api/ingest/scan", json={}).status_code == 200
     _wait_ingest_done(client, want_done=1)
     n = execute("SELECT COUNT(*) FROM files WHERE source_root='cpanel/acct'").fetchone()[0]
