@@ -431,3 +431,36 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   web suites green**.
 - **Dashboard restart on 8081** serving the new UI (real DB) after visual
   verification on a scratch server.
+
+## 2026-11-15 (update 23)
+
+- **Standard src/ package layout LANDED (`689bf93`)**: `backupme/` → `src/backupme/`
+  (116 pure renames), wired via setup.py `package_dir={"": "src"}` +
+  `find_packages(where="src")`, `main.py` sys.path bootstrap,
+  tests/conftest.py + scripts/smoke_e2e.py parent-path fixes, editable reinstall
+  (two stale `backupme.exe` shims held the install lock — killed, reinstalled, both
+  entry points smoke-tested). One move-induced test-path fix
+  (tests/test_web_polish.py app.js path). Gate: full suite on the moved tree =
+  exactly the 4 known externals + the 1 known flake; nothing new. IMPORTANT detail:
+  the other stream's uncommitted WIP (ftp_sftp.py, cli/backup_cmd.py) moved WITH the
+  tree — committed as pure renames with HEAD content via `git update-index
+  --cacheinfo` so their WIP stays uncommitted in the working tree at the new paths.
+- **Cold-first-hit defect found + fixed (`70d590f`)**: first real `/` render after a
+  cold server start measured **124 s** (the dedup-savings aggregate is a full
+  COUNT/SUM over blob_storage JOIN blobs — 0.5 s warm, minutes-class on cold pages of
+  the 2.6 GB index; Phase A's synthetic 517 ms benchmark under-measured real cold
+  I/O). Fix: single-flight compute (`_compute_dedup_savings_once` — concurrent cold
+  hits share ONE scan instead of doubling the I/O storm) + a daemon warm thread at
+  `create_app` (skipped under pytest so fixture DB swaps can't cache a wrong-DB
+  aggregate). Residual: if a visitor beats the warm thread AND the OS page cache is
+  cold, that visitor may still wait one compute — accepted, noted here.
+- Live verification sequence: scratch server (isolated DB, port 8085) — `/` 48 ms,
+  visual screenshots of /, /files, /backends, /database all correct (honest empty
+  states, skeleton cards, Speed-test rows, Run Integrity Check button); real 8081
+  restarted on the final code. Chart.js/lucide load from CDNs — the sandbox blocks
+  them (honest "chart library failed to load" fallback shown); on the user's normal
+  browser they load.
+- Test count now 688 collected (686 + 2 warm-up tests). Standing suite failures:
+  3 sftp-connect (other stream's uncommitted ftp_sftp.py WIP — FakeTransport lacks
+  `set_keepalive`) + 1 pre-existing at HEAD (test_logging::test_processing_failure_is_logged)
+  + 1 flake (test_web_ingest scan_flow, monkeypatch.undo() CWD leak — fix queued).
