@@ -15,11 +15,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from backupme.core import database as db
 from backupme.core import crypto as crypto_mod
 from backupme.core import compress as compress_mod
-from backupme.core import dedup, index as index_mod, verify
+from backupme.core import index as index_mod, verify
 from backupme.log import get_logger
 
 from .common import (_get_backends, _fts_phrase, _search_files_like,
-                     op_log_start, op_log_finish)
+                     op_log_start, op_log_finish, _cached_dedup_savings)
+# Phase C perf A2: the per-backend rows come from the same cached status
+# probe the dashboard cards use (module-level helper in backends.py, whose
+# _get_backends global is the pinned monkeypatch surface).
+from .backends import _status_rows
 
 log = get_logger("web.routes.misc")
 
@@ -28,12 +32,24 @@ def register(app, ctx):
 
     @app.get("/api/status")
     async def api_status():
-        total_files = index_mod.file_count()
-        savings = dedup.total_dedup_savings()
-        gen = db.get_generation()
-        backends = _get_backends(ctx)
+        """Dashboard poll payload (Phase C perf A2).
 
-        # Calculate actual stored bytes per backend from DB
+        Shape is unchanged (pinned by tests/qa1_web_sweep.py and consumed by
+        dashboard.html + files.html): {total_files, blob_count, stored_bytes,
+        dedup_ratio, generation, backends: [{name, type, connected,
+        stored_bytes}]}. What changed is where the numbers come from — the
+        dedup-savings aggregate is served from the ~30 s TTL cache and the
+        per-backend rows come from the same cached status probe as
+        /api/backends/status, so the dashboard's 10 s poll no longer
+        resolves + probes every backend (it used to open the Storage Box
+        SSH session every 10 s)."""
+        total_files = index_mod.file_count()
+        savings = await _cached_dedup_savings()
+        gen = db.get_generation()
+        status_rows = await _status_rows(ctx)
+
+        # Calculate actual stored bytes per backend from DB (cheap GROUP BY
+        # over blob_storage — no backend I/O).
         backend_sizes = {}
         try:
             rows = db.execute(
@@ -45,12 +61,12 @@ def register(app, ctx):
             log.warning("stored-bytes query failed for /api/status: %s", e)
 
         be_full = []
-        for b in backends:
+        for row in status_rows:
             be_full.append({
-                "name": b.name,
-                "type": b.type,
-                "connected": b.connected,
-                "stored_bytes": backend_sizes.get(b.name, 0)
+                "name": row["name"],
+                "type": row["type"],
+                "connected": row["connected"],
+                "stored_bytes": backend_sizes.get(row["name"], 0)
             })
 
         return JSONResponse({

@@ -149,6 +149,10 @@ class BackendDef:
     email: str = ""
     refresh_token: str = ""
     folder: str = ""
+    # Dashboard speed test opt-out: `speedtest: false` in a backend's YAML
+    # entry hides the button and the speed-test endpoint refuses that
+    # backend (everything else behaves as if the option were absent).
+    speedtest: bool = True
 
 @dataclass
 class BackupDef:

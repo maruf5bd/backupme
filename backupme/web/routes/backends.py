@@ -8,6 +8,12 @@ verify/rescan/onboard/rebalance/drain group keeps the exact relative order
 the monolith had.
 """
 import asyncio
+import hashlib
+import json
+import os
+import tempfile
+import time
+import uuid
 from pathlib import Path
 
 from fastapi import Body
@@ -22,12 +28,105 @@ from .common import (_get_backend, _get_backends, _config_as_dict, _config_dict,
                      _list_backend_configs,
                      _rebalance_state, _rebalance_lock, _reset_rebalance,
                      _process_state, _process_lock, _reset_process,
+                     _speedtest_state, _speedtest_lock, mark_op_started,
+                     op_log_start, op_log_finish,
                      make_sse_stream, start_daemon_thread)
 
 log = get_logger("web.routes.backends")
 
 # Backend types in the same fixed order _get_backends walks the config.
 _BACKEND_TYPE_ORDER = ("local", "ftp", "sftp", "smb", "ssh", "rclone", "ninedrive")
+
+# Speed-test payload size (Phase C): a few KB is enough to measure a real
+# round trip through every backend type without loading the link.
+_SPEEDTEST_SIZE_BYTES = 8 * 1024
+
+
+# ── Cached per-backend status probe (Phase A page-perf) ──────────────────
+# Lives at module level so GET /api/backends/status (below) and GET
+# /api/status (misc.py, Phase C perf A2) share one implementation; the
+# resolution goes through THIS module's _get_backends global, which is the
+# monkeypatch surface tests/test_web_perf_pages.py pins.
+def _status_probe_row(be, name: str) -> dict:
+    status = {
+        "name": name,
+        "type": getattr(be, "type", ""),
+        "connected": False,
+        "free_space": None,
+        "total_space": None,
+        "priority": be.config.get("priority", 50),
+        "quota": be.config.get("quota", None),
+        "error": None,
+    }
+    try:
+        connected = bool(be.connected) or bool(be.connect())
+    except Exception as e:
+        status["error"] = f"connect failed: {e}"
+        return status
+    status["connected"] = connected
+    if connected:
+        try:
+            status["free_space"] = be.free_space()
+            status["total_space"] = be.total_space()
+        except Exception as e:
+            status["error"] = f"space probe failed: {e}"
+    return status
+
+
+def _status_probe_all(ctx) -> list[dict]:
+    """Worker-thread body behind GET /api/backends/status (run it via
+    asyncio.to_thread — never on the event loop). Connect + free/total only —
+    never walk(). Per-backend rows cache by config fingerprint; the pool is
+    resolved only when at least one backend needs a probe."""
+    cfg = _config_dict(ctx)
+    ordered = []  # [fingerprint, name, row-or-None]
+    needs_probe = False
+    for btype in _BACKEND_TYPE_ORDER:
+        for entry in cfg.get(btype, []):
+            name = entry.get("name", "")
+            if not name:
+                continue
+            fingerprint = _backend_fingerprint(entry)
+            cached = _backend_status_cache.get(fingerprint)
+            ordered.append([fingerprint, name, cached])
+            if cached is None:
+                needs_probe = True
+    if needs_probe:
+        by_name = {b.name: b for b in _get_backends(ctx)}
+        for slot in ordered:
+            if slot[2] is not None:
+                continue
+            fingerprint, name = slot[0], slot[1]
+            be = by_name.get(name)
+            row = _status_probe_row(be, name) if be is not None else {
+                "name": name, "type": "", "connected": False,
+                "free_space": None, "total_space": None,
+                "priority": 50, "quota": None,
+                "error": "backend could not be resolved",
+            }
+            _backend_status_cache.set(fingerprint, row)
+            slot[2] = row
+    return [row for _, _, row in ordered if row is not None]
+
+
+async def _status_rows(ctx) -> list[dict]:
+    """Cached per-backend status rows for any JSON consumer.
+
+    Shared by GET /api/backends/status and GET /api/status (Phase C perf
+    A2: the dashboard's 10 s /api/status poll must not probe every backend
+    on every call — it rides the same ~30 s TTL cache). Never raises to the
+    caller: a failing probe path degrades to honest offline rows
+    (connected:false plus an error string)."""
+    try:
+        return await asyncio.to_thread(_status_probe_all, ctx)
+    except Exception as e:
+        log.exception("backend status probe failed; serving offline rows")
+        offline = [{"name": b["name"], "type": b["type"], "connected": False,
+                    "free_space": None, "total_space": None,
+                    "priority": b["priority"], "quota": b["quota"],
+                    "error": f"status probe failed: {e}"}
+                   for b in _list_backend_configs(ctx)]
+        return offline
 
 
 def register(app, ctx):
@@ -161,81 +260,170 @@ def register(app, ctx):
         TTL — a second call inside the TTL returns the cached rows without
         any probing. NEVER calls walk(): connect + free/total only. A
         failing backend degrades to connected:false plus an error string;
-        the endpoint itself never raises to the client.
+        the endpoint itself never raises to the client. The probe body
+        lives at module level (_status_probe_all/_status_rows) and is
+        shared with GET /api/status (Phase C perf A2).
         """
+        return JSONResponse(await _status_rows(ctx))
 
-        def _probe_row(be, name: str) -> dict:
-            status = {
-                "name": name,
-                "type": getattr(be, "type", ""),
-                "connected": False,
-                "free_space": None,
-                "total_space": None,
-                "priority": be.config.get("priority", 50),
-                "quota": be.config.get("quota", None),
-                "error": None,
-            }
-            try:
-                connected = bool(be.connected) or bool(be.connect())
-            except Exception as e:
-                status["error"] = f"connect failed: {e}"
-                return status
-            status["connected"] = connected
-            if connected:
-                try:
-                    status["free_space"] = be.free_space()
-                    status["total_space"] = be.total_space()
-                except Exception as e:
-                    status["error"] = f"space probe failed: {e}"
-            return status
+    # ── Backend speed test (Phase C) ─────────────────────────────
+    # Uploads a small unique test object to the backend, downloads it back,
+    # hash-verifies the round trip, deletes the object, and measures
+    # upload/download ms + object size. Single-flight like the db check
+    # (POST while running -> 409). The delete runs in a finally clause: a
+    # failed test must never leave litter on a backend. `speedtest: false`
+    # in a backend's YAML entry opts it out (BackendDef.speedtest).
 
-        def _probe_all() -> list[dict]:
-            # Worker thread (to_thread): connect + free/total only — never
-            # walk(). Per-backend rows cache by config fingerprint; the pool
-            # is resolved only when at least one backend needs a probe.
-            cfg = _config_dict(ctx)
-            ordered = []  # [fingerprint, name, row-or-None]
-            needs_probe = False
-            for btype in _BACKEND_TYPE_ORDER:
-                for entry in cfg.get(btype, []):
-                    name = entry.get("name", "")
-                    if not name:
-                        continue
-                    fingerprint = _backend_fingerprint(entry)
-                    cached = _backend_status_cache.get(fingerprint)
-                    ordered.append([fingerprint, name, cached])
-                    if cached is None:
-                        needs_probe = True
-            if needs_probe:
-                by_name = {b.name: b for b in _get_backends(ctx)}
-                for slot in ordered:
-                    if slot[2] is not None:
-                        continue
-                    fingerprint, name = slot[0], slot[1]
-                    be = by_name.get(name)
-                    row = _probe_row(be, name) if be is not None else {
-                        "name": name, "type": "", "connected": False,
-                        "free_space": None, "total_space": None,
-                        "priority": 50, "quota": None,
-                        "error": "backend could not be resolved",
-                    }
-                    _backend_status_cache.set(fingerprint, row)
-                    slot[2] = row
-            return [row for _, _, row in ordered if row is not None]
-
+    def _speedtest_worker(op_id: int | None, backend_name: str):
+        result = {"backend": backend_name, "verified": False, "deleted": False}
+        status = "error"
+        remote_rel = ""
+        uploaded = False
+        src_path = dl_path = None
+        be = None
         try:
-            result = await asyncio.to_thread(_probe_all)
-            return JSONResponse(result)
+            be = _get_backend(ctx, backend_name)
+            if be is None:
+                raise RuntimeError(f"backend '{backend_name}' not found")
+            payload = os.urandom(_SPEEDTEST_SIZE_BYTES)
+            expected_sha = hashlib.sha256(payload).hexdigest()
+            remote_rel = (f"speedtest/speedtest-{int(time.time())}-"
+                          f"{uuid.uuid4().hex[:8]}.tmp")
+            result["object"] = remote_rel
+            result["size"] = len(payload)
+            # The backend API takes a local file path for uploads, so the
+            # payload goes through two temp files (uploaded + downloaded).
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
+                tmp.write(payload)
+                src_path = tmp.name
+            dl_path = src_path + ".dl"
+            t0 = time.perf_counter()
+            be.upload(src_path, remote_rel)
+            uploaded = True
+            result["upload_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            t0 = time.perf_counter()
+            be.download(remote_rel, dl_path)
+            result["download_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            with open(dl_path, "rb") as f:
+                got = f.read()
+            result["verified"] = hashlib.sha256(got).hexdigest() == expected_sha
+            if not result["verified"]:
+                result["error"] = "round-trip hash mismatch"
+            status = "ok" if result["verified"] else "error"
         except Exception as e:
-            # Never raise to the client: degrade every configured backend to
-            # an honest offline row (config-only listing, no further probes).
-            log.exception("backend status probe failed; serving offline rows")
-            offline = [{"name": b["name"], "type": b["type"], "connected": False,
-                        "free_space": None, "total_space": None,
-                        "priority": b["priority"], "quota": b["quota"],
-                        "error": f"status probe failed: {e}"}
-                       for b in _list_backend_configs(ctx)]
-            return JSONResponse(offline)
+            status = "error"
+            result["error"] = str(e)
+        finally:
+            # The test object must never linger on the backend — even when
+            # a step above raised. Only attempt the delete when the upload
+            # actually happened (nothing to clean up otherwise); a failed
+            # cleanup stays visible in the result instead of being silent.
+            if uploaded and be is not None:
+                try:
+                    be.delete(remote_rel)
+                    result["deleted"] = True
+                except Exception as del_exc:
+                    result["error"] = result.get("error") or \
+                        f"cleanup delete failed: {del_exc}"
+            # A failed cleanup downgrades the outcome: the test object is
+            # still sitting on the backend — that is not an "ok" result.
+            if status == "ok" and not result.get("deleted"):
+                status = "error"
+            for tmp_file in (src_path, dl_path):
+                if tmp_file:
+                    try:
+                        Path(tmp_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            finished_at = time.time()
+            with _speedtest_lock:
+                _speedtest_state.update({
+                    "status": status,
+                    "result": result,
+                    "error": result.get("error", ""),
+                    "finished_at": finished_at,
+                })
+            op_log_finish(op_id, "completed" if status == "ok" else "failed",
+                          target_json=result)
+            with _speedtest_lock:
+                _speedtest_state["running"] = False
+                _speedtest_state["completed"] = True
+            db.close_connection()
+
+    # NOTE: registered before /api/backends/{name} so a POST to a backend
+    # named "speedtest" can never be captured by the detail/update routes.
+    @app.post("/api/backends/{name}/speedtest")
+    async def api_backend_speedtest(name: str):
+        # Config-only opt-out lookup: no connects, no probes.
+        cfg_rows = {r["name"]: r for r in _list_backend_configs(ctx)}
+        row = cfg_rows.get(name)
+        if row is None:
+            return JSONResponse(
+                {"status": "error", "message": f"backend '{name}' not found"},
+                status_code=404)
+        if not row.get("speedtest", True):
+            return JSONResponse(
+                {"status": "error",
+                 "message": f"speed test is disabled for '{name}' "
+                            "(speedtest: false in config)"},
+                status_code=400)
+        with _speedtest_lock:
+            if _speedtest_state["running"]:
+                return JSONResponse(
+                    {"status": "busy",
+                     "message": "a speed test is already running"},
+                    status_code=409)
+            _speedtest_state.update({
+                "running": True, "backend": name,
+                "started_at": time.time(), "finished_at": 0.0,
+                "status": "", "error": "", "result": None, "completed": False,
+            })
+        mark_op_started(_speedtest_state)
+        op_id = op_log_start("speedtest", f"speedtest:{name}:{int(time.time())}",
+                             {"backend": name})
+        start_daemon_thread(_speedtest_worker, op_id, name)
+        return JSONResponse({"status": "started", "backend": name})
+
+    # NOTE: registered before /api/backends/{name} so the literal segment
+    # "speedtest" is not captured by the detail path parameter.
+    @app.get("/api/backends/speedtest/status")
+    async def api_backend_speedtest_status():
+        """Live speed-test state plus the latest persisted outcome per
+        backend (from op_log, op_type='speedtest') so the per-card result
+        line survives page reloads and server restarts."""
+        with _speedtest_lock:
+            snapshot = dict(_speedtest_state)
+        recent = []
+        try:
+            rows = db.execute(
+                "SELECT id, status, started_at, completed_at, target_json, last_error "
+                "FROM op_log WHERE op_type = 'speedtest' ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+            seen = set()
+            for r in rows:
+                try:
+                    target = json.loads(r["target_json"]) if r["target_json"] else {}
+                except ValueError:
+                    target = {}
+                backend_name = target.get("backend", "")
+                if backend_name in seen:
+                    continue
+                seen.add(backend_name)
+                recent.append({
+                    "backend": backend_name,
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                    "completed_at": r["completed_at"],
+                    "upload_ms": target.get("upload_ms"),
+                    "download_ms": target.get("download_ms"),
+                    "size": target.get("size"),
+                    "verified": target.get("verified"),
+                    "error": target.get("error") or r["last_error"] or "",
+                })
+        except Exception as e:
+            log.warning("speedtest recent-result lookup failed: %s", e)
+        snapshot["recent"] = recent
+        return JSONResponse(snapshot)
 
     @app.get("/api/backends/{name}")
     async def api_backend_detail(name: str):

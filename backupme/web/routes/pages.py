@@ -11,38 +11,22 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 
 from backupme.core import database as db
-from backupme.core import dedup, state, verify
+from backupme.core import state, verify
 from backupme.core import index as index_mod
 from backupme.log import get_logger
 
-from .common import (_get_backends, _get_backups, _get_cfg_dict,
+from .common import (_get_backups, _get_cfg_dict,
                      _search_files_safe, _list_backend_configs,
-                     _dedup_savings_cache)
+                     _cached_dedup_savings)
+# Compatibility monkeypatch surface (same pattern as routes/__init__.py's
+# recover_mod re-export): no page handler below calls _get_backends anymore
+# (Phase C perf A1 moved /files and /backends onto the config-only listing),
+# but tests/test_web_perf_pages.py patches this module attribute to prove
+# the pages never resolve backends on the request path — the attribute must
+# keep existing for the patch to arm.
+from .common import _get_backends
 
 log = get_logger("web.routes.pages")
-
-
-async def _cached_dedup_savings() -> dict:
-    """Dashboard dedup-savings aggregate served from a ~30 s TTL cache.
-
-    dedup.total_dedup_savings() is a full COUNT/SUM over blob_storage JOIN
-    blobs: trivial on the test fixture but 517 ms at 450k blob_storage rows
-    and seconds-class on the live store, so the number is computed on a
-    worker thread at most once per TTL window (Phase A page-perf). The
-    executor thread always drops its own SQLite handle."""
-    cached = _dedup_savings_cache.get("savings")
-    if cached is not None:
-        return cached
-
-    def _compute():
-        try:
-            return dedup.total_dedup_savings()
-        finally:
-            db.close_connection()
-
-    result = await asyncio.to_thread(_compute)
-    _dedup_savings_cache.set("savings", result)
-    return result
 
 
 # ── Presentation filters (UI polish only — no route or API shape changes) ──
@@ -213,8 +197,10 @@ def register(app, ctx):
             "SELECT DISTINCT source_root FROM files WHERE deleted_at IS NULL "
             "ORDER BY source_root LIMIT 50").fetchall()]
         total = index_mod.file_count()
-        backends = _get_backends(ctx)
-        be_list = [{"name": b.name} for b in backends]
+        # Config-only listing (Phase C perf A1): the files page only needs
+        # backend NAMES for its filter/upload dropdowns — no connects, no
+        # probes on the request path.
+        be_list = [{"name": b["name"]} for b in _list_backend_configs(ctx)]
         return ctx.templates.TemplateResponse("files.html", {
             "request": request,
             "files": files,
@@ -227,20 +213,14 @@ def register(app, ctx):
 
     @app.get("/backends", response_class=HTMLResponse)
     async def backends_page(request: Request):
-        backends = _get_backends(ctx)
-        be_list = []
-        for b in backends:
-            free = None
-            total = None
-            try:
-                free = b.free_space()
-                total = b.total_space()
-            except Exception as e:
-                log.warning("free/total space probe failed for backend %s: %s", b.name, e)
-            be_list.append({"name": b.name, "type": b.type, "connected": b.connected,
-                           "free_space": free, "total_space": total,
-                           "priority": b.config.get("priority", 50),
-                           "quota": b.config.get("quota", None)})
+        """Backends page — cheap-only request path (Phase C perf A1).
+
+        Cards render as config-only skeletons (name/type/priority/quota +
+        the speed-test opt-out); connection state and free/total capacity
+        fill asynchronously from GET /api/backends/status via JS, exactly
+        like the dashboard's backend cards since Phase A. A dead SFTP
+        backend can no longer hold this page render hostage."""
+        be_list = _list_backend_configs(ctx)
         return ctx.templates.TemplateResponse("backends.html", {
             "request": request,
             "backends": be_list,

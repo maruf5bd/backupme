@@ -30,6 +30,7 @@ from backupme import config as cfgmod
 from backupme.log import get_logger
 
 from backupme.core import database as db
+from backupme.core import dedup
 from backupme.core import index as index_mod
 
 log = get_logger("web.routes")
@@ -230,6 +231,11 @@ def _list_backend_configs(ctx: RouteContext) -> list[dict]:
                 "type": btype,
                 "priority": getattr(entry, "priority", 50),
                 "quota": getattr(entry, "quota", None),
+                # Dashboard speed-test opt-out (Phase C): `speedtest: false`
+                # in the backend's YAML entry. The config-only listing carries
+                # it so the backends page can render the button disabled
+                # without probing anything.
+                "speedtest": bool(getattr(entry, "speedtest", True)),
             })
     return out
 
@@ -302,6 +308,31 @@ _backend_status_cache = TTLCache(_STATUS_TTL_SECONDS)
 # dashboard serves it from this cache and recomputes on a worker thread
 # at most once per TTL window.
 _dedup_savings_cache = TTLCache(_STATUS_TTL_SECONDS)
+
+
+async def _cached_dedup_savings() -> dict:
+    """Dashboard/status dedup-savings aggregate served from a ~30 s TTL
+    cache.
+
+    dedup.total_dedup_savings() is a full COUNT/SUM over blob_storage JOIN
+    blobs: trivial on the test fixture but 517 ms at 450k blob_storage rows
+    and seconds-class on the live store, so the number is computed on a
+    worker thread at most once per TTL window (Phase A page-perf; shared by
+    the GET / page handler and GET /api/status since Phase C A2). The
+    executor thread always drops its own SQLite handle."""
+    cached = _dedup_savings_cache.get("savings")
+    if cached is not None:
+        return cached
+
+    def _compute():
+        try:
+            return dedup.total_dedup_savings()
+        finally:
+            db.close_connection()
+
+    result = await asyncio.to_thread(_compute)
+    _dedup_savings_cache.set("savings", result)
+    return result
 
 
 # ── File mutation ─────────────────────────────────────────────
@@ -550,6 +581,24 @@ _db_check_state = {
 _db_check_lock = threading.Lock()
 
 
+# Backend speed test (backends.py, Phase C): uploads a small unique test
+# object to one backend, downloads it back, hash-verifies, deletes it, and
+# measures upload/download ms. Single-flight like the db check (a second
+# start is rejected 409) — the measured timings are meaningless when two
+# tests compete for the same link.
+_speedtest_state = {
+    "running": False,
+    "backend": "",     # backend currently under test
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "status": "",      # "" while running; then "ok" | "error"
+    "error": "",       # worker-level failure text when status == "error"
+    "result": None,    # {backend, object, size, upload_ms, download_ms, verified, deleted, ...}
+    "completed": False,
+}
+_speedtest_lock = threading.Lock()
+
+
 def reset_background_state():
     """Reset every background-task state dict to its idle value.
 
@@ -583,6 +632,11 @@ def reset_background_state():
         _db_check_state.update({
             "running": False, "started_at": 0.0, "finished_at": 0.0,
             "status": "", "errors": [], "error": "", "completed": False,
+        })
+    with _speedtest_lock:
+        _speedtest_state.update({
+            "running": False, "backend": "", "started_at": 0.0, "finished_at": 0.0,
+            "status": "", "error": "", "result": None, "completed": False,
         })
     with _process_lock:
         _process_state.update({

@@ -20,8 +20,6 @@
 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem;" id="backends-grid">
   {% for be in backends %}
   {% set known_types = ['local', 'ftp', 'sftp', 'smb', 'ssh', 'rclone', 'ninedrive'] %}
-  {% set has_space = be.free_space is not none and be.total_space and be.total_space > 0 %}
-  {% set used_pct = (((be.total_space - be.free_space) / be.total_space * 100) | round | int) if has_space else 0 %}
   <div class="card backend-card" data-name="{{ be.name }}">
     <div class="flex items-center justify-between mb-3">
       <div class="flex items-center gap-3">
@@ -46,11 +44,10 @@
           <div class="font-semibold" style="font-size: 1.05rem;">{{ be.name }}</div>
           <div class="flex items-center gap-2 mt-1">
             <span class="badge u3-type-badge {% if be.type in known_types %}u3-type-{{ be.type }}{% else %}badge-gray{% endif %}">{{ be.type }}</span>
-            {% if be.connected %}
-            <span class="badge badge-green"><span class="dot dot-green"></span>Connected</span>
-            {% else %}
-            <span class="badge badge-red"><span class="dot dot-red"></span>Not connected</span>
-            {% endif %}
+            <!-- Skeleton badge (Phase C perf A1): connection state fills
+                 asynchronously from /api/backends/status via JS below —
+                 no backend connects in the page render path. -->
+            <span class="badge badge-gray" data-be-conn="{{ be.name }}"><span class="dot dot-yellow dot-pulse"></span>checking&hellip;</span>
           </div>
         </div>
       </div>
@@ -60,47 +57,19 @@
       </div>
     </div>
 
-    <!-- Quota bar (colors escalate as the backend fills up) -->
-    {% if be.quota %}
+    <!-- Capacity / quota usage bar (Phase C perf A1): free/total space is
+         unknown at render time (config-only listing) and fills from
+         /api/backends/status via JS below; colors escalate as the backend
+         fills up, exactly like the old server-rendered bar. -->
     <div class="mb-3">
       <div class="flex justify-between text-xs text-muted mb-1" style="gap: 0.5rem;">
-        <span style="white-space: nowrap;">Quota <span class="badge badge-gray">{{ be.quota }}</span></span>
-        <span class="u3-num" style="text-align: right;">
-          {% if has_space %}
-            {{ (be.total_space - be.free_space) | filesize }} of {{ be.total_space | filesize }} used ({{ used_pct }}%)
-          {% else %}
-            capacity unknown
-          {% endif %}
-        </span>
+        <span style="white-space: nowrap;">{% if be.quota %}Quota <span class="badge badge-gray">{{ be.quota }}</span>{% else %}Capacity{% endif %}</span>
+        <span class="u3-num" style="text-align: right;" data-be-capacity="{{ be.name }}">{% if be.quota %}capacity unknown{% else %}probing&hellip;{% endif %}</span>
       </div>
-      <div class="progress-bar" data-usage-bar="{{ used_pct if has_space else '' }}">
-        <div class="progress-fill {% if has_space and used_pct > 85 %}red{% elif has_space and used_pct > 65 %}yellow{% else %}accent{% endif %}"
-             style="width: {{ used_pct if has_space else 0 }}%;"
-             title="{% if has_space %}{{ used_pct }}% used{% endif %}"></div>
+      <div class="progress-bar" data-usage-bar="">
+        <div class="progress-fill accent" data-be-bar-fill="{{ be.name }}" style="width: 0%;"></div>
       </div>
     </div>
-    {% endif %}
-
-    <!-- Raw capacity usage bar (only when no quota string is configured) -->
-    {% if not be.quota and be.free_space is not none %}
-    <div class="mb-3">
-      <div class="flex justify-between text-xs text-muted mb-1" style="gap: 0.5rem;">
-        <span style="white-space: nowrap;">Capacity</span>
-        <span class="u3-num" style="text-align: right;">
-          {% if has_space %}
-            {{ (be.total_space - be.free_space) | filesize }} of {{ be.total_space | filesize }} used ({{ used_pct }}%)
-          {% else %}
-            {{ be.free_space | filesize }} free (total unknown)
-          {% endif %}
-        </span>
-      </div>
-      <div class="progress-bar" data-usage-bar="{{ used_pct if has_space else '' }}">
-        <div class="progress-fill {% if has_space and used_pct > 85 %}red{% elif has_space and used_pct > 65 %}yellow{% else %}accent{% endif %}"
-             style="width: {{ used_pct if has_space else 0 }}%;"
-             title="{% if has_space %}{{ used_pct }}% used{% endif %}"></div>
-      </div>
-    </div>
-    {% endif %}
 
     <!-- Stored vault data on this backend (filled from /api/backends/usage) -->
     <div class="mb-3">
@@ -113,6 +82,15 @@
       </div>
     </div>
 
+    <!-- Speed test result line (Phase C): last round-trip outcome for this
+         backend, persisted in op_log and prefilled on page load -->
+    <div class="mb-3">
+      <div class="u3-meta-row" style="border-bottom: none; padding-bottom: 0;">
+        <span class="u3-meta-label">Speed test</span>
+        <span class="u3-meta-value u3-num" data-speedtest="{{ be.name }}">not tested</span>
+      </div>
+    </div>
+
     <!-- Per-card result banner (JSON outcome of Test / Verify / Rescan) -->
     <div class="u2-banner card-banner"></div>
 
@@ -120,6 +98,10 @@
     <div class="u3-actions-row">
       <button class="btn btn-secondary btn-sm" onclick="testBackend('{{ be.name }}', this)" style="flex:1;">
         <i data-lucide="zap" style="width:14px;height:14px;"></i> Test
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="runSpeedTest('{{ be.name }}')"
+              {% if not be.speedtest %}disabled title="Speed test disabled in config (speedtest: false)"{% else %}title="Round-trip speed test: upload + download + verify a small test object"{% endif %}>
+        <i data-lucide="gauge" style="width:14px;height:14px;"></i>
       </button>
       <button class="btn btn-ghost btn-sm" onclick="startRebalance('{{ be.name }}')" title="Backfill missing blobs onto this backend">
         <i data-lucide="copy-check" style="width:14px;height:14px;"></i> Rebalance
@@ -308,6 +290,153 @@
     }
   }
   loadUsage();
+
+  // ── Connection + capacity fill (Phase C perf A1) ─────────────
+  // The page renders config-only skeleton cards — no backend connects in
+  // the request path — and fills them from /api/backends/status, whose
+  // connect + free/total probe is TTL-cached server-side (~30 s). On fetch
+  // failure the badges switch to an honest "status unavailable" state.
+  function setAllStatusUnavailable(reason) {
+    document.querySelectorAll('[data-be-conn]').forEach(badge => {
+      badge.className = 'badge badge-yellow';
+      badge.textContent = 'status unavailable';
+      if (reason) badge.title = String(reason);
+    });
+    document.querySelectorAll('[data-be-capacity]').forEach(el => {
+      el.textContent = 'capacity unknown';
+    });
+  }
+
+  function paintStatus(list) {
+    if (!Array.isArray(list)) {
+      setAllStatusUnavailable('backend status endpoint returned an error');
+      return;
+    }
+    const byName = {};
+    list.forEach(r => { byName[r.name] = r; });
+    document.querySelectorAll('[data-be-conn]').forEach(badge => {
+      const name = badge.getAttribute('data-be-conn');
+      const st = byName[name];
+      if (!st) { badge.className = 'badge badge-gray'; badge.textContent = 'unknown'; return; }
+      badge.className = 'badge ' + (st.connected ? 'badge-green' : 'badge-red');
+      badge.innerHTML = '<span class="dot ' + (st.connected ? 'dot-green' : 'dot-red') + '"></span>'
+        + (st.connected ? 'Connected' : 'Not connected');
+      badge.title = st.error || '';
+      const cap = document.querySelector('[data-be-capacity="' + name + '"]');
+      const bar = document.querySelector('[data-be-bar-fill="' + name + '"]');
+      if (cap && bar) {
+        if (st.free_space !== null && st.free_space !== undefined && st.total_space > 0) {
+          const used = st.total_space - st.free_space;
+          const pct = Math.max(0, Math.min(100, Math.round(100 * used / st.total_space)));
+          cap.textContent = fmtBytes(used) + ' of ' + fmtBytes(st.total_space) + ' used (' + pct + '%)';
+          bar.style.width = pct + '%';
+          bar.className = 'progress-fill ' + (pct > 85 ? 'red' : (pct > 65 ? 'yellow' : 'accent'));
+          bar.parentElement.setAttribute('data-usage-bar', String(pct));
+        } else {
+          cap.textContent = 'capacity unknown';
+          bar.style.width = '0%';
+        }
+      }
+    });
+  }
+
+  App.Poller.start('/api/backends/status', paintStatus, 30000, {
+    onError: (err) => setAllStatusUnavailable(err && err.message)
+  });
+
+  // ── Speed test (Phase C) ─────────────────────────────────────
+  // POST /api/backends/{name}/speedtest starts a single-flight background
+  // op (409 while another test runs); the result line per card comes from
+  // GET /api/backends/speedtest/status (live state + the latest op_log
+  // outcome per backend, so it survives page reloads).
+  let _stPoll = null;
+
+  function speedLine(name) {
+    const sel = '[data-speedtest="' + (window.CSS && CSS.escape ? CSS.escape(name) : name) + '"]';
+    return document.querySelector(sel);
+  }
+
+  function speedResultHtml(r) {
+    if (r.status === 'completed') {
+      return '<span style="color:var(--green);">'
+        + '&uarr; ' + (r.upload_ms != null ? r.upload_ms + ' ms' : '&mdash;')
+        + ' &middot; &darr; ' + (r.download_ms != null ? r.download_ms + ' ms' : '&mdash;')
+        + '</span> &middot; ' + fmtBytes(r.size || 0);
+    }
+    return '<span style="color:var(--red);">failed'
+      + (r.error ? ' &mdash; ' + App.escapeHtml(String(r.error)) : '') + '</span>';
+  }
+
+  function paintSpeedResultFromState(name, s) {
+    const el = speedLine(name);
+    if (!el || !s || !s.result) return;
+    el.innerHTML = s.status === 'ok'
+      ? '<span style="color:var(--green);">&uarr; ' + s.result.upload_ms + ' ms &middot; &darr; '
+        + s.result.download_ms + ' ms</span> &middot; ' + fmtBytes(s.result.size || 0)
+      : '<span style="color:var(--red);">failed'
+        + (s.result.error ? ' &mdash; ' + App.escapeHtml(String(s.result.error)) : '') + '</span>';
+  }
+
+  function paintSpeedSnapshot(s) {
+    if (!s || !Array.isArray(s.recent)) return;
+    const latest = {};
+    s.recent.forEach(r => { if (r.backend && !latest[r.backend]) latest[r.backend] = r; });
+    Object.keys(latest).forEach(name => {
+      const el = speedLine(name);
+      if (el && !(s.running && name === s.backend)) {
+        el.innerHTML = speedResultHtml(latest[name]);
+      }
+    });
+    if (s.running && s.backend) {
+      const el = speedLine(s.backend);
+      if (el) el.textContent = 'testing\u2026 (&uarr; upload / &darr; download)';
+    }
+  }
+
+  function pollSpeedStatus() {
+    if (_stPoll) clearInterval(_stPoll);
+    const tick = async () => {
+      try {
+        const s = await fetch('/api/backends/speedtest/status').then(r => r.json());
+        paintSpeedSnapshot(s);
+        if (!s.running) {
+          if (s.completed && s.backend && s.result) paintSpeedResultFromState(s.backend, s);
+          clearInterval(_stPoll);
+          _stPoll = null;
+        }
+      } catch (e) { /* transient — next tick retries */ }
+    };
+    tick();
+    _stPoll = setInterval(tick, 1500);
+  }
+
+  window.runSpeedTest = async function(name) {
+    try {
+      const r = await fetch('/api/backends/' + encodeURIComponent(name) + '/speedtest', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        App.Toast.show(d.message || d.error || 'speed test failed to start', 'error');
+        return;
+      }
+      const el = speedLine(name);
+      if (el) el.textContent = 'testing\u2026 (&uarr; upload / &darr; download)';
+      pollSpeedStatus();
+    } catch (e) {
+      App.Toast.error('Speed test request failed: ' + (e.message || e));
+    }
+  };
+
+  // Prefill the last persisted result per backend and pick up a test that
+  // is already running (single-flight is global across the page).
+  (async function initSpeedTests() {
+    try {
+      const s = await fetch('/api/backends/speedtest/status').then(r => r.json());
+      paintSpeedSnapshot(s);
+      if (s.running) pollSpeedStatus();
+    } catch (e) { /* lines stay 'not tested' */ }
+  })();
 
   // ── Rebalance / drain progress modal (SSE) ──
   function ensureRebalanceModal() {

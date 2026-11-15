@@ -68,6 +68,7 @@ SWEEP_PATHS = {
     "/api/backends",
     "/api/backends/usage",
     "/api/backends/status",
+    "/api/backends/speedtest/status",  # Phase C speed test op (tests/test_web_phaseC.py)
     "/api/backends/{name}",
     "/api/backends/test/{name}",
     "/api/files",
@@ -104,6 +105,7 @@ SWEEP_PATHS = {
     "/api/encrypt/status",
     "/api/backup/scan/status",
     "/api/restore/status",
+    "/api/restore/queue",  # Phase C restore-queue panel feed (tests/test_web_phaseC.py)
     "/api/health/data",
     "/api/health/issues",
     "/api/health/same-name",

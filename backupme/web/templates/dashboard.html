@@ -345,6 +345,22 @@
   </div>
 </div>
 
+<!-- Recent Operations (Phase C): compact live feed from the op_log,
+     polled every ~10 s from GET /api/activity?limit=8 -->
+<div class="card mt-4" id="recent-ops-card">
+  <div class="card-header">
+    <span class="card-title">Recent Operations</span>
+    <a href="/logs" class="btn btn-ghost btn-xs">View all</a>
+  </div>
+  <div class="card-body">
+    <div id="recent-ops-body">
+      <div class="empty-state" style="padding: 1.5rem;">
+        <p>loading recent operations&hellip;</p>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Recent Checkpoints -->
 {% if checkpoints %}
 <div class="card mt-4">
@@ -650,6 +666,73 @@
 
   App.Poller.start('/api/backends/status', paintBackendCards, 30000, {
     onError: (err) => setBackendCardsUnavailable(err && err.message)
+  });
+
+  // ── Recent operations feed (Phase C) ─────────────────────────
+  // Compact live feed from the op_log (GET /api/activity — the existing
+  // op_log JSON endpoint — with LIMIT 8), polled every ~10 s. Clicking a
+  // row opens the Logs page filtered to that op type. A poll error renders
+  // an honest "feed unavailable" state and never breaks the page.
+  function parseStamp(value) {
+    if (!value) return null;
+    const d = new Date(String(value).replace(' ', 'T'));
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function opAge(stamp) {
+    const d = parseStamp(stamp);
+    if (!d) return '&mdash;';
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  }
+
+  function opDuration(row) {
+    const t0 = parseStamp(row.started_at);
+    const t1 = parseStamp(row.completed_at);
+    if (!t0 || !t1) return '&mdash;';
+    const s = Math.max(0, (t1 - t0) / 1000);
+    if (s < 10) return s.toFixed(1) + 's';
+    if (s < 90) return Math.round(s) + 's';
+    return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+  }
+
+  function opStatusBadge(status) {
+    const map = { completed: 'badge-green', failed: 'badge-red', running: 'badge-yellow' };
+    return '<span class="badge ' + (map[status] || 'badge-gray') + '">'
+      + App.escapeHtml(String(status || 'unknown')) + '</span>';
+  }
+
+  function renderRecentOps(rows) {
+    const body = document.getElementById('recent-ops-body');
+    if (!body) return;
+    if (!Array.isArray(rows)) {
+      body.innerHTML = '<div class="empty-state" style="padding: 1.5rem;"><p>Activity feed unavailable</p></div>';
+      return;
+    }
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty-state" style="padding: 1.5rem;"><p>No operations recorded yet</p></div>';
+      return;
+    }
+    body.innerHTML = '<div class="table-wrapper"><table><thead><tr>'
+      + '<th>Operation</th><th>Status</th><th>Duration</th><th>Age</th>'
+      + '</tr></thead><tbody>'
+      + rows.map(r =>
+        '<tr style="cursor:pointer;" onclick="window.location=\'/logs?op='
+        + encodeURIComponent(r.op_type || '') + '\'" title="Open the log filtered to this operation">'
+        + '<td><span class="badge badge-accent">' + App.escapeHtml(String(r.op_type || 'unknown')) + '</span></td>'
+        + '<td>' + opStatusBadge(r.status) + '</td>'
+        + '<td class="u3-num">' + opDuration(r) + '</td>'
+        + '<td class="text-muted">' + opAge(r.started_at) + '</td>'
+        + '</tr>'
+      ).join('') + '</tbody></table></div>';
+    App.initIcons();
+  }
+
+  App.Poller.start('/api/activity?limit=8', renderRecentOps, 10000, {
+    onError: () => renderRecentOps(null)
   });
 
   // Init charts

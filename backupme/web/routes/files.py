@@ -6,6 +6,7 @@ The restore workers write their progress into the shared _restore_state
 dict from routes/common.py, which /api/restore/status and the SSE stream read.
 """
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -265,6 +266,13 @@ def register(app, ctx):
         return files
 
     def _start_restore(files: list, dest_path: str, source_label: str):
+        # Phase C restore-queue panel: every restore is audited in op_log
+        # (op_type='restore') so the panel's recent-ops history and the
+        # /logs?op=restore Activity filter have real rows to show — restores
+        # used to be the only background op with no op_log trail.
+        op_id = op_log_start("restore", f"restore:{int(time.time())}",
+                             {"source": source_label, "dest": dest_path,
+                              "files": len(files)})
         with _restore_lock:
             _restore_state.update({
                 "running": False, "source_root": source_label, "dest_path": dest_path,
@@ -275,13 +283,13 @@ def register(app, ctx):
         # to a completed frame instead of closing after one idle snapshot
         # (a fresh idle stream closes immediately by design).
         mark_op_started(_restore_state)
-        start_daemon_thread(_restore_worker, files, dest_path)
+        start_daemon_thread(_restore_worker, files, dest_path, op_id)
         return {"status": "started", "source_root": source_label,
                 "dest_path": dest_path, "restoring": len(files)}
 
-    def _restore_worker(files: list, dest_path: str):
+    def _restore_worker(files: list, dest_path: str, op_id: int | None = None):
         try:
-            _restore_worker_inner(files, dest_path)
+            _restore_worker_inner(files, dest_path, op_id)
         finally:
             # The worker runs in a daemon thread; its thread-local SQLite
             # connection must not outlive it (qa P1: leaked connection caused
@@ -291,7 +299,7 @@ def register(app, ctx):
             except Exception:
                 pass
 
-    def _restore_worker_inner(files: list, dest_path: str):
+    def _restore_worker_inner(files: list, dest_path: str, op_id: int | None = None):
         with _restore_lock:
             _restore_state["total"] = len(files)
             _restore_state["running"] = True
@@ -340,7 +348,15 @@ def register(app, ctx):
             _restore_state["running"] = False
             _restore_state["completed"] = True
             _restore_state["current"] = ""
+            done = _restore_state["done"]
+            errors = _restore_state["errors"]
         _emit_restore()
+        # Honest audit trail: a restore with per-file errors is recorded as
+        # failed, with the split visible in the payload (restored vs errors).
+        op_log_finish(op_id, "completed" if errors == 0 else "failed",
+                      target_json={"restored": done - errors,
+                                   "errors": errors,
+                                   "dest": dest_path})
 
     @app.post("/api/restore/all")
     async def api_restore_all(data: dict = Body(...)):
@@ -409,6 +425,45 @@ def register(app, ctx):
     async def api_restore_status():
         with _restore_lock:
             return JSONResponse(_restore_state)
+
+    @app.get("/api/restore/queue")
+    async def api_restore_queue():
+        """Restore-queue panel feed (Phase C): the live single-flight state
+        plus the recent op_log history for op_type='restore'.
+
+        `stale` marks an op_log row stuck at 'running' while nothing runs in
+        this app instance — an interrupted restore (server restarted mid-op)
+        is shown honestly as stale instead of pretending it is still in
+        flight. The panel itself follows the live progress on the existing
+        /api/restore/stream SSE; this endpoint is the cheap poll."""
+        with _restore_lock:
+            live = dict(_restore_state)
+        recent = []
+        try:
+            rows = db.execute(
+                "SELECT id, status, started_at, completed_at, target_json, last_error "
+                "FROM op_log WHERE op_type = 'restore' ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+            for r in rows:
+                try:
+                    target = json.loads(r["target_json"]) if r["target_json"] else {}
+                except ValueError:
+                    target = {}
+                recent.append({
+                    "id": r["id"],
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                    "completed_at": r["completed_at"],
+                    "source": target.get("source", ""),
+                    "dest": target.get("dest", ""),
+                    "restored": target.get("restored"),
+                    "errors": target.get("errors"),
+                    "last_error": r["last_error"] or "",
+                    "stale": r["status"] == "running" and not live.get("running"),
+                })
+        except Exception as e:
+            log.warning("restore queue history lookup failed: %s", e)
+        return JSONResponse({"live": live, "recent": recent})
 
     @app.get("/api/files/{file_id}")
     async def api_file_detail(file_id: int):

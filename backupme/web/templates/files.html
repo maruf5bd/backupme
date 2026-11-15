@@ -455,6 +455,28 @@
   </div>
 </div>
 
+<!-- Restore Queue (Phase C): live single-flight restore state + recent
+     restore history from op_log. Progress follows the existing
+     /api/restore/stream SSE; the poll keeps the history fresh. -->
+<div class="card mb-4" id="restore-queue-card">
+  <div class="card-header">
+    <span class="card-title">
+      <i data-lucide="history" style="width:16px;height:16px;color:var(--accent);vertical-align:middle;display:inline;"></i>
+      Restore Queue
+    </span>
+    <a href="/logs?op=restore" class="btn btn-ghost btn-xs" title="Activity filtered to restore operations">
+      Activity &rarr;
+    </a>
+  </div>
+  <div class="card-body">
+    <div id="restore-queue-live" class="text-sm text-muted mb-2">checking&hellip;</div>
+    <div class="progress-bar mb-3" id="restore-queue-live-bar" style="display:none;">
+      <div class="progress-fill accent" id="restore-queue-live-fill" style="width:0%;"></div>
+    </div>
+    <div id="restore-queue-recent"></div>
+  </div>
+</div>
+
 <!-- Bulk Actions Bar -->
 <div id="bulk-bar" class="card mb-4" style="display:none; background: var(--accent-bg, rgba(108,140,255,0.1)); border-color: var(--accent);">
   <div class="flex items-center justify-between">
@@ -2314,6 +2336,114 @@
       }).catch(() => {});
     };
   }
+
+  // ── Restore Queue panel (Phase C) ─────────────────────────
+  // Live single-flight state + recent restore history (op_log,
+  // op_type='restore'). While a restore runs, progress follows the
+  // existing /api/restore/stream SSE — no second runner; the poller keeps
+  // the history rows fresh. Failures render honest unavailable/stale
+  // states instead of pretending everything is fine.
+  let _queueSSE = null;
+
+  function queueStatusBadge(row) {
+    if (row.stale) return '<span class="badge badge-gray">stale &mdash; interrupted</span>';
+    if (row.status === 'completed') return '<span class="badge badge-green">completed</span>';
+    if (row.status === 'failed') return '<span class="badge badge-red">failed</span>';
+    if (row.status === 'running') return '<span class="badge badge-yellow">running</span>';
+    return '<span class="badge badge-gray">' + App.escapeHtml(String(row.status || 'unknown')) + '</span>';
+  }
+
+  function paintQueueLive(s) {
+    const el = document.getElementById('restore-queue-live');
+    const bar = document.getElementById('restore-queue-live-bar');
+    const fill = document.getElementById('restore-queue-live-fill');
+    if (!el) return;
+    if (s && s.running) {
+      const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+      el.innerHTML = '<span class="dot dot-blue dot-pulse" style="display:inline-block;"></span> '
+        + 'Restoring to <strong>' + App.escapeHtml(s.dest_path || '') + '</strong>: '
+        + s.done + ' / ' + s.total
+        + (s.errors ? ' <span class="text-red">(' + s.errors + ' errors)</span>' : '')
+        + (s.current ? ' &mdash; ' + App.escapeHtml(s.current) : '');
+      if (bar && fill) { bar.style.display = 'block'; fill.style.width = pct + '%'; }
+    } else if (s && s.completed) {
+      el.innerHTML = 'Last restore finished: ' + (s.done - s.errors) + ' restored, '
+        + (s.errors ? '<span class="text-red">' + s.errors + ' error(s)</span>' : '0 errors')
+        + ' &rarr; ' + App.escapeHtml(s.dest_path || '');
+      if (bar) bar.style.display = 'none';
+    } else {
+      el.textContent = 'No restore running.';
+      if (bar) bar.style.display = 'none';
+    }
+  }
+
+  function paintQueue(data) {
+    if (!data) {
+      const el = document.getElementById('restore-queue-live');
+      const box = document.getElementById('restore-queue-recent');
+      if (el) el.textContent = 'Restore queue unavailable (poll failed).';
+      if (box) box.innerHTML = '<div class="empty-state" style="padding:1rem;"><p>restore history unavailable</p></div>';
+      return;
+    }
+    paintQueueLive(data.live);
+    const box = document.getElementById('restore-queue-recent');
+    if (!box) return;
+    const recent = Array.isArray(data.recent) ? data.recent : null;
+    if (recent === null) {
+      box.innerHTML = '<div class="empty-state" style="padding:1rem;"><p>restore history unavailable</p></div>';
+      return;
+    }
+    if (!recent.length) {
+      box.innerHTML = '<div class="empty-state" style="padding:1rem;"><p>No restore operations recorded yet.</p></div>';
+      return;
+    }
+    box.innerHTML = '<div class="timeline">' + recent.map(r =>
+      '<div class="timeline-item">'
+      + '<div class="timeline-dot ' + (r.status === 'completed' && !r.stale ? 'green' : (r.status === 'failed' ? 'red' : 'yellow')) + '"></div>'
+      + '<div class="timeline-time" data-ts="' + App.escapeHtml(String(r.started_at || '')) + '"></div>'
+      + '<div class="timeline-content">' + queueStatusBadge(r)
+      + ' ' + (r.restored != null ? r.restored + ' restored' : '')
+      + (r.errors ? ' <span class="text-red">' + r.errors + ' errors</span>' : '')
+      + (r.dest ? ' &rarr; ' + App.escapeHtml(r.dest) : '')
+      + '</div>'
+      + '</div>'
+    ).join('') + '</div>';
+    App.decorateTimestamps(box);
+  }
+
+  function manageQueueSSE(data) {
+    const live = data && data.live;
+    if (live && live.running && !_queueSSE) {
+      // Live progress rides the existing restore SSE stream.
+      _queueSSE = new EventSource('/api/restore/stream');
+      _queueSSE.onmessage = function(ev) {
+        try {
+          const s = JSON.parse(ev.data);
+          paintQueueLive(s);
+          if (s.completed && !s.running) {
+            _queueSSE.close();
+            _queueSSE = null;
+          }
+        } catch (e) {}
+      };
+      _queueSSE.onerror = function() {
+        _queueSSE.close();
+        _queueSSE = null;
+      };
+    } else if ((!live || !live.running) && _queueSSE) {
+      _queueSSE.close();
+      _queueSSE = null;
+    }
+  }
+
+  function pollQueueTick(data) {
+    paintQueue(data);
+    manageQueueSSE(data);
+  }
+
+  App.Poller.start('/api/restore/queue', pollQueueTick, 5000, {
+    onError: () => paintQueue(null)
+  });
 
   // Check if restore is already running on page load
   (async function() {
