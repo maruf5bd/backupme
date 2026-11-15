@@ -412,3 +412,22 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - MANUAL.md touch-ups for A/B rows (database "last recorded check" wording, dashboard
   async backend cards note) are folded into the post-C consolidation to avoid
   same-file conflicts while C runs.
+
+## 2026-11-15 (update 22)
+
+- **Dashboard wave COMPLETE — A + B + C all landed** (`1c0420b`, `5df726a`,
+  `95b5be8`; 3 feature commits, +~2,900 lines incl. 39 new tests). Phase C delivered:
+  backend speed test (`POST /api/backends/{name}/speedtest`, 8 KB round-trip
+  upload/download/sha-verify/delete-in-finally, single-flight 409, op_log
+  `speedtest` rows, per-backend `speedtest: false` opt-out, per-card result lines);
+  restore-queue panel on Files (rides the existing `/api/restore/stream` SSE, plus
+  `GET /api/restore/queue` history with honest stale/interrupted marking); live
+  Recent Operations card on the dashboard (10 s Poller over `/api/activity`); and
+  both perf follow-ups — `/files` + `/backends` handlers now config-only renders,
+  `/api/status` serves TTL-cached rows so the 10 s dashboard poll no longer opens
+  every backend. restores now audited in op_log (`op_type='restore'`). MANUAL
+  Dashboard/Files/Backends rows updated by C; Database row + async-cards note by
+  main thread. Suite: **686 collected, exactly the 5 known-baseline failures, all
+  web suites green**.
+- **Dashboard restart on 8081** serving the new UI (real DB) after visual
+  verification on a scratch server.

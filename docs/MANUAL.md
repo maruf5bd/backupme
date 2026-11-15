@@ -285,12 +285,12 @@ web:
 
 | Page | URL | What You Can Do |
 |---|---|---|
-| **Dashboard** | `/` | Overview: file count, dedup ratio, compression ratio, per-backend usage chart, live Recent Operations feed (last 8 ops from the activity log, 10 s refresh; a row click opens the log filtered to that op type) |
+| **Dashboard** | `/` | Overview: file count, dedup ratio, compression ratio, per-backend usage chart, async backend status cards (~30 s cached probe — page never blocks on slow backends), live Recent Operations feed (last 8 ops from the activity log, 10 s refresh; a row click opens the log filtered to that op type) |
 | **Files** | `/files` | Searchable table of all files, download buttons, redundancy status, restore-queue panel (live progress of the running restore plus recent restore history, with a link to the Activity log filtered to restore ops) |
 | **Backends** | `/backends` | Health status, free/total space, circuit-breaker state, speed test (round-trip upload/download/verify of a small test object; `speedtest: false` in a backend's config entry opts it out), onboard/rebalance/drain |
 | **Ingest** | `/ingest` | cPanel drop-folder queue with live progress, staging usage vs budget, per-account generations, history queries, pause/resume |
 | **Logs** | `/logs` | Filterable operation log and recovery events |
-| **Database** | `/database` | Integrity status, snapshots list, generation/instance info |
+| **Database** | `/database` | Last recorded integrity check (full check runs as a background operation via "Run Integrity Check" with live progress; results land under last-check and an `op_log db_check` entry), snapshots list, generation/instance info |
 | **Report** | `/report` | Full integrity report with charts and recommendations |
 | **Settings** | `/settings` | View config, toggle daemon, trigger manual backup |
 
