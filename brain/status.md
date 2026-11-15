@@ -381,3 +381,34 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
      separate MonkeyPatch instance for the ingest_archive patch instead of undo().
   2. `backupme.state.json` is tracked despite the `*.state.json` gitignore rule —
      committed test pollution; untrack via `git rm --cached` after fixing (1).
+
+## 2026-11-15 (update 21)
+
+- **Dashboard wave Phase A LANDED (`1c0420b`)**: GET / = **3.6 ms** (was ~57 s),
+  GET /database = **17.2 ms** (was >120 s). Backend probes left the request path via a
+  new `GET /api/backends/status` (fingerprint-keyed 30 s TTL cache in common.py's
+  thread-safe `TTLCache`, probes on a worker thread, never walks, offline-degrades
+  honestly); dashboard backend cards are skeletons filled client-side via `App.Poller`;
+  `dedup.total_dedup_savings()` TTL-cached (measured 517 ms at 450k rows); recent-files
+  sort switched `created_at` -> rowid `id DESC` (46 ms -> 0 ms at 300k rows); the
+  minutes-class integrity check moved into a background op (`POST /api/db/check/start`
+  + status + SSE stream, 409 single-flight, persists a `check_type='pragma'` row +
+  `op_log db_check` entry) with a "Run Integrity Check" button on database.html;
+  `/api/db/info` now reports last recorded check (+ honest unknown) instead of running
+  a check inline. 13 new tests (tests/test_web_perf_pages.py); route-inventory lists in
+  tests/test_web_api.py updated per its contract.
+- **Failure-triage correction to update 19**: of the 4 red-suite failures, THREE are
+  WIP-caused (3 × test_sftp_connect — pass at HEAD, fail only with the uncommitted
+  ftp_sftp.py keepalive change) but ONE is pre-existing at HEAD:
+  test_logging.py::test_processing_failure_is_logged fails on a pristine HEAD clone.
+  Needs its own triage (expected ERROR for 'no-such-file.txt' not emitted) — queue for
+  the defect register after the wave.
+- **Phase A follow-ups handed to Phase C**: /files + /backends page handlers still
+  call `_get_backends(ctx)` synchronously; `/api/status` (misc.py) resolves all
+  backends inline while the dashboard polls it every 10 s. Phase C agent dispatched
+  with: backend speed test (background op + per-backend button), restore-queue panel
+  on Files, live recent-ops card on the dashboard, both perf follow-ups, and
+  MANUAL.md rows for everything.
+- MANUAL.md touch-ups for A/B rows (database "last recorded check" wording, dashboard
+  async backend cards note) are folded into the post-C consolidation to avoid
+  same-file conflicts while C runs.
