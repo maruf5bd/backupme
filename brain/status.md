@@ -358,3 +358,26 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   reclaim candidate — deletion awaits user approval.
 - Dashboard wave: Phase A (perf) + Phase B (polish) agents running with disjoint
   territories; Phase C (features) queued behind A.
+
+## 2026-11-15 (update 20)
+
+- **Dashboard wave Phase B LANDED (`5df726a`)**: sortable Files table (header-click +
+  select synced, date sorting fixed to use raw `data-ts` instead of displayed text),
+  humanized timestamps everywhere (`dtime` + client-local refresh via new
+  `app.js decorateTimestamps`), active-filter chips with per-chip clear + Clear-all,
+  honest "N–M of total" pagination, backends usage bars for non-quota backends +
+  Connected/Not-connected badges, the last two raw `confirm()` dialogs (rebalance,
+  onboard wizard) migrated to `App.Modal.confirm` (with optional onCancel preserving
+  onboard-without-backfill), shared `.empty-state` pattern applied to ingest loading/
+  empty cells, archives timestamps humanized. 8 new tests (tests/test_web_polish.py).
+  Full suite: 552/4F/1 skip — the 4 failures proven external (agent reverted its own
+  files and re-ran: same 4, all FakeTransport/set_keepalive WIP).
+- **Pre-existing defects found by Phase B (not yet fixed, recorded for the register)**:
+  1. tests/test_web_ingest.py::test_api_ingest_scan_flow calls `monkeypatch.undo()`
+     which also undoes the `env` fixture's chdir — the rest of the test runs with
+     CWD = repo root, so the real ingest writes checkpoint entries into the TRACKED
+     `backupme.state.json` (98 pytest-only entries found; file is assume-unchanged so
+     git hides the mutation) and the repo-root `parquet/`. Fix direction: use a
+     separate MonkeyPatch instance for the ingest_archive patch instead of undo().
+  2. `backupme.state.json` is tracked despite the `*.state.json` gitignore rule —
+     committed test pollution; untrack via `git rm --cached` after fixing (1).
