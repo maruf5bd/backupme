@@ -9,6 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from backupme.core import database as dbmod  # noqa: E402
 
 
+def pytest_configure(config):
+    """pytest.ini pins a RELATIVE basetemp (test_tmp_backend/pytest), but
+    pytest does not create its parent on a fresh clone/checkout — every test
+    then errors at setup with WinError 3 (observed on the first CI run).
+    Ensure the parent exists before the tmp factory touches it."""
+    Path(__file__).resolve().parents[1].joinpath("test_tmp_backend").mkdir(exist_ok=True)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_db(tmp_path, monkeypatch):
     """Safety net: every test runs against a scratch DB, never the real one."""
