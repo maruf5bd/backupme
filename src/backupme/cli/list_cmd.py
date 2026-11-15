@@ -13,6 +13,7 @@ from ..cli.output import emit
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def list_files(ctx, backend, sha256_val, source_root, limit, offset, as_json):
+    """List indexed files with id, path, and hash (filter by backend, sha256, or source root)."""
     from ..core import index as index_mod
     from ..core.database import execute
     if sha256_val:
@@ -54,6 +55,7 @@ def list_files(ctx, backend, sha256_val, source_root, limit, offset, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def stats(ctx, as_json):
+    """Vault totals: file count, blob count, raw vs stored bytes, and dedup ratio."""
     from ..core import index as index_mod
     from ..core import dedup
     from ..core import database as dbmod
@@ -85,6 +87,7 @@ def stats(ctx, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def backends(ctx, as_json):
+    """Quick connectivity view of the configured backends (connected/unavailable); storage usage lives in 'backend list'."""
     cfg = ctx.obj["config"]
     from ..backends import get_all_backends
     bes = get_all_backends(cfg)

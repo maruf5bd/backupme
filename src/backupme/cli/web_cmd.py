@@ -10,6 +10,7 @@ from .base import cli
                    "(defaults to config web.token; empty = open dashboard)")
 @click.pass_context
 def web(ctx, host, port, token):
+    """Run the web dashboard (default http://127.0.0.1:8080; Ctrl+C to stop)."""
     cfg = ctx.obj["config"]
     if token is not None:
         cfg.web.token = token

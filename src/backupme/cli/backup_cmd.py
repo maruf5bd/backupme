@@ -33,6 +33,7 @@ def _safe_echo(msg: str):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, as_json):
+    """Back up files or directories into the vault (deduplicated; --recursive for directories)."""
     cfg = ctx.obj["config"]
     from ..backends import get_backend, get_all_backends
 

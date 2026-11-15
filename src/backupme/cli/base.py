@@ -33,6 +33,11 @@ def _help_only() -> bool:
 @click.option("--verbose", "-V", is_flag=True, help="Verbose (debug) logging")
 @click.pass_context
 def cli(ctx, config, db_path, verbose):
+    """BackupMe — deduplicating backup tool: chunk, dedup, verify, replicate.
+
+    Start here: 'backupme init' (first run), 'backupme backup <path>' (protect
+    data), 'backupme web' (dashboard). 'backupme <command> --help' for details.
+    """
     ctx.ensure_object(dict)
     from ..log import setup_logging
     setup_logging(verbose)

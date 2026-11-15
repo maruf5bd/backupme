@@ -16,6 +16,7 @@ def db():
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def check(ctx, full, repair, as_json):
+    """SQLite integrity check; --repair also fixes refcounts and migrates legacy inline files."""
     from ..core import database as dbmod
     errors = dbmod.check_integrity()
     from ..backends import get_all_backends
@@ -54,6 +55,7 @@ def check(ctx, full, repair, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def restore(ctx, as_json):
+    """Repair a corrupt or missing primary database from the best offsite copy found on the backends."""
     from ..backends import get_all_backends
     from ..core import recover
     cfg = ctx.obj["config"]
@@ -66,6 +68,7 @@ def restore(ctx, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def rebuild(ctx, as_json):
+    """Rebuild a fresh database from manifest sidecars on the backends (last-resort recovery)."""
     from ..core import recover
     result = recover.rebuild_from_manifests()
     emit(result, as_json=as_json, human=lambda d: click.echo(json.dumps(d, indent=2)))
@@ -77,6 +80,7 @@ def rebuild(ctx, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def snapshot(ctx, offsite, as_json):
+    """Snapshot the current database state; --offsite ships the snapshot to every reachable backend."""
     from ..core.snapshot import create_snapshot, prune_snapshots
     result = create_snapshot()
     ship = None
@@ -107,6 +111,7 @@ def snapshot(ctx, offsite, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def info(ctx, as_json):
+    """Show database facts: schema version, row counts, generation, and file size."""
     from ..core import database as dbmod
     version = dbmod.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     file_count = dbmod.execute("SELECT COUNT(*) FROM files").fetchone()[0]
@@ -314,6 +319,7 @@ def recover_from_manifests_cmd(ctx, backend, into_path, verify, dry_run, as_json
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def oplog(ctx, pending, as_json):
+    """Show recent op_log entries (the operation audit trail); --pending lists unfinished ops only."""
     from ..core import op_log as oplog_mod
     if pending:
         rows = oplog_mod.get_pending()

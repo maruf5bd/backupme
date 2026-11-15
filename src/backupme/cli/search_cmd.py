@@ -13,6 +13,7 @@ from ..cli.output import emit
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def search(ctx, query, content, source, as_json):
+    """Search indexed files by path substring; add --content to search indexed text content."""
     from ..core import index as index_mod
     if content:
         from ..core.database import execute
@@ -35,6 +36,7 @@ def search(ctx, query, content, source, as_json):
 @click.argument("query")
 @click.pass_context
 def select_backend(ctx, query):
+    """Fuzzy-match backend names and print ranked candidates (check a name here before passing -b/--backend)."""
     cfg = ctx.obj["config"]
     from ..core import selector
     results = selector.fuzzy_find_backend(query, cfg)

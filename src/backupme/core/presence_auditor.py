@@ -5,8 +5,6 @@ Checks if files and blobs recorded in the SQLite database actually exist on:
 2. Local source disk (checks if original files in files table are still present on disk).
 """
 import os
-import sys
-from pathlib import Path
 from typing import Dict, Any, List
 
 from backupme.config import load_config
@@ -145,23 +143,3 @@ def audit_source_disk_presence(limit: int = 1000) -> Dict[str, Any]:
         "source_gone": source_gone,
         "samples_gone": missing_samples
     }
-
-
-if __name__ == "__main__":
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100
-    print(f"=== AUDITING PHYSICAL STORAGE PRESENCE (Sampling {limit} blobs) ===")
-    res_storage = audit_storage_existence(limit=limit)
-    print(f"Total checked: {res_storage['total_checked']}")
-    print(f"Present on storage: {res_storage['present']}")
-    print(f"Missing on storage: {res_storage['missing']}")
-    print(f"Bundle members resolved: {res_storage['bundle_members_resolved']}")
-    if res_storage["missing_samples"]:
-        print(f"Missing samples: {res_storage['missing_samples'][:3]}")
-
-    print(f"\n=== AUDITING SOURCE DISK PRESENCE (Sampling {limit} files) ===")
-    res_source = audit_source_disk_presence(limit=limit)
-    print(f"Total checked: {res_source['total_checked']}")
-    print(f"Present on local disk: {res_source['present_on_disk']}")
-    print(f"Source deleted/gone: {res_source['source_gone']}")
-    if res_source["samples_gone"]:
-        print(f"Gone samples: {res_source['samples_gone'][:3]}")

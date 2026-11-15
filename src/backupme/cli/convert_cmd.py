@@ -54,6 +54,7 @@ def process_files(ctx, backend_name, prefix, delete, target, as_json):
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def convert(ctx, backend_name, prefix, delete, target, resume, as_json):
+    """Adopt files already sitting on BACKEND_NAME: download each one and re-ingest it through the normal pipeline."""
     from ..core.converter import convert_backend
     try:
         result = convert_backend(

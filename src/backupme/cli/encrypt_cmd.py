@@ -12,6 +12,7 @@ def encrypt():
 @encrypt.command()
 @click.pass_context
 def init(ctx):
+    """Generate an encryption key and save it to the key file (~/.backupme/key.enc)."""
     from ..core.crypto import generate_key, save_key
     key = generate_key()
     key_path = os.path.expanduser("~/.backupme/key.enc")
@@ -22,6 +23,7 @@ def init(ctx):
 @encrypt.command()
 @click.pass_context
 def status(ctx):
+    """Check whether an encryption key exists."""
     key_path = os.path.expanduser("~/.backupme/key.enc")
     if os.path.exists(key_path):
         click.echo(f"Encryption key exists at {key_path}")
@@ -35,6 +37,7 @@ def status(ctx):
 @click.option("--backend", "-b", help="Target backend")
 @click.pass_context
 def recompress(ctx, algo, level, backend):
+    """Re-encode stored blobs with a different compression algorithm/level (encrypted blobs are skipped)."""
     from ..core.compress import recompress_blobs
     cfg = ctx.obj["config"]
     if backend:

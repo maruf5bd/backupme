@@ -13,6 +13,7 @@ from ..cli.output import emit
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 @click.pass_context
 def download(ctx, file_id, output, version, backend, as_json):
+    """Restore a single file by its index id to --output (hash-checked download from any healthy copy)."""
     from ..core.downloader import download_file
     out_path = os.path.join(output, f"file_{file_id}")
     try:

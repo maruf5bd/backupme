@@ -8,6 +8,7 @@ from .base import cli
 @cli.command()
 @click.pass_context
 def daemon(ctx):
+    """Run the scheduler daemon in the foreground: periodic backups, retention, ingest, purge, cold export, gc, verify."""
     cfg = ctx.obj["config"]
     if dataclasses.is_dataclass(cfg) and not isinstance(cfg, type):
         cfg = dataclasses.asdict(cfg)

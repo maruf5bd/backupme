@@ -32,13 +32,6 @@ def fuzzy_find_backend(query: str, config: cfgmod.Config) -> list[tuple[str, str
     return results
 
 
-def manual_select_backend(query: str, config: cfgmod.Config) -> tuple[str, str] | None:
-    results = fuzzy_find_backend(query, config)
-    if results:
-        return (results[0][0], results[0][1])
-    return None
-
-
 def list_available_backends(config: cfgmod.Config) -> list[dict]:
     result = []
     for btype, blist in config.backends.items():
