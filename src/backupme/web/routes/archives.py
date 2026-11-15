@@ -64,8 +64,7 @@ def register(app, ctx):
             "total_uncompressed, created_at FROM archives ORDER BY id DESC LIMIT 500"
         ).fetchall()
         total = db.execute("SELECT COUNT(*) FROM archives").fetchone()[0]
-        return ctx.templates.TemplateResponse("archives.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "archives.html", {
             "archives": [dict(r) for r in rows],
             "total": total,
         })

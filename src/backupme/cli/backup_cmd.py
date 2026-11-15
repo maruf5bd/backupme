@@ -78,7 +78,8 @@ def backup(ctx, sources, backend, redundancy, recursive, no_skip, force, move, a
             emit(payload, as_json=True)
         else:
             _safe_echo("No backends available")
-        return
+        # A backup that protects nothing must not look successful.
+        raise SystemExit(1)
 
     from ..core import uploader
     from ..core.skip import should_skip, should_skip_dir

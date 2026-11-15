@@ -47,16 +47,24 @@ dev = [
 ]
 
 [project.urls]
-Changelog = "https://github.com/hostraj/backupme/blob/master/CHANGELOG.md"
+Changelog = "https://github.com/maruf5bd/backupme/blob/master/CHANGELOG.md"
 
 [project.scripts]
 backupme = "backupme.cli.base:cli"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"backupme" = [
+    "web/templates/*.html",
+    "web/static/css/*",
+    "web/static/js/*",
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "backupme.__version__" }

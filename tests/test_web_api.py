@@ -456,6 +456,27 @@ def test_config_export_serves_yaml_config(client, seeded):
     assert "test_local" in r.text
 
 
+def test_config_export_redacts_credentials(client, seeded):
+    """The export endpoint must never serve live credentials to the
+    browser (structure diffing is the purpose, not secret exfiltration)."""
+    import yaml as _yaml
+
+    cfg_path = Path("config.yaml")
+    raw = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    first_type = next(iter(raw.get("backends", {})), None)
+    assert first_type, "fixture config has no backends"
+    raw["backends"][first_type][0]["password"] = "hunter2secret"
+    raw["backends"][first_type][0]["api_key"] = "sk-live-9letters"
+    cfg_path.write_text(_yaml.safe_dump(raw), encoding="utf-8")
+
+    r = _bounded_get(client, "/api/config/export")
+    assert r.status_code == 200, r.text[:200]
+    assert "hunter2secret" not in r.text
+    assert "sk-live-9letters" not in r.text
+    assert "***REDACTED***" in r.text
+    assert "test_local" in r.text  # non-secret structure stays intact
+
+
 def test_logs_export_csv_content_type(client, seeded):
     r = _bounded_get(client, "/api/logs/export?fmt=csv")
     assert r.status_code == 200, r.text[:200]

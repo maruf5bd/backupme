@@ -17,6 +17,26 @@ from .common import _reload_config
 
 log = get_logger("web.routes.config_api")
 
+# Substrings that mark a config value as a credential. Export masks these;
+# matching is case-insensitive on the key name only (values never matched).
+_SECRET_KEY_PARTS = ("password", "secret", "token", "api_key", "apikey", "private_key", "passphrase")
+
+
+def _redact_secrets(node):
+    """Return a copy of a config tree with credential values masked."""
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            key_is_secret = any(part in str(key).lower() for part in _SECRET_KEY_PARTS)
+            if key_is_secret and isinstance(value, str) and value:
+                out[key] = "***REDACTED***"
+            else:
+                out[key] = _redact_secrets(value)
+        return out
+    if isinstance(node, list):
+        return [_redact_secrets(item) for item in node]
+    return node
+
 
 def register(app, ctx):
 
@@ -103,10 +123,17 @@ def register(app, ctx):
 
     @app.get("/api/config/export")
     async def api_config_export():
+        import yaml
+
         yaml_path = Path("config.yaml")
         if not yaml_path.exists():
             return JSONResponse({"error": "config.yaml not found"}, status_code=404)
-        content = yaml_path.read_text(encoding="utf-8")
+        # Never serve live credentials to the browser: secret-bearing values
+        # are masked. The authoritative config (with real secrets) stays on the
+        # server filesystem; this export is for structure diffing/sharing.
+        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        redacted = _redact_secrets(raw)
+        content = yaml.safe_dump(redacted, default_flow_style=False, allow_unicode=True, sort_keys=False)
         return StreamingResponse(
             io.BytesIO(content.encode("utf-8")),
             media_type="text/yaml",

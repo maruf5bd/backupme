@@ -21,5 +21,8 @@ jobs:
         run: |
           pip install build
           python -m build --wheel
+      - name: Wheel ships dashboard assets
+        run: |
+          python -c "import glob, zipfile; wheel = glob.glob('dist/*.whl')[0]; names = zipfile.ZipFile(wheel).namelist(); assert any('web/templates/dashboard.html' in n for n in names), 'templates missing from wheel'; assert any('web/static/' in n for n in names), 'static missing from wheel'; print('dashboard assets in wheel: OK')"
       - name: Run test suite
         run: python -m pytest tests/ -q

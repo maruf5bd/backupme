@@ -142,8 +142,7 @@ def register(app, ctx):
         except Exception as e:
             log.warning("recent checkpoints query failed for dashboard page: %s", e)
             checkpoints = []
-        return ctx.templates.TemplateResponse("dashboard.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "dashboard.html", {
             "total_files": total_files,
             "blob_count": savings.get("total_blobs", 0),
             "stored_bytes": savings.get("stored_bytes", 0),
@@ -201,8 +200,7 @@ def register(app, ctx):
         # backend NAMES for its filter/upload dropdowns — no connects, no
         # probes on the request path.
         be_list = [{"name": b["name"]} for b in _list_backend_configs(ctx)]
-        return ctx.templates.TemplateResponse("files.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "files.html", {
             "files": files,
             "total": total,
             "q": q, "backend": backend, "source": source, "mode": mode,
@@ -221,8 +219,7 @@ def register(app, ctx):
         like the dashboard's backend cards since Phase A. A dead SFTP
         backend can no longer hold this page render hostage."""
         be_list = _list_backend_configs(ctx)
-        return ctx.templates.TemplateResponse("backends.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "backends.html", {
             "backends": be_list,
         })
 
@@ -236,8 +233,7 @@ def register(app, ctx):
             "staging_budget_gb": getattr(ci, "staging_budget_gb", 10.0),
             "keep_raw": getattr(ci, "keep_raw", 0),
         }
-        return ctx.templates.TemplateResponse("ingest.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "ingest.html", {
             "ci": ci_dict,
         })
 
@@ -258,8 +254,7 @@ def register(app, ctx):
         op_types = db.execute(
             "SELECT DISTINCT op_type FROM op_log ORDER BY op_type"
         ).fetchall()
-        return ctx.templates.TemplateResponse("logs.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "logs.html", {
             "logs": [dict(r) for r in rows],
             "op_types": [r["op_type"] for r in op_types if r["op_type"]],
             "current_op": op,
@@ -321,8 +316,7 @@ def register(app, ctx):
     @app.get("/database", response_class=HTMLResponse)
     async def database_page(request: Request):
         info = await asyncio.to_thread(_collect_database_page_info)
-        return ctx.templates.TemplateResponse("database.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "database.html", {
             **info,
         })
 
@@ -330,8 +324,7 @@ def register(app, ctx):
     async def report_page(request: Request):
         rpt = verify.get_report()
         report_data = rpt.get("last_integrity_check") if rpt else None
-        return ctx.templates.TemplateResponse("report.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "report.html", {
             "report": report_data,
         })
 
@@ -354,8 +347,7 @@ def register(app, ctx):
             if items:
                 config_items.append((section, items))
         sources = _get_backups(ctx)
-        return ctx.templates.TemplateResponse("settings.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "settings.html", {
             "config_items": config_items,
             "sources": sources,
         })

@@ -46,8 +46,7 @@ def register(app, ctx):
                 db.close_connection()
 
         summary = await asyncio.to_thread(_run_summary)
-        return ctx.templates.TemplateResponse("health.html", {
-            "request": request,
+        return ctx.templates.TemplateResponse(request, "health.html", {
             "summary": summary,
         })
 

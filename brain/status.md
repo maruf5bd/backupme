@@ -496,3 +496,32 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   queue_gate_transfer, run_all_remaining, watcher_service — Nov 13 one-off
   transfer/monitoring drivers) — need a commit-as-product or archive-to-diagnostics
   decision.
+
+## 2026-11-16 (update 25)
+
+- **Professional-baseline wave landed (`af4986b`)**: pyproject.toml (PEP 621,
+  version single-sourced from `backupme.__version__`, MIT license, deps incl.
+  the previously-missing pyarrow/duckdb), setup.py reduced to a shim, MIT
+  LICENSE, CHANGELOG.md, GitHub Actions CI (windows-latest: editable install ->
+  CLI smoke -> wheel build -> full pytest), `backupme --version` flag. Wheel
+  build verified locally: backupme-2.0.0-py3-none-any.whl.
+- **Full 688-test suite completed GREEN (rc=0) for the first time** (the
+  confirmation run that died twice externally finally finished).
+- **Pro-app audit fan-out (2 read-only agents) — reports in repo root**:
+  audit_pro_product.md + audit_pro_engineering.md. Verdict: engine
+  professional-grade; product surface + release engineering are the gap.
+- **CRITICAL security fix: GitHub PAT stripped from origin remote URL**
+  (.git/config had `https://github_pat_...@github.com/...`; now clean
+  `https://github.com/maruf5bd/backupme.git`; zero github_pat occurrences).
+  USER MUST ROTATE the PAT on GitHub — it lived in plaintext on disk.
+- **Audit P0/P1 fixes landed**: wheel now ships dashboard assets
+  ([tool.setuptools.package-data] templates+static; CI asserts it — 11
+  templates + 3 static files verified in the rebuilt wheel); pyproject
+  Changelog URL org corrected (hostraj -> maruf5bd); `backup` with zero
+  backends now exits 1 (was silent exit 0 — scheduled backups looked green
+  while protecting nothing); /api/config/export REDACTS credential-bearing
+  values (***REDACTED***) with an explicit test — the authoritative config
+  stays on the server; all 10 deprecated Starlette TemplateResponse call
+  sites migrated to the (request, name) form — the per-run DeprecationWarning
+  storm is gone; requirements.txt duckdb floor synced to >=1.0 with a note
+  that pyproject is authoritative.
