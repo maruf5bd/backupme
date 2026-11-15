@@ -227,8 +227,19 @@ def _cold_export_locked(pdir, pa, pq, compression, compression_level) -> dict:
 
 def hard_purge_versions(grace_days: int | None = None, config=None) -> dict:
     """Hard-delete soft-deleted rows that are past the grace window AND below
-    the cold-export watermark (i.e. safely in Parquet history)."""
+    the cold-export watermark (i.e. safely in Parquet history).
+
+    Destructive, so audited (P1-4): when there is anything to purge, one
+    ``hard_purge`` op_log row is appended BEFORE the first DELETE
+    (idempotency key ``hard_purge:<unix-seconds>``, target carries
+    grace/watermark/plan) and moved to committed on success / failed if the
+    purge loop raises — the same discipline as db_reconcile.reconcile_refs
+    and phantom_prune.apply_prune. A no-op run (nothing eligible) writes no
+    entry. The returned dict gains an ``op_log_id`` key (None on no-op)."""
+    import time
+
     from backupme.core import dedup as dedup_mod
+    from backupme.core import op_log as op_log_mod
 
     lc = _lifecycle_cfg(config)
     if grace_days is None:
@@ -260,26 +271,48 @@ def hard_purge_versions(grace_days: int | None = None, config=None) -> dict:
         (f"-{grace_days} days", watermark),
     ).fetchone()[0]
 
+    op_id = None
+    if rows:
+        entry = op_log_mod.append(
+            "hard_purge",
+            {"grace_days": grace_days, "watermark": watermark,
+             "planned": len(rows), "above_watermark": above_watermark},
+            idempotency_key=f"hard_purge:{int(time.time())}",
+        )
+        op_id = entry["id"]
+        log.info("hard_purge op #%s: %d row(s) planned "
+                 "(watermark %d, grace %dd, above watermark %d)",
+                 op_id, len(rows), watermark, grace_days, above_watermark)
+
     purged = 0
-    for (fid,) in rows:
-        chunks = execute(
-            "SELECT blob_id FROM file_chunks WHERE file_id = ?", (fid,)
-        ).fetchall()
-        execute("DELETE FROM file_chunks WHERE file_id = ?", (fid,))
-        execute("DELETE FROM files_fts WHERE rowid = ?", (fid,))
-        for (blob_id,) in chunks:
-            dedup_mod.unref_blob(blob_id)
-        execute("DELETE FROM files WHERE id = ?", (fid,))
-        purged += 1
-        if purged % 1000 == 0:
+    try:
+        for (fid,) in rows:
+            chunks = execute(
+                "SELECT blob_id FROM file_chunks WHERE file_id = ?", (fid,)
+            ).fetchall()
+            execute("DELETE FROM file_chunks WHERE file_id = ?", (fid,))
+            execute("DELETE FROM files_fts WHERE rowid = ?", (fid,))
+            for (blob_id,) in chunks:
+                dedup_mod.unref_blob(blob_id)
+            execute("DELETE FROM files WHERE id = ?", (fid,))
+            purged += 1
+            if purged % 1000 == 0:
+                commit()
+        if purged:
             commit()
-    if purged:
-        commit()
+    except Exception as e:
+        if op_id is not None:
+            op_log_mod.mark_failed(op_id, str(e))
+        raise
+
+    if op_id is not None:
+        op_log_mod.mark_committed(op_id)
+        log.info("hard_purge op #%s committed: %d row(s) purged", op_id, purged)
 
     # `skipped` is kept for backward compatibility (scheduler.py logs it);
     # it is always 0 now that above-watermark rows are reported separately.
     return {"purged": purged, "skipped": 0, "above_watermark": above_watermark,
-            "watermark": watermark, "grace_days": grace_days}
+            "watermark": watermark, "grace_days": grace_days, "op_log_id": op_id}
 
 
 # ---------------------------------------------------------------------------

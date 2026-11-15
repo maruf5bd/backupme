@@ -59,20 +59,59 @@ def find_orphans(backends: list, min_age_seconds: float = _DEFAULT_MIN_AGE_SECON
 def run_gc(backends: list, apply: bool = False,
            min_age_seconds: float = _DEFAULT_MIN_AGE_SECONDS) -> dict:
     """Dry-run by default: report orphaned remote objects per backend.
-    With apply=True, delete them. See find_orphans for the min-age grace."""
+    With apply=True, delete them. See find_orphans for the min-age grace.
+
+    apply=True is destructive and therefore audited (P1-4): when there is
+    anything to delete, one ``gc`` op_log row is appended BEFORE the first
+    delete (idempotency key ``gc:<unix-seconds>``, target carries the
+    per-backend plan) and moved to committed after the delete phase /
+    failed if the delete phase raises — the same discipline as
+    db_reconcile.reconcile_refs and phantom_prune.apply_prune. Per-object
+    delete failures stay non-fatal (logged, counted in the report), so a
+    run with some failures still ends committed. A dry run and a clean
+    apply (nothing orphaned) write no entry. The returned shape is
+    unchanged."""
     orphans = find_orphans(backends, min_age_seconds=min_age_seconds)
+    op_id = None
+    if apply and any(orphans.values()):
+        import time
+
+        from backupme.core import op_log
+
+        target = {
+            "min_age_seconds": min_age_seconds,
+            "planned": {name: len(items) for name, items in orphans.items() if items},
+        }
+        op_row = op_log.append("gc", target, idempotency_key=f"gc:{int(time.time())}")
+        op_id = op_row["id"]
+        log.info("gc apply op #%s: %d orphan(s) planned on %s", op_id,
+                 sum(len(items) for items in orphans.values()),
+                 sorted(name for name, items in orphans.items() if items))
+
     result = {}
-    for name, items in orphans.items():
-        entry = {"orphans": len(items), "bytes": sum(f["size"] for f in items)}
-        if apply:
-            bk = next((b for b in backends if b.name == name), None)
-            deleted = 0
-            for f in items:
-                try:
-                    bk.delete(f["path"])
-                    deleted += 1
-                except Exception as e:
-                    log.warning("gc: delete failed for %s on %s: %s", f["path"], name, e)
-            entry["deleted"] = deleted
-        result[name] = entry
+    try:
+        for name, items in orphans.items():
+            entry = {"orphans": len(items), "bytes": sum(f["size"] for f in items)}
+            if apply:
+                bk = next((b for b in backends if b.name == name), None)
+                deleted = 0
+                for f in items:
+                    try:
+                        bk.delete(f["path"])
+                        deleted += 1
+                    except Exception as e:
+                        log.warning("gc: delete failed for %s on %s: %s", f["path"], name, e)
+                entry["deleted"] = deleted
+            result[name] = entry
+        if op_id is not None:
+            from backupme.core import op_log
+
+            op_log.mark_committed(op_id)
+            log.info("gc apply op #%s committed", op_id)
+    except Exception as e:
+        if op_id is not None:
+            from backupme.core import op_log
+
+            op_log.mark_failed(op_id, str(e))
+        raise
     return result

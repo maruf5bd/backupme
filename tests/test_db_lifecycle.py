@@ -115,6 +115,69 @@ def test_purge_keeps_rows_inside_grace(env, backends):
     assert execute("SELECT COUNT(*) FROM files").fetchone()[0] >= 2
 
 
+# ---------------------------------------------------------------------------
+# P1-4: hard purge is destructive and must leave an op_log audit row
+# ---------------------------------------------------------------------------
+
+def _purge_ops():
+    return execute("SELECT * FROM op_log WHERE op_type = 'hard_purge'").fetchall()
+
+
+def test_purge_writes_committed_op_log(env, backends):
+    _ingest_two_files(env, backends)
+
+    # Nothing exported yet -> nothing eligible -> no op_log entry (no-op run).
+    _soft_delete_all_past_grace()
+    before = lc.hard_purge_versions(grace_days=14)
+    assert before["purged"] == 0
+    assert before["op_log_id"] is None
+    assert _purge_ops() == []
+
+    export = lc.cold_export_to_parquet()
+    assert export["status"] == "ok"
+    result = lc.hard_purge_versions(grace_days=14)
+    assert result["purged"] >= 2
+
+    ops = _purge_ops()
+    assert len(ops) == 1
+    row = ops[0]
+    assert row["status"] == "committed"
+    assert row["idempotency_key"].startswith("hard_purge:")
+    assert row["id"] == result["op_log_id"]
+    assert row["started_at"] is not None
+    assert row["completed_at"] is not None
+    target = json.loads(row["target_json"])
+    assert target["planned"] == result["purged"]
+    assert target["grace_days"] == 14
+
+    # Second purge with nothing left -> still exactly one entry.
+    again = lc.hard_purge_versions(grace_days=14)
+    assert again["purged"] == 0
+    assert again["op_log_id"] is None
+    assert len(_purge_ops()) == 1
+
+
+def test_purge_marks_op_log_failed_on_error(env, backends, monkeypatch):
+    from backupme.core import dedup as dedup_mod
+    _ingest_two_files(env, backends)
+    lc.cold_export_to_parquet()
+    _soft_delete_all_past_grace()
+
+    def exploding_unref(blob_id):
+        raise RuntimeError("unref exploded")
+
+    monkeypatch.setattr(dedup_mod, "unref_blob", exploding_unref)
+    with pytest.raises(RuntimeError, match="unref exploded"):
+        lc.hard_purge_versions(grace_days=14)
+
+    ops = _purge_ops()
+    assert len(ops) == 1
+    assert ops[0]["status"] == "failed"
+    assert "unref exploded" in ops[0]["last_error"]
+    # The purge aborted: no files row was hard-deleted.
+    assert execute("SELECT COUNT(*) FROM files").fetchone()[0] >= 2
+
+
 def test_duckdb_history_query_resolves_members(env, backends):
     pytest.importorskip("duckdb")
     r1, _ = _ingest_two_files(env, backends)

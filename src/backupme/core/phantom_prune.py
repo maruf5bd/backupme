@@ -189,8 +189,9 @@ def apply_prune(backend, config, candidates=None, batch_size: int = 500,
     the object must still be missing, the row must still exist, and the
     blob must still be covered by another blob_storage row. op_log gets one
     ``prune_phantom_rows`` entry (idempotency key derived from backend +
-    exact row set) appended before the first delete and marked committed
-    after the last batch; a no-op run (nothing to delete) writes no entry.
+    exact row set) appended before the first delete, marked committed after
+    the last batch and failed if the batch loop raises unexpectedly; a no-op
+    run (nothing to delete) writes no entry.
     """
     started = time.monotonic()
     batch_size = max(1, int(batch_size))
@@ -312,23 +313,30 @@ def apply_prune(backend, config, candidates=None, batch_size: int = 500,
     report["op_log_id"] = op_id
 
     total = len(safe)
-    for start in range(0, total, batch_size):
-        batch = safe[start:start + batch_size]
-        for blob_id, path in batch:
-            try:
-                cur = execute(
-                    "DELETE FROM blob_storage "
-                    "WHERE backend_name = ? AND blob_id = ? AND storage_path = ?",
-                    (backend_name, blob_id, path),
-                )
-                if cur.rowcount and cur.rowcount > 0:
-                    report["deleted"] += cur.rowcount
-            except Exception as e:
-                report["errors"].append(f"{path}: delete failed: {type(e).__name__}: {e}")
-        commit()
-        report["batches"] += 1
-        if progress_cb is not None:
-            progress_cb(batch[-1][0], min(start + batch_size, total), total)
+    try:
+        for start in range(0, total, batch_size):
+            batch = safe[start:start + batch_size]
+            for blob_id, path in batch:
+                try:
+                    cur = execute(
+                        "DELETE FROM blob_storage "
+                        "WHERE backend_name = ? AND blob_id = ? AND storage_path = ?",
+                        (backend_name, blob_id, path),
+                    )
+                    if cur.rowcount and cur.rowcount > 0:
+                        report["deleted"] += cur.rowcount
+                except Exception as e:
+                    report["errors"].append(f"{path}: delete failed: {type(e).__name__}: {e}")
+            commit()
+            report["batches"] += 1
+            if progress_cb is not None:
+                progress_cb(batch[-1][0], min(start + batch_size, total), total)
+    except Exception as e:
+        # An unexpected failure (DB error, storage hiccup) must leave the
+        # op_log row in 'failed', not a dangling 'pending' (P1-4 parity with
+        # db_reconcile). Per-row delete failures above stay non-fatal.
+        op_log.mark_failed(op_id, str(e))
+        raise
 
     op_log.mark_committed(op_id)
     if report["errors"]:

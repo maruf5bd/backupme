@@ -251,6 +251,48 @@ def test_apply_deletes_only_safe_rows(env, backends):
     assert _tree_snapshot(bk) == before_tree
 
 
+def test_apply_op_log_key_format_and_failed_transition(env, backends, monkeypatch):
+    """P1-4 parity: the idempotency key encodes backend + row-set digest, and
+    a batch loop that fails unexpectedly must move the op_log row to 'failed'
+    (never leave a dangling 'pending')."""
+    import backupme.core.phantom_prune as pp
+
+    bk, _s = _seed(env, backends)
+    out = apply_prune(bk, _load_cfg())
+    assert out["deleted"] == 2
+    ops = execute(
+        "SELECT * FROM op_log WHERE op_type = 'prune_phantom_rows' ORDER BY id"
+    ).fetchall()
+    assert len(ops) == 1
+    assert ops[0]["idempotency_key"].startswith(f"prune_phantom_rows:{bk.name}:")
+
+    # Seed two fresh coverable phantoms (sibling rows on second_local), then
+    # make the batch commit explode: the error must propagate AND the op_log
+    # row must end 'failed' with the error recorded.
+    fx = hashlib.sha256(b"phantom-fail-x").hexdigest()
+    fy = hashlib.sha256(b"phantom-fail-y").hexdigest()
+    for tail in (fx, fy):
+        _insert_bogus_row(tail, "test_local",
+                          f"objects/{tail[:2]}/{tail[2:4]}/{tail}.zstd")
+        _insert_bogus_row(tail, "second_local",
+                          f"objects/{tail[:2]}/{tail[2:4]}/{tail}.zstd")
+
+    def exploding_commit():
+        raise RuntimeError("commit exploded")
+
+    monkeypatch.setattr(pp, "commit", exploding_commit)
+    with pytest.raises(RuntimeError, match="commit exploded"):
+        apply_prune(bk, _load_cfg())
+
+    rows = execute(
+        "SELECT status, last_error FROM op_log WHERE op_type = 'prune_phantom_rows' "
+        "ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[1]["status"] == "failed"
+    assert "commit exploded" in rows[1]["last_error"]
+
+
 # ---------------------------------------------------------------------------
 # (e) '@' member rows are never candidates and never pruned
 # ---------------------------------------------------------------------------

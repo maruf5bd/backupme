@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from backupme.core.gc import find_orphans, run_gc
 from tests.helpers import backup_bytes, restore_bytes
 
@@ -88,3 +92,88 @@ def test_gc_skips_entries_without_mtime(env, backends):
     backup_bytes(env, "nomtime.txt", b"nm " * 100, backends)
     found = find_orphans([NoMtimeBackend()])
     assert found["test_local"] == []
+
+
+# ---------------------------------------------------------------------------
+# P1-4: `gc --apply` is destructive and must leave an op_log audit row
+# ---------------------------------------------------------------------------
+
+def _gc_ops():
+    from backupme.core.database import execute
+    return execute("SELECT * FROM op_log WHERE op_type = 'gc'").fetchall()
+
+
+def _seed_one_orphan(env):
+    storage = env.parent / "storage"
+    orphan = storage / "objects" / "zz" / "yy" / "orphan-oplog"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_bytes(b"junk")
+    return orphan
+
+
+def test_gc_dry_run_writes_no_op_log(env, backends):
+    backup_bytes(env, "oplog-dry.txt", b"oplog " * 100, backends)
+    _seed_one_orphan(env)
+    run_gc(backends, apply=False, min_age_seconds=0)
+    assert _gc_ops() == []
+
+
+def test_gc_apply_writes_committed_op_log(env, backends):
+    backup_bytes(env, "oplog.txt", b"oplog " * 100, backends)
+    orphan = _seed_one_orphan(env)
+
+    out = run_gc(backends, apply=True, min_age_seconds=0)
+    assert out["test_local"]["deleted"] == 1
+    assert not orphan.exists()
+
+    ops = _gc_ops()
+    assert len(ops) == 1
+    row = ops[0]
+    assert row["status"] == "committed"
+    assert row["idempotency_key"].startswith("gc:")
+    assert row["started_at"] is not None
+    assert row["completed_at"] is not None
+    target = json.loads(row["target_json"])
+    assert target["planned"] == {"test_local": 1}
+
+    # A follow-up apply with nothing orphaned writes no new entry.
+    run_gc(backends, apply=True, min_age_seconds=0)
+    assert len(_gc_ops()) == 1
+
+
+def test_gc_apply_per_file_delete_failure_stays_committed(env, backends, monkeypatch):
+    """A single object that refuses to be deleted is logged, counted, and the
+    op still commits (mirror of phantom_prune's partial semantics)."""
+    backup_bytes(env, "oplog-partial.txt", b"oplog " * 100, backends)
+    _seed_one_orphan(env)
+
+    def refuses(path):
+        raise RuntimeError("permission denied")
+
+    monkeypatch.setattr(backends[0], "delete", refuses)
+    out = run_gc(backends, apply=True, min_age_seconds=0)
+    assert out["test_local"]["deleted"] == 0
+
+    ops = _gc_ops()
+    assert len(ops) == 1
+    assert ops[0]["status"] == "committed"
+
+
+def test_gc_apply_marks_op_log_failed_on_error(env, backends, monkeypatch):
+    """If the delete phase blows up outside the per-file guard, the op_log row
+    must transition to 'failed' and the error must propagate."""
+    from backupme.core import op_log as op_log_mod
+    backup_bytes(env, "oplog-fail.txt", b"oplog " * 100, backends)
+    _seed_one_orphan(env)
+
+    def broken_mark_committed(op_id):
+        raise RuntimeError("bookkeeping exploded")
+
+    monkeypatch.setattr(op_log_mod, "mark_committed", broken_mark_committed)
+    with pytest.raises(RuntimeError, match="bookkeeping exploded"):
+        run_gc(backends, apply=True, min_age_seconds=0)
+
+    ops = _gc_ops()
+    assert len(ops) == 1
+    assert ops[0]["status"] == "failed"
+    assert "bookkeeping exploded" in ops[0]["last_error"]
