@@ -29,7 +29,7 @@ Contracts under test here:
   the pages no longer touch backends on the request path (config-only
   listing; the backends page fills via /api/backends/status from JS).
 - GET /api/status: response shape unchanged (pinned by
-  tests/qa1_web_sweep.py) but per-backend rows come from the shared TTL
+  tests/test_test_qa1_web_sweep.py) but per-backend rows come from the shared TTL
   cache — within the TTL it does not re-probe.
 """
 import gc
@@ -517,7 +517,7 @@ def probe_counter(monkeypatch):
 
 
 def test_api_status_shape_unchanged(client, env, backends):
-    """The pinned /api/status contract (tests/qa1_web_sweep.py
+    """The pinned /api/status contract (tests/test_test_qa1_web_sweep.py
     test_api_status_shape): same keys, per-backend rows still carry
     name/type/connected/stored_bytes."""
     result = _upload(env, backends, "seed/status_seed.txt", b"status shape seed")

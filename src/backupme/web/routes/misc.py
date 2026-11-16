@@ -34,7 +34,7 @@ def register(app, ctx):
     async def api_status():
         """Dashboard poll payload (Phase C perf A2).
 
-        Shape is unchanged (pinned by tests/qa1_web_sweep.py and consumed by
+        Shape is unchanged (pinned by tests/test_test_qa1_web_sweep.py and consumed by
         dashboard.html + files.html): {total_files, blob_count, stored_bytes,
         dedup_ratio, generation, backends: [{name, type, connected,
         stored_bytes}]}. What changed is where the numbers come from — the

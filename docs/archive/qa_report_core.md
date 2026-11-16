@@ -4,7 +4,7 @@ Scope: `backupme/core/` + `backupme/backends/`, black-box through the public
 APIs. Date: 2026-11-07. All work in English per AGENTS.md.
 
 Deliverables:
-- `tests/qa3_core_qa.py` — 37 new adversarial/integration tests (new file only; no existing test or source file modified).
+- `tests/test_test_qa3_core_qa.py` — 37 new adversarial/integration tests (new file only; no existing test or source file modified).
 - `qa3_fullsuite_out.txt` — full-suite baseline.
 - `qa3_run_final.txt` — final recorded run of the qa3 file.
 - This report.
@@ -37,12 +37,12 @@ Command: `python -m pytest tests/ -q --basetemp=test_tmp_backend/qa3full`
 
 ## 2. Defects found (each verified by at least two runs)
 
-All four are pinned in `tests/qa3_core_qa.py` with
+All four are pinned in `tests/test_test_qa3_core_qa.py` with
 `@pytest.mark.xfail(reason="qa defect N", strict=False)` so the suite stays exit 0.
 
 ### qa defect 1 — P1: 0-byte files are accepted but can never be restored
 - Area: `core/uploader.py` (`_flush_batch`) + `core/downloader.py` (`_extract_from_bundle`).
-- Reproduction: `python -m pytest tests/qa3_core_qa.py::test_empty_file_roundtrip`
+- Reproduction: `python -m pytest tests/test_test_qa3_core_qa.py::test_empty_file_roundtrip`
   (upload an empty file with the real pipeline; upload reports `status=ok`; restore raises).
 - Evidence: the uploader stores the empty member as a byte range with length 0
   (`bundle/<tar>@52:0`); the downloader rejects any range with `length <= 0`
@@ -57,9 +57,9 @@ All four are pinned in `tests/qa3_core_qa.py` with
 ### qa defect 2 — P1 (highest impact): recompress_blobs makes every batched file unrestorable
 - Area: `core/compress.py` `recompress_blobs` (B12 migration).
 - Reproduction:
-  `python -m pytest tests/qa3_core_qa.py::test_recompress_bundle_member_restore_breaks`
+  `python -m pytest tests/test_test_qa3_core_qa.py::test_recompress_bundle_member_restore_breaks`
   (one small file → bundle; run `recompress_blobs(algo="zstd", level=1)`; restore fails)
-  and `tests/qa3_core_qa.py::test_recompress_counters_and_bundle_member_survival`
+  and `tests/test_test_qa3_core_qa.py::test_recompress_counters_and_bundle_member_survival`
   (counters on a mixed corpus: `recompressed=2, failed=1, skipped_encrypted=0`).
 - Evidence: recompressing the parent bundle writes a NEW object at
   `<bundle>.zstd.recompress_<ts>`, inserts a new blob_storage row for the parent,
@@ -78,7 +78,7 @@ All four are pinned in `tests/qa3_core_qa.py` with
 
 ### qa defect 3 — P1: recompress_blobs is a silent no-op in a fresh CLI process
 - Area: `core/compress.py:174` (`get_backend(row["backend_name"], {})`) + `cli/encrypt_cmd.py` `recompress`.
-- Reproduction: `python -m pytest tests/qa3_core_qa.py::test_recompress_cold_backend_cache_silent_noop`.
+- Reproduction: `python -m pytest tests/test_test_qa3_core_qa.py::test_recompress_cold_backend_cache_silent_noop`.
 - Evidence: with the backend instance cache cleared (fresh process), the result is
   `{'recompressed': 0, 'total_scanned': 4, 'skipped_encrypted': 0, 'failed': 0}` —
   `get_backend(name, {})` can never resolve a backend (empty config map), every
@@ -89,7 +89,7 @@ All four are pinned in `tests/qa3_core_qa.py` with
 
 ### qa defect 4 — P1: ingest commits an archive whose members ALL failed to upload
 - Area: `core/cpanel_ingest.py` (`ingest_archive`, error_count at :392, `mark_committed` at :454).
-- Reproduction: `python -m pytest tests/qa3_core_qa.py::test_ingest_all_members_failed_still_marks_committed`
+- Reproduction: `python -m pytest tests/test_test_qa3_core_qa.py::test_ingest_all_members_failed_still_marks_committed`
   (cpmove archive ingested against a backend that rejects every upload).
 - Evidence: result is `status=ok` (with `errors=N`), the op_log row is marked
   `committed` with idempotency key `cpanel_ingest:<sha256>`, and the archive is
@@ -118,7 +118,7 @@ All four are pinned in `tests/qa3_core_qa.py` with
   in-loop `if fid > watermark: skipped += 1` branch can never fire — the result
   always reports `skipped: 0`, and rows above the watermark are silently
   unreported rather than accounted. Surfaced by
-  `tests/qa3_core_qa.py::test_hard_purge_grace_and_watermark` (a backdated,
+  `tests/test_test_qa3_core_qa.py::test_hard_purge_grace_and_watermark` (a backdated,
   soft-deleted row above the watermark is correctly preserved but not counted).
 
 ### Live observation — dashboard unresponsive (P2, environment)
@@ -133,7 +133,7 @@ All four are pinned in `tests/qa3_core_qa.py` with
 
 ## 3. Coverage map
 
-### New coverage added by tests/qa3_core_qa.py (37 tests, 33 pass + 4 xfail)
+### New coverage added by tests/test_test_qa3_core_qa.py (37 tests, 33 pass + 4 xfail)
 - Uploader: bundle batching + member/parent refcount arithmetic; cross-file dedup
   donor refcounts (same content under different names); same-content duplicates
   inside ONE batch (`seen_members` semantics); D9 changed-re-upload consistency

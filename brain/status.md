@@ -336,7 +336,7 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   implement.md, old HTML renders, the old config template, the 3 QA reports) archived
   to `docs/archive/`; `MANUAL.md` + `BACKLOG.md` moved into `docs/` with every live
   reference rewired (AGENTS.md, brain/README.md, the backend CLI help comment,
-  tests/qa2_cli_sweep.py, docs/PROJECT.md). New **`docs/PROJECT.md`** — comprehensive
+  tests/test_test_qa2_cli_sweep.py, docs/PROJECT.md). New **`docs/PROJECT.md`** — comprehensive
   project documentation (features, pipeline, architecture map, safety model, run
   commands, repo layout, current status, standing decisions). Root now holds only
   entry points, top-level docs, and gitignored runtime data.

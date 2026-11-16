@@ -2,11 +2,11 @@
 
 Scope: every page and endpoint registered by `backupme/web/routes/*` (10 modules,
 106 routes — see `qa1_routes.txt`), tested black-box via FastAPI TestClient in
-isolated fixture envs (`tests/qa1_web_sweep.py`) plus read-only GET probes of the
+isolated fixture envs (`tests/test_test_qa1_web_sweep.py`) plus read-only GET probes of the
 live dashboard at `http://127.0.0.1:8081` (`qa1_live_results.txt`).
 
 Deliverables:
-- `tests/qa1_web_sweep.py` — 132 tests, **0 failed, 0 errored, 9 xfailed**
+- `tests/test_test_qa1_web_sweep.py` — 132 tests, **0 failed, 0 errored, 9 xfailed**
   (each xfail documents a real defect below, `strict=False`, reason carries the
   defect id). Four consecutive full runs green.
 - `qa1_routes.txt` — full method+path inventory (106 routes) built from a live
@@ -40,7 +40,7 @@ below are correctness/availability degradations.
 - Repro: seed rows `docs/alpha.txt`, `docs/beta.txt` (forward slashes) under
   `source_root="QA1"`; `POST /api/restore/all {"source_root": "QA1",
   "dest_path": ..., "path": "docs"}` → `{"restoring": 0}` (expected 2).
-- Evidence: `tests/qa1_web_sweep.py::test_restore_all_subfolder_filter` (xfail
+- Evidence: `tests/test_test_qa1_web_sweep.py::test_restore_all_subfolder_filter` (xfail
   `qa defect D7`). Verified twice: code read + observed response.
 
 ### D8 — restore worker escapes the destination for `/abs/x`-style poisoned rows on Windows
@@ -51,7 +51,7 @@ below are correctness/availability degradations.
 - Repro: insert row `relative_path="/abs/evil3.txt"`, restore its source root →
   the worker created `J:\abs\` (empty dir, download then failed) outside the
   destination. Test cleaned the stray directory afterwards.
-- Evidence: `tests/qa1_web_sweep.py::test_restore_all_guard_covers_posix_absolute_paths`
+- Evidence: `tests/test_test_qa1_web_sweep.py::test_restore_all_guard_covers_posix_absolute_paths`
   (xfail `qa defect D8`). Verified twice: code read + observed stray dir.
   Defense-in-depth fix: reject `p.parts[0] == p.root` / paths whose anchor is
   not a prefix of `dest.anchor`, or reuse `_safe_backend_join`-style filtering.
@@ -65,7 +65,7 @@ below are correctness/availability degradations.
 - Repro: restore a source root containing a chunk-less row → final status
   `{"done": 1, "errors": 0}`; the UI/SSE reports a successful restore of a file
   that was never written.
-- Evidence: `tests/qa1_web_sweep.py::test_restore_worker_counts_broken_rows_as_errors`
+- Evidence: `tests/test_test_qa1_web_sweep.py::test_restore_worker_counts_broken_rows_as_errors`
   (xfail `qa defect D9`); observed `errors=2, done=3` for 3 poisoned rows in
   the guard test. Verified twice.
 
@@ -77,7 +77,7 @@ below are correctness/availability degradations.
 - Repro: upload with `backend=no_such_backend` → HTTP 200 with
   `{"status":"error","error":"all backends failed"}` while `/api/logs?op=upload`
   shows the row `status=completed`, `target_json` `result=success`.
-- Evidence: `tests/qa1_web_sweep.py::test_upload_failure_is_logged_as_failed`
+- Evidence: `tests/test_test_qa1_web_sweep.py::test_upload_failure_is_logged_as_failed`
   (xfail `qa defect D13`) + probe (`qa1_upload_probe.py`). Verified twice.
   The /logs page and /api/report op_counters therefore overstate success.
 
@@ -266,7 +266,7 @@ render correctly once served.
 
 ## Test infrastructure notes
 
-- `tests/qa1_web_sweep.py` uses only the shared `env`/`backends` fixtures, a
+- `tests/test_test_qa1_web_sweep.py` uses only the shared `env`/`backends` fixtures, a
   `TestClient(raise_server_exceptions=False)` (5xx regressions surface as
   statuses), and `tests.helpers.backup_bytes` for real pipeline uploads.
 - An autouse `gc.collect()` finalizer (`_release_stray_db_locks`) mitigates D14

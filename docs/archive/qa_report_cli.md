@@ -16,7 +16,7 @@ plus failing-then-xfail test runs in `qa2_run*.txt`).
 
 - Commands inventoried: 40 leaf commands in 5 groups + 15 top-level (see `qa2_cli_inventory.txt`)
 - `--help` sweep: 40/40 exit 0 with documented options
-- Tests: `tests/qa2_cli_sweep.py` — **83 tests: 75 passed, 8 xfailed** (the 8
+- Tests: `tests/test_test_qa2_cli_sweep.py` — **83 tests: 75 passed, 8 xfailed** (the 8
   xfail entries ARE the defects, marked `@pytest.mark.xfail(strict=False)`), exit 0
 - Defects: **8 verified functional defects — 1 P0, 7 P1** — plus 8 P2
   observations and extensive MANUAL.md §10 drift (12 phantom commands/options,
@@ -214,7 +214,7 @@ cold-export/purge/history`, `backend rescan`.
 
 ## Deliverables and how to run
 
-- `tests/qa2_cli_sweep.py` — `python -m pytest tests/qa2_cli_sweep.py -q --basetemp=test_tmp_backend/qa2`
+- `tests/test_test_qa2_cli_sweep.py` — `python -m pytest tests/test_test_qa2_cli_sweep.py -q --basetemp=test_tmp_backend/qa2`
   (83 tests: 75 pass, 8 xfail = documented defects; exit 0). Use a private
   `--basetemp`: the default shared `test_tmp_backend/pytest` collides with
   concurrently-running agents (PermissionError on locked DBs from other sessions).

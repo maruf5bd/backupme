@@ -5,7 +5,7 @@ pattern), the /api/archives list + detail shape with pagination, the
 confirm gate on /api/archives/restore (exactly-true semantics), a full
 sha-matched restore through the endpoint, and the unsafe-dest_path guard.
 Auth-gate compatibility is deliberately out of scope (token tests live in
-tests/test_web_token_config.py / qa1_web_sweep.py).
+tests/test_web_token_config.py / test_qa1_web_sweep.py).
 """
 import hashlib
 import io

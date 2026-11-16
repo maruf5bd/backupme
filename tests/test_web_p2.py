@@ -2,7 +2,7 @@
 (/api/files hash search mode), D17 (content_text populated by the real
 pipeline), and SSE pre-first-op termination.
 
-Companion to tests/qa1_web_sweep.py — same isolated env/backends fixtures
+Companion to tests/test_test_qa1_web_sweep.py — same isolated env/backends fixtures
 and TestClient(raise_server_exceptions=False) black-box pattern. Everything
 runs against scratch DBs only (never the live database).
 """
@@ -20,7 +20,7 @@ from backupme.core.database import execute
 
 
 # ---------------------------------------------------------------------------
-# Helpers / fixtures (same pattern as tests/qa1_web_sweep.py)
+# Helpers / fixtures (same pattern as tests/test_test_qa1_web_sweep.py)
 # ---------------------------------------------------------------------------
 
 def _drain_sse(client: TestClient, path: str) -> list[str]:
