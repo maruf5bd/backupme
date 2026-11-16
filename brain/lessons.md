@@ -77,3 +77,27 @@
   known-good source bytes (`pt.find(src[:256])`), then decode the header around it —
   reading structure off the first bytes alone sent the investigation down a "pointer
   object" path that was half wrong.
+
+## Release / CI (2026-11-16)
+
+- **A green local suite does not mean a green clean install.** Six consecutive CI
+  failures each exposed something the dev box hid by accident: an undeclared runtime dep
+  (`python-multipart`, `py7zr`), a hard-dep with no py3.13 wheel (`smbclient`), an
+  untested-paramiko upper bound, dev/test deps not in an extra, and a test suite that
+  relied on a basetemp parent that only existed locally. Rule: any new
+  dependency/tool/clean-checkout assumption must be proven on a fresh runner, not just
+  on this machine.
+- **Treat `smbclient`-style no-dist deps as optional extras, never hard deps.** The SMB
+  backend lazy-imports it and degrades gracefully; the extra carries the install intent
+  without breaking `pip install .`.
+- **`--help` is a side-effect-free contract.** A group callback that initializes the DB
+  before the command body means `backupme db --help` scatters a `backupme.db` in CWD.
+  Help-only runs must skip all disk/config side effects.
+- **FastAPI form endpoints need `python-multipart` declared.** It is not pulled in by
+  FastAPI itself; a clean install hits `RuntimeError: Form data requires python-multipart`.
+- **GitHub Actions green run order matters**: install extra deps (`dev`, feature extras)
+  and any external binaries (`rclone`) in the same workflow the tests need, or the suite
+  errors at collection rather than running.
+- **Pinned-release value**: a tagged `v2.0.0` whose wheel builds cleanly on CI gives a
+  reproducible artifact; the version string is single-sourced from
+  `backupme.__version__` and surfaced via `backupme --version`.

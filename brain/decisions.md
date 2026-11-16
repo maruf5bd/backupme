@@ -58,8 +58,28 @@
 - **Repacked-archive caveat accepted** — restores rebuild archives from DB data with the
   same files/structure but non-identical compression bytes; "keep original too" stays a
   future exception flag, default OFF.
-- **Phase 3 re-ingest authorized in principle** — the 20 Softaculous .tar.gz archives on
-  `k backupme-data` (stored as whole blobs, 1.0% saved) will be re-processed through the
-  extractor once Phase 1 lands; the whole-blob rows get unref'd only after members
-  verify. Actual deletion of displaced blobs still goes through the normal gc/purge
-  approval gates.
+## 2026-11-16
+
+- **GitHub Actions CI adopted as the release gate** — every push runs windows-latest:
+  editable install → CLI smoke → wheel build + dashboard-asset assert → full pytest
+  (710 passed, 1 skipped, first green run `429e8af`). Rationale: a real release
+  pipeline is the professional baseline the pro-app audit named; CI exposed five
+  packaging/clean-runner assumptions a local dev box was hiding (see status update 28).
+- **`smbclient` rides as an optional `smb` extra** — it publishes no Python 3.13
+  distribution on PyPI, so it cannot be a hard dependency; the SMB backend lazy-imports
+  it and degrades gracefully when absent. `paramiko` pinned to the tested major (`<5`).
+- **`python-multipart` is now a declared hard dependency** — FastAPI's form-upload
+  endpoint raises without it on a clean install.
+- **`backupme init` is the canonical first-run path** — scaffolds `config.yaml` as a
+  byte-copy of `config.example.yaml`, initializes the DB, prints next steps, and never
+  overwrites an existing config. First-run no longer silently succeeds on built-in
+  defaults while backing up nothing.
+- **CLI destructive ops are op_log-audited** (`gc --apply`, `db purge`,
+  `prune-phantom-rows --apply`) at the core layer, mirroring the dashboard — so the
+  scheduler's purge/gc ticks are covered too.
+- **`--help` must never touch disk** — the group callback skips BACKUPME_CONFIG/config/DB
+  side effects when only help is requested; `backupme db --help` no longer scatters a
+  `backupme.db` in CWD.
+- **Test suite must run on a fresh clone** — `tests/conftest.py` creates the pinned
+  basetemp parent; a relative basetemp with no parent errors WinError 3 on a clean
+  checkout (CI caught it).
