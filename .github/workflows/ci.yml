@@ -17,6 +17,8 @@ jobs:
         run: pip install -e ".[dev,7z]"
       - name: Install rclone binary (rclone backend tests drive the real CLI)
         run: choco install rclone -y --no-progress
+      - name: Lint (ruff correctness gate)
+        run: ruff check src/backupme tests
       - name: CLI smoke
         run: backupme --help
       - name: Build wheel (validates pyproject packaging)

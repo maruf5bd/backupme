@@ -44,6 +44,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "build>=1.2",
+    "ruff>=0.8",
 ]
 # smbclient publishes no Python 3.13 distribution; the SMB backend lazy-imports
 # it and degrades gracefully when absent, so it rides as an extra.
@@ -77,3 +78,21 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = { attr = "backupme.__version__" }
+
+[tool.ruff]
+src = ["src"]
+target-version = "py313"
+extend-exclude = ["build", "dist", "diagnostics", "scripts", "test_tmp_backend"]
+
+[tool.ruff.lint]
+# Baseline: catch real correctness errors and regressions without blocking on
+# the pre-existing style debt (tracked in the pro-app audit for follow-up).
+# E9: syntax/io errors, F63: invalid placeholders, F7: syntax, F82: undefined
+# names (e.g. F821). Broader rules (imports, style, B/UP/SIM) are follow-ups.
+select = ["E9", "F63", "F7", "F82"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and one-off diagnostics intentionally use patterns the gate allows to
+# relax when the gate is widened later; keep empty for the minimal gate.
+"tests/**" = []

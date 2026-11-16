@@ -264,8 +264,10 @@ def backend_test(ctx, name, as_json):
         if not ok:
             raise SystemExit(1)
     except Exception as e:
-        emit({"name": name, "connected": False, "error": str(e)}, as_json=as_json,
-             human=lambda d: click.echo(f"Connecting to {name}... ERROR: {e}"))
+        err = str(e)
+        emit({"name": name, "connected": False, "error": err}, as_json=as_json,
+             human=lambda d, err=err: click.echo(f"Connecting to {name}... ERROR: {err}"))
+        raise SystemExit(1)
 
 
 def _test_backend(entry: dict, btype: str):
