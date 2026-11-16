@@ -574,3 +574,24 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   windows-latest: editable install -> CLI smoke -> wheel build -> wheel-assets
   assert -> full pytest). Previous Actions history was only a dependency-graph
   blip from May.
+
+## 2026-11-16 (update 28)
+
+- **CI GREEN (v2.0.0)**: run [43782789529](https://github.com/maruf5bd/backupme/actions/runs/43782789529)
+  on `429e8af` (master, windows-latest) succeeded in 3m11s — first fully green CI
+  run for the repo. Pipeline: editable install → CLI smoke → wheel build +
+  dashboard-asset assert → full pytest (710 passed, 1 skipped).
+- **CI hardening from a fresh-runner iteration** (6 consecutive pushes; failures
+  exposed packaging/tooling assumptions a local dev machine had been hiding):
+  - `74577eb` — `smbclient` moved to optional `smb` extra (no Python 3.13 wheel
+    on PyPI) and `paramiko` pinned to the tested major `<5`.
+  - `4ac92be` — CI installs the `dev` extra so `pytest` exists on the runner.
+  - `09917c0` — `tests/conftest.py` now creates the pinned `test_tmp_backend/`
+    basetemp parent so the suite runs on a fresh clone (WinError 3 on clean checkout).
+  - `f6fe71f` — `python-multipart` declared (FastAPI form-upload endpoint needed
+    it on a clean install).
+  - `429e8af` — CI installs the real `rclone` binary and the `7z` extra (rclone
+    backend and archive-detection tests drive real tools).
+- Tree at green tip: clean tracked state; only 7 untracked ops scripts under
+  `scripts/` remain (commit-vs-archive decision pending). Exposed GitHub PAT
+  still not rotated by user (stripped from `.git/config` earlier).
