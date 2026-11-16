@@ -22,21 +22,13 @@ _CHECKPOINT_INTERVAL = 50
 
 
 def _load_checkpoint() -> dict:
-    p = Path(CHECKPOINT_FILE)
-    if p.exists():
-        import json
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            pass
-    return {"completed": [], "current": 0}
+    return state_mod.read_json_checkpoint(
+        CHECKPOINT_FILE, lambda: {"completed": [], "current": 0}
+    )
 
 
 def _save_checkpoint(state: dict):
-    import json
-    tmp = Path(CHECKPOINT_FILE + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(CHECKPOINT_FILE)
+    state_mod.write_json_checkpoint(CHECKPOINT_FILE, state)
 
 
 def _is_already_indexed(relative_path: str, source_root: str) -> bool:

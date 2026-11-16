@@ -1,7 +1,19 @@
+"""Checkpoint/state helpers.
+
+This module hosts two related but distinct mechanisms:
+- ``save_checkpoint`` / ``load_state``: the global rolling state file
+  (``backupme.state.json``) used by higher-level ops to record progress.
+- ``read_json_checkpoint`` / ``write_json_checkpoint``: resilient per-operation
+  checkpoint files (converter, rebalance, register, re-back) with atomic writes.
+
+Both file-based checkpoint families share the same fault-tolerance rule: a
+missing or corrupt file is treated as "start fresh", and writes are atomic.
+"""
+
 import json
-import os
 import time
 from pathlib import Path
+from typing import Any, Callable
 
 
 STATE_FILE = Path("backupme.state.json")
@@ -33,6 +45,29 @@ def get_last_checkpoint() -> dict | None:
 def clear_state():
     if STATE_FILE.exists():
         STATE_FILE.unlink()
+
+
+def read_json_checkpoint(path: Path | str, default_factory: Callable[[], Any]) -> Any:
+    """Load a JSON checkpoint file, returning ``default_factory()`` on failure.
+
+    Resilient to missing, unreadable, or malformed files so per-operation
+    progress can resume from a known-good default.
+    """
+    p = Path(path)
+    if not p.exists():
+        return default_factory()
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return default_factory()
+
+
+def write_json_checkpoint(path: Path | str, data: Any, *, sort_keys: bool = False) -> None:
+    """Atomically write a JSON checkpoint file (tmp + replace)."""
+    p = Path(path)
+    tmp = p.with_suffix(p.suffix + ".tmp") if p.suffix else Path(str(p) + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=sort_keys), encoding="utf-8")
+    tmp.replace(p)
 
 
 def _load_raw() -> dict:

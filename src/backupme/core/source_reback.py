@@ -58,12 +58,15 @@ import json
 import time
 from pathlib import Path
 
+from backupme.core import state as state_mod
 from backupme.log import get_logger
 
-log = get_logger("source_reback")
+# --- data helpers ----------------------------------------------------------
 
 from backupme.core.database import execute
 from backupme.core import op_log
+
+log = get_logger("source_reback")
 
 _SAMPLE_CAP = 20
 _CHECKPOINT_NAME = "reback_checkpoint.json"
@@ -241,15 +244,12 @@ def _classify(row: dict, state_map: dict) -> tuple[str, dict]:
 
 
 def _load_checkpoint(path: Path) -> dict:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    data = state_mod.read_json_checkpoint(path, lambda: {"healed": {}, "skipped": {}})
+    if not isinstance(data, dict):
+        log.warning("unreadable checkpoint %s — starting fresh", path)
         return {"healed": {}, "skipped": {}}
-    except (json.JSONDecodeError, OSError, ValueError) as e:
-        log.warning("unreadable checkpoint %s — starting fresh: %s", path, e)
-        return {"healed": {}, "skipped": {}}
-    healed = data.get("healed") if isinstance(data, dict) else None
-    skipped = data.get("skipped") if isinstance(data, dict) else None
+    healed = data.get("healed")
+    skipped = data.get("skipped")
     if not isinstance(healed, dict) or not isinstance(skipped, dict):
         log.warning("malformed checkpoint %s — starting fresh", path)
         return {"healed": {}, "skipped": {}}
@@ -258,9 +258,7 @@ def _load_checkpoint(path: Path) -> dict:
 
 
 def _save_checkpoint(path: Path, ck: dict) -> None:
-    tmp = Path(str(path) + ".tmp")
-    tmp.write_text(json.dumps(ck, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    state_mod.write_json_checkpoint(path, ck, sort_keys=True)
 
 
 def _file_has_storage(file_id: int) -> bool:

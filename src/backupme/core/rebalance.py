@@ -8,15 +8,14 @@ are byte ranges inside their parent bundle blob — their storage_path is
 operates on top-level blobs only (content chunks, bundle parents, raw
 archives); copying a parent bundle carries all of its members.
 """
-import json
 from pathlib import Path
 
+from backupme.core import state as state_mod
+from backupme.core.database import commit, execute
+from backupme.core.flock import path_lock, safe_name
 from backupme.log import get_logger
 
 log = get_logger("rebalance")
-
-from backupme.core.database import execute, commit
-from backupme.core.flock import path_lock, safe_name
 
 _CHECKPOINT_EVERY = 100
 
@@ -61,12 +60,9 @@ def plan_rebalance(target_backend: str, source_filter: str | None = None) -> dic
 
 def _load_checkpoint(target: str) -> dict:
     ck = _checkpoint_file(target)
-    if not ck.exists():
-        return {"completed": [], "failed": []}
-    try:
-        data = json.loads(ck.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"completed": [], "failed": []}
+    data = state_mod.read_json_checkpoint(ck, lambda: {"completed": [], "failed": []})
+    if not isinstance(data, dict):
+        data = {"completed": [], "failed": []}
     data.setdefault("completed", [])
     data.setdefault("failed", [])
     return data
@@ -74,9 +70,7 @@ def _load_checkpoint(target: str) -> dict:
 
 def _save_checkpoint(target: str, data: dict) -> None:
     ck = _checkpoint_file(target)
-    tmp = ck.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(ck)
+    state_mod.write_json_checkpoint(ck, data)
 
 
 def rebalance_to(target_backend, backends: list, config,

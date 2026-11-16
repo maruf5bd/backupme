@@ -31,13 +31,13 @@ Safety rules:
   later lost their rows again.
 """
 import hashlib
-import json
 import shutil
 import tempfile
 import time
 from pathlib import Path
 
 from backupme.core import compress as compress_mod
+from backupme.core import state as state_mod
 from backupme.core.database import commit, execute
 from backupme.core.flock import path_lock, safe_name
 from backupme.log import get_logger
@@ -59,9 +59,9 @@ def _load_checkpoint(backend_name: str) -> list[str]:
     ck = _checkpoint_file(backend_name)
     if not ck.exists():
         return []
-    try:
-        data = json.loads(ck.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    data = state_mod.read_json_checkpoint(ck, dict)
+    if not data and ck.exists():
+        # read_json_checkpoint returns default on corrupt/unreadable files too.
         log.warning("register: unreadable checkpoint %s — starting fresh", ck)
         return []
     done = data.get("done", [])
@@ -70,9 +70,7 @@ def _load_checkpoint(backend_name: str) -> list[str]:
 
 def _save_checkpoint(backend_name: str, done: list[str]) -> None:
     ck = _checkpoint_file(backend_name)
-    tmp = ck.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"done": done[-_CHECKPOINT_KEEP:]}), encoding="utf-8")
-    tmp.replace(ck)
+    state_mod.write_json_checkpoint(ck, {"done": done[-_CHECKPOINT_KEEP:]})
 
 
 def planned_blobs(backend_name: str) -> list:
