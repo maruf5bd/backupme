@@ -9,6 +9,7 @@ argon2-cffi>=23.1
 zstandard>=0.22
 fastapi>=0.100
 uvicorn>=0.22
+python-multipart>=0.0.9
 jinja2>=3.1
 watchfiles>=0.19
 httpx>=0.24
