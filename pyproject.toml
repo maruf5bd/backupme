@@ -50,6 +50,10 @@ dev = [
 smb = [
     "smbclient>=0.5",
 ]
+# 7z archive extraction for the extract-first engine (guarded import).
+7z = [
+    "py7zr>=1.0",
+]
 
 [project.urls]
 Changelog = "https://github.com/maruf5bd/backupme/blob/master/CHANGELOG.md"

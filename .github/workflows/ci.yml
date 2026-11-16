@@ -13,8 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install package (editable, with dev test deps)
-        run: pip install -e ".[dev]"
+      - name: Install package (editable, with dev test deps + 7z engine)
+        run: pip install -e ".[dev,7z]"
+      - name: Install rclone binary (rclone backend tests drive the real CLI)
+        run: choco install rclone -y --no-progress
       - name: CLI smoke
         run: backupme --help
       - name: Build wheel (validates pyproject packaging)
