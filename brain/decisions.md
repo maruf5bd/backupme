@@ -83,3 +83,27 @@
 - **Test suite must run on a fresh clone** — `tests/conftest.py` creates the pinned
   basetemp parent; a relative basetemp with no parent errors WinError 3 on a clean
   checkout (CI caught it).
+
+## 2026-11-12
+
+- **hostraj Gdrive root repointed + Storage Box fill (owner-approved, executed)** — the
+  configured root moved from the near-empty `H:\Backupme` to the real store
+  `H:\New folder\backupme` (D14); storagebox config path `/` -> `backupme` subdir; the
+  phase-1 rclone copy landed 86.5 GiB on the box (64.2 GiB New-folder store + 22.0
+  local_disk + 0.3 K) in ~10 h at the ~3.17 MB/s uplink cap. Entry backfilled 2026-11-18 —
+  the decision had been recorded only in status.md update 18.
+- **All future Storage Box work goes through rclone** — paramiko parallel sessions are
+  refused after storms (8 and even 4 workers); the rclone connection pattern ran 10 h immune.
+
+## 2026-11-18
+
+- **Deep check with a 3-way background fan-out (owner-directed)** — the owner explicitly
+  raised concurrency to 3 for this run and the harness accepted all three agents. The
+  AGENTS.md max-2 default stands for future runs unless the owner says otherwise.
+- **Truth-register primacy** — `brain/defects.md` is the authoritative defect register;
+  AGENTS.md "Known broken" only summarizes it and must be updated in the same pass whenever
+  a defect opens/closes or a root/path changes (today's D14 contradiction fix).
+- **Owner approval scope today: brain + AGENTS.md fixes only.** Deferred pending approval:
+  finishing + committing the docstring sweep, fixing the 2026-11-18 core-review defects
+  (D19-D22) and the P3 hygiene batch, pushing the 3 unpushed commits (5865a9b, d05a64b,
+  4a270ee).

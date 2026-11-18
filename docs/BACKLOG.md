@@ -1,9 +1,11 @@
 # Improvement Backlog
 
 Generated 2026-11-05 from a full codebase scan (`diagnostics/codebase_scan.txt`).
-Status (2026-11-07): **B01-B16 ALL DONE; D1-D9 all closed.** The only remaining items
-are the standing user decisions (gc --apply, purge candidates, junk archives,
-password rotation) — see brain/status.md.
+Status (2026-11-18): **B01-B16 ALL DONE; D1-D13 closed.** Open: **D10** (Storage Box
+off-site gap — box filled 2026-11-12; phase-1 object registration pending owner go),
+**D14** (CRITICAL store depletion — root repointed, partially mitigated, residue
+unresolved), and the 2026-11-18 core-review wave **D19-D22** — see brain/defects.md.
+Remaining non-defect work is the standing user decisions — see brain/status.md.
 Tracks: **[F]** functionality, **[C]** codebase quality, **[W]** wiring.
 Priorities: **P0** = fix first (correctness), **P1** = quality, **P2** = features.
 Rule from AGENTS.md applies: what is broken gets fixed first; ignoring is not allowed.

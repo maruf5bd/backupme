@@ -101,3 +101,21 @@
 - **Pinned-release value**: a tagged `v2.0.0` whose wheel builds cleanly on CI gives a
   reproducible artifact; the version string is single-sourced from
   `backupme.__version__` and surfaced via `backupme --version`.
+
+## Truth registers (2026-11-18)
+
+- **Two truth registers WILL drift — AGENTS.md "Known broken" did, for 8 days.** It claimed
+  Gdrive resolved at `H:\Backupme` while defects.md D14 (open, CRITICAL) said the root moved
+  to `H:\New folder\backupme` amid a 124.8 GiB depletion. An agent obeying AGENTS.md could
+  have drained/repointed/gc-applied against the wrong store. Rule: defects.md is
+  authoritative; update the AGENTS.md paragraph in the same pass as any defect/root change,
+  and re-verify AGENTS.md claims against the register before acting on them.
+- **Bulk-edit generators must be quoting-safe, and jobs close only on a re-scan.** The
+  2026-11-16 docstring sweep died mid-job on an unescaped apostrophe in "backend's"
+  (add_doc_out3.txt, rc=1): 10 of 26 modules got docstrings while the success log made it
+  look complete. Insert text via repr()/triple-quoted raw templates, and close every
+  bulk-edit job by re-running the original missing-X scan instead of trusting the run log.
+- **A slow gate needs a liveness probe, not patience.** The 688-test local suite runs
+  ~20+ min while CI does it in ~3, so "no notification yet" is ambiguous between working
+  and hung. Check process liveness + output-file mtime + fixture-dir churn before assuming
+  either.

@@ -40,15 +40,20 @@
 
 ## Pending user decisions (do NOT proceed without approval)
 
+- Rotate the exposed GitHub PAT — stripped from .git/config 2026-11-16 (update 25), but the
+  token itself was never revoked; it lived in plaintext on disk.
 - Purge 7 SOURCE_GONE files that reference corrupt blobs (unrecoverable unless source reappears).
 - Purge 725 unfixable zero-storage-row files.
 - Purge 4 junk "archives" (a.zip, 2FA.7z, 2020-12-03 tar.gz, bitexchanger_v20.zip) — NOTE:
   2FA.7z vault copy is the LAST copy in existence (source deleted).
 - Rotate the Storage Box password (it appeared in plaintext in some gitignored diagnostics
   scripts; config.yaml is the single allowed home).
-- Approve `gc --apply` to delete 8,498 verified zero-reference remote orphans (28.22 GiB;
-  see 2026-11-05 update 2 below). **DONE 2026-11-10**: executed at the shrunken count of
-  785 orphans / 21.96 GiB after the consolidation waves emptied the drive — see update 17 below.
+- D14 follow-ups (update 18): identify the overnight mover / confirm emptying K was
+  intended; approve the box-registration pipeline (rclone copy-down 86.5 GiB + local
+  decompress-sha verify — plan ready).
+- Reclaim `restored_local_archives/` (~19 GB restore-verification scratch, update 19).
+- Resolved and removed 2026-11-10: `gc --apply` (executed at 785 orphans / 21.96 GiB —
+  update 17 below). List refreshed 2026-11-18 (update 29).
 
 ## Where things stand overall
 
@@ -315,7 +320,7 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   the walk to tolerate their absence loudly (it does log the skip — B09 compliant).
 
 
-## 2026-11-10 (update 17)
+## 2026-11-10 (update 17b)
 
 - **Box-fill planning uncovered D14 (CRITICAL): store depletion + wrong hostraj root.** The configured hostraj Gdrive root (H:\Backupme) is physically near-empty (23 files); the real store sits at H:\New folder\backupme (3,301 objects, 64.3 GiB, mostly bundle parents). Full physical audit: 75,956 of 111,923 referenced blobs have sources after counting legacy stores; 35,967 (124.8 GiB pt) do not. The owner restore campaign has no deletion code and audited only 4,062 deletes, so the bulk depletion is unexplained by any audited channel. Insurance exists: D:\restore-all-backupme holds 254,701 sha-verified restored files; 84,028 campaign restores failed. Rebuildable: 3,096 blobs byte-exact from the restored tree; ~22% of failed cohort re-backable from original sources. Full plan + numbers presented to owner 2026-11-10; box fill deferred until approved. box census: zero BackupMe rows on storagebox (the 3 id2-era rows are gone); box '.' listing works, listdir / denied, cfg path=/ should become a backupme subdir.
 
@@ -595,3 +600,48 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - Tree at green tip: clean tracked state; only 7 untracked ops scripts under
   `scripts/` remain (commit-vs-archive decision pending). Exposed GitHub PAT
   still not rotated by user (stripped from `.git/config` earlier).
+
+## 2026-11-18 (update 29)
+
+- **Deep check executed (owner request): 3 background agents — full-suite gate, read-only
+  repo/brain audit, core-engine review.** Owner-directed 3-way fan-out (see decisions.md).
+- **Branch state**: master is 3 commits ahead of origin — `5865a9b` (qa sweep renames),
+  `d05a64b` (ruff correctness gate), `4a270ee` (checkpoint state helpers) — the audit
+  P1/P2 follow-ups from update 26, landed but unpushed; push awaits user approval. These
+  had no status entry until now (update 28 was the last).
+- **Working tree**: the uncommitted diff is module docstrings on 10 core files (the
+  update-26 docstring-coverage item). Audit AST-verified: every hunk is a first-statement
+  docstring, all 10 files parse — safe to commit. The job is INCOMPLETE: 26 core modules
+  were missing docstrings and the next batch's generator died on a quoting bug (unescaped
+  apostrophe, add_doc_out3.txt rc=1). The 7 untracked root txt files are that job's
+  scratch output; sweep pending approval.
+- **Repo hygiene corrections**: update 28's "7 untracked ops scripts under scripts/" is
+  STALE — they were already archived to gitignored `diagnostics/scripts_ops/`; the
+  commit-vs-archive decision is effectively resolved. `backupme.state.json` is properly
+  untracked (update 20 follow-up done).
+- **AGENTS.md "Known broken" rewritten** (BLOCKER fix): the Gdrive paragraph claimed
+  resolved at root `H:\Backupme` with a 1-bundle loss, contradicting open-CRITICAL D14 —
+  now reflects the 2026-11-12 root repoint (`H:\New folder\backupme`), the 124.8-GiB
+  depletion, and its partial mitigations. Evidence-file bare-name references repointed to
+  `diagnostics/root-sweep-2026-11-15/`. Routes architecture note corrected too (the
+  `archives` module was missing from the 11-module list).
+- **Bookkeeping**: duplicate "update 17" header renamed 17b (update 9 was never written —
+  gap noted in defects.md); pending-decisions list refreshed (added PAT rotation + D14
+  owner questions + restored_local_archives reclaim; dropped the executed gc --apply);
+  decisions.md gap for 2026-11-12 backfilled; BACKLOG header refreshed (it hid D10/D14);
+  defects.md gained the 2026-11-18 review wave **D19-D22** (numbered from D19 — D15-D18
+  were informally used inside D12 for qa1 web defects).
+- **Core-engine review verdict**: all 9 architecture invariants HOLD in the live write
+  paths. New open defects: D19 retention ambient-txn (scheduler.py:88-138), D20 migration
+  ambient-txn (migration.py:58-71), D21 ingest partial-failure stranding
+  (cpanel_ingest.py:395), D22 non-atomic cold-export parquet (db_lifecycle.py:186-194).
+  P3 hygiene batch logged in the register (mkdtemp leaks, silent upload-retry excepts,
+  replicate_to_n internal guard, stale FTS terms on soft-delete paths, checkpoint tmp-name
+  collision, stale content_backfill note, misc). Fixes deferred pending owner approval.
+- **Test-suite gate: GREEN** — 963 collected / 946 passed / 0 failed / 1 skipped / 3 xfailed
+  / 13 xpassed (non-strict, count as success) / exit 0; CLI smoke clean (`--version` 2.0.0,
+  `--help` exit 0). Evidence: byte-level progress-marker audit (946 `.`, 1 `s`, 3 `x`, 13
+  `X`, zero `F`/`E`), independent `--collect-only` count match, exit code. The absent
+  summary line is pytest 9.1.1 `-qq` suppressing stats, NOT a hang. Wall time ~22 min local
+  (CI ~3 min). Note: the suite is 963 tests now (the 688 figure in earlier updates is
+  stale); lastfailed cache entries are stale 2026-11-16 leftovers, not current.
