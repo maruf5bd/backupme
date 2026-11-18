@@ -1,3 +1,5 @@
+"""Orphaned remote-object garbage collection (report dry-run by default, delete on apply).
+"""
 from backupme.log import get_logger
 
 log = get_logger("gc")

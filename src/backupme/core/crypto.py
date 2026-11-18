@@ -1,3 +1,5 @@
+"""Encryption-at-rest primitives: password KDF and AEAD payload framing (tag-at-end), with capabilities() reporting the active scheme.
+"""
 import os
 import hashlib
 import secrets

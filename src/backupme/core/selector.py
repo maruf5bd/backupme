@@ -1,3 +1,5 @@
+"""Backend selection: auto-select a target by free capacity, fuzzy name lookup for backend references, and availability listing.
+"""
 import re
 from difflib import SequenceMatcher
 

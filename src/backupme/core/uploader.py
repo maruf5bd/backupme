@@ -1,3 +1,5 @@
+"""Deduplicating upload pipeline: chunk, compress, encrypt, bundle, and store blobs.
+"""
 import hashlib
 import json
 import os

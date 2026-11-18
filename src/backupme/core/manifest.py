@@ -1,3 +1,5 @@
+"""Manifest models and sidecar read/write for restorable file and chunk metadata.
+"""
 import json
 import uuid
 from dataclasses import dataclass, field, asdict

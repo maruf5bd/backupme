@@ -1,3 +1,5 @@
+"""Logging bootstrap: get_logger(name) factory with uniform formatting for all modules.
+"""
 import logging
 import sys
 

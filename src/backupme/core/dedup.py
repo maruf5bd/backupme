@@ -1,3 +1,5 @@
+"""Content-addressed dedup bookkeeping: blob reference counting and reconciliation.
+"""
 from backupme.core.database import execute, commit
 
 

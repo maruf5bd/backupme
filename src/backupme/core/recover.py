@@ -1,3 +1,5 @@
+"""Database rebuild/recovery from backend manifests and snapshots.
+"""
 import hashlib
 import os
 import shutil

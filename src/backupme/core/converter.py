@@ -1,3 +1,5 @@
+"""Backend conversion: migrates a backend's contents onto other stores until redundancy targets are met; resumable via JSON checkpoints.
+"""
 import hashlib
 import os
 import sys

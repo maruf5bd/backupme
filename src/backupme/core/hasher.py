@@ -1,3 +1,5 @@
+"""sha256 hashing helpers: bytes, streamed large files, and chunked payloads, with Windows long-path handling.
+"""
 import hashlib
 import os
 import sys

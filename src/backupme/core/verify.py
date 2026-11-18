@@ -1,3 +1,5 @@
+"""Restore-and-hash verification plus self-healing of damaged or missing blobs.
+"""
 import hashlib
 import json
 import os

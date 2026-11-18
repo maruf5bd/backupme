@@ -1,3 +1,5 @@
+"""Skip rules for backup walks: default system/junk exclusions plus user glob excludes, for files and directories.
+"""
 import os
 import fnmatch
 import tempfile

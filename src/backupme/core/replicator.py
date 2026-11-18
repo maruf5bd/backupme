@@ -1,3 +1,5 @@
+"""Background daemon that continuously replicates DB snapshots/ops to backends.
+"""
 import hashlib
 import os
 import time

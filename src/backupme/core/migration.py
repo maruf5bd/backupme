@@ -1,3 +1,5 @@
+"""DB migration machinery: versioned multi-statement schema migrations (apply_migrations) and the inline-files metadata migration through the chunk pipeline.
+"""
 import hashlib
 
 from backupme.log import get_logger

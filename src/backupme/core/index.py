@@ -1,3 +1,5 @@
+"""File/chunk index writes into the metadata DB (version-aware, FTS-updated).
+"""
 import sqlite3
 
 from backupme.core.database import execute, commit

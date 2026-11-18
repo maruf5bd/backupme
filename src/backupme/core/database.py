@@ -1,3 +1,5 @@
+"""SQLite connection management, transactions, and schema bootstrap.
+"""
 import sqlite3
 import threading
 import uuid

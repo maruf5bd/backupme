@@ -1,3 +1,5 @@
+"""Blob replication: replicate_to_n copies a blob until N backend copies exist; mirror_file drives file-level replication after uploads.
+"""
 import tempfile
 from pathlib import Path
 

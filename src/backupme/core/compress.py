@@ -1,3 +1,5 @@
+"""Compression policy and codecs: already-compressed skip detection, algorithm/level choice, (de)compression, and the batch recompress_blobs engine.
+"""
 import gzip
 import bz2
 import lzma

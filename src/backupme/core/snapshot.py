@@ -1,3 +1,5 @@
+"""DB snapshot creation, off-site shipping, and retention pruning.
+"""
 import hashlib
 import os
 import random

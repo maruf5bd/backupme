@@ -1,3 +1,5 @@
+"""SQLite schema: SQL_SCHEMA DDL, the connection PRAGMA profile (WAL, synchronous=FULL, busy_timeout, foreign_keys), and bootstrap/ensure helpers.
+"""
 SQL_SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;

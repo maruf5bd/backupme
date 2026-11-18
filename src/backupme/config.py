@@ -1,3 +1,5 @@
+"""YAML configuration: dataclass-per-section model wired via _filter_fields (unknown keys warn, never crash).
+"""
 import os, re, yaml
 import logging
 from pathlib import Path

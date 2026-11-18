@@ -1,3 +1,5 @@
+"""Append-only operation audit log: pending -> committed/failed lifecycle under idempotency keys, with precondition verification.
+"""
 import json
 import uuid
 from datetime import datetime

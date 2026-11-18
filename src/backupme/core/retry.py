@@ -1,3 +1,5 @@
+"""Resilience primitives: TransientError, the ExponentialBackoff iterator, and a per-backend CircuitBreaker for retry loops.
+"""
 import random
 import time
 from dataclasses import dataclass, field

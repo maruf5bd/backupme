@@ -1,3 +1,5 @@
+"""Restore-side download engine: standalone objects, legacy 52-byte envelopes (header stripped after the sha gate), and bundle member ranges - every path hash-gated, writes renamed into place only on match.
+"""
 import hashlib
 import os
 import shutil

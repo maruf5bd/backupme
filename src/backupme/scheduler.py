@@ -1,3 +1,5 @@
+"""Background daemon: _periodic_loop drives backup -> retention -> ingest -> purge -> cold-export -> gc -> verify ticks, each with a non-blocking single-flight lock and its own exception guard.
+"""
 import os
 import threading
 import time
