@@ -33,6 +33,20 @@ from .common import (_config_as_dict, _get_backends, op_log_start, op_log_finish
 
 log = get_logger("web.routes.dbops")
 
+# Snapshot names are bare CWD-relative file names. An encoded backslash
+# (%5C) decodes into a real separator on Windows, so `..%5Csnapshot-*` used
+# to pass the old p.name.startswith() check and escape the working
+# directory (defect D27 / report_security SEC-1).
+_BARE_SNAPSHOT_MSG = ("snapshot name must be a bare file name "
+                      "(no separators or '..')")
+
+
+def _snapshot_name_error(name: str) -> str | None:
+    """Reject anything that is not a plain CWD-relative snapshot file name."""
+    if "\\" in name or "/" in name or ".." in name:
+        return _BARE_SNAPSHOT_MSG
+    return None
+
 
 def _last_integrity_row() -> dict | None:
     """Newest integrity_checks row (any check_type) with a parsed errors
@@ -284,7 +298,16 @@ def register(app, ctx):
 
     @app.get("/api/db/snapshots/{name}/download")
     async def api_snapshot_download(name: str):
+        # D27: reject separators / '..' outright, then prove the resolved
+        # path sits directly in the server working directory.
+        name_error = _snapshot_name_error(name)
+        if name_error:
+            return JSONResponse({"error": name_error}, status_code=400)
         p = Path(name)
+        if p.resolve().parent != Path(".").resolve():
+            return JSONResponse(
+                {"error": "snapshot path escapes the server working directory"},
+                status_code=400)
         if not p.exists() or not p.name.startswith("snapshot-"):
             return JSONResponse({"error": "not found"}, status_code=404)
         return FileResponse(
@@ -299,7 +322,16 @@ def register(app, ctx):
             return JSONResponse(
                 {"error": "confirm must be exactly true"}, status_code=400)
         try:
+            name_error = _snapshot_name_error(name)
+            if name_error:
+                return JSONResponse(
+                    {"status": "error", "message": name_error}, status_code=400)
             p = Path(name)
+            if p.resolve().parent != Path(".").resolve():
+                return JSONResponse(
+                    {"status": "error",
+                     "message": "snapshot path escapes the server working directory"},
+                    status_code=400)
             if not p.exists() or not p.name.startswith("snapshot-"):
                 return JSONResponse({"status": "error", "message": "Snapshot not found"})
             p.unlink(missing_ok=True)

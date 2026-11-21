@@ -28,6 +28,19 @@ class StorageBackend(ABC):
     def upload(self, local_path: str, remote_rel_path: str) -> str:
         ...
 
+    def upload_batch(self, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Upload a batch of (local_path, remote_rel_path) pairs.
+
+        Default implementation falls back to calling self.upload() sequentially.
+        Specialized backends (e.g. RcloneBackend) override this with directory sync
+        or pipelined transfers for high throughput.
+        """
+        results = []
+        for local_path, remote_rel_path in items:
+            self.upload(local_path, remote_rel_path)
+            results.append((local_path, remote_rel_path))
+        return results
+
     @abstractmethod
     def download(self, remote_rel_path: str, local_path: str):
         ...

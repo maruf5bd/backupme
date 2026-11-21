@@ -370,9 +370,13 @@
       'This will generate a new AES-256-GCM encryption key and save it to backupme.key. Any existing key will be overwritten. Continue?',
       async () => {
         try {
-          const result = await App.fetchAPI('/api/encrypt/init', { method: 'POST' });
+          const result = await App.fetchAPI('/api/encrypt/init', {
+            method: 'POST',
+            body: { confirm: true },
+          });
           App.Toast.success(result.message || 'Encryption initialized');
         } catch (e) {
+          App.Toast.show(String(e), 'error');
         }
       },
       'Generate Key',
@@ -441,14 +445,23 @@
       async () => {
         try {
           const text = await file.text();
+          // D26: the import endpoint needs a literal-true confirm. Prepend it
+          // as a top-level YAML key (control keys are stripped server-side
+          // before the config is written; a .bak of the old config is kept).
           const resp = await App.fetchAPI('/api/config/import', {
             method: 'POST',
-            body: text,
+            body: 'confirm: true\n' + text,
             headers: { 'Content-Type': 'text/yaml' },
           });
-          App.Toast.success('Config imported');
-          setTimeout(() => location.reload(), 800);
-        } catch (e) {}
+          if (resp.status === 'ok') {
+            App.Toast.success('Config imported (backup kept as config.yaml.bak-*)');
+            setTimeout(() => location.reload(), 800);
+          } else {
+            App.Toast.show(resp.message || resp.error || 'import failed', 'error');
+          }
+        } catch (e) {
+          App.Toast.show(String(e), 'error');
+        }
       },
       'Import',
       true

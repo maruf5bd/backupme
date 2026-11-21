@@ -28,7 +28,7 @@ from backupme.core import index as index_mod
 from backupme.core import op_log as op_log_mod
 from backupme.core import state as state_mod
 from backupme.core.archives import sanitize_member
-from backupme.core.database import execute
+from backupme.core.database import commit, execute
 from backupme.core.uploader import upload_bundle, upload_file
 
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
@@ -263,6 +263,23 @@ def _write_generation_manifest(env_dir: Path, archive_sha256: str, payload: dict
     return path
 
 
+def _save_resume_state(op_id: int, succeeded: list[dict], failed: list[str]) -> None:
+    """Record per-member outcomes on the op row so a retry of the same
+    archive (same idempotency key) can resume: previously succeeded members
+    are skipped, only the failed ones are re-attempted (D21)."""
+    row = execute("SELECT target_json FROM op_log WHERE id = ?", (op_id,)).fetchone()
+    try:
+        target = json.loads(row["target_json"] or "{}") if row else {}
+    except (json.JSONDecodeError, TypeError):
+        target = {}
+    target["resume"] = True
+    target["succeeded_members"] = succeeded
+    target["failed_members"] = failed
+    execute("UPDATE op_log SET target_json = ? WHERE id = ?",
+            (json.dumps(target), op_id))
+    commit()
+
+
 def ingest_archive(
     archive_path: str,
     account: str,
@@ -277,6 +294,12 @@ def ingest_archive(
     Members are staged one at a time (deleted immediately after upload), a
     small checkpoint is written every 25 members, a generation manifest is
     written on success and the archive is moved to drop_root/.done/<account>/.
+
+    Member failures (D21): the op is committed and the archive moved to
+    .done only when every ingestible member succeeded. On a partial or total
+    failure the per-member outcome is recorded on the op row and the archive
+    stays in the drop root; re-ingesting the same archive resumes — succeeded
+    members are skipped, failed ones retried — until nothing remains failed.
     """
     config_dict = _as_config_dict(config)
     ingest_cfg = _ingest_cfg(config_dict)
@@ -287,12 +310,29 @@ def ingest_archive(
     archive_sha256 = hasher_mod.sha256_file(archive_path)
     ik = f"cpanel_ingest:{archive_sha256}"
     existing = execute(
-        "SELECT target_json FROM op_log WHERE idempotency_key = ? AND status = 'committed'",
+        "SELECT status, target_json FROM op_log WHERE idempotency_key = ?",
         (ik,),
     ).fetchone()
+    # D21: only a COMMITTED op skips outright. A failed op that recorded a
+    # partial outcome puts us in resume mode — the succeeded members are
+    # skipped during the member loop, only the failed ones are retried.
+    prior_by_name: dict[str, dict] = {}
     if existing:
-        return {"status": "skipped", "reason": "already ingested",
-                "archive": archive_path, "account": account}
+        if existing["status"] == "committed":
+            return {"status": "skipped", "reason": "already ingested",
+                    "archive": archive_path, "account": account}
+        try:
+            prior = json.loads(existing["target_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            prior = {}
+        if prior.get("resume") and prior.get("account") == account:
+            prior_by_name = {
+                m["name"]: m for m in prior.get("succeeded_members", [])
+                if isinstance(m, dict) and m.get("name")
+            }
+            log.info("resuming %s: %d member(s) already ingested, %d to retry",
+                     archive_path, len(prior_by_name),
+                     len(prior.get("failed_members", [])))
 
     op = op_log_mod.append(
         "cpanel_ingest",
@@ -305,6 +345,7 @@ def ingest_archive(
     staging_dir = staging_root / archive_sha256[:12]
 
     done_members: list[dict] = []
+    failed_members: list[str] = []
     excluded = 0
     oversize_skipped = 0
     error_count = 0
@@ -316,6 +357,64 @@ def ingest_archive(
         est = estimate_archive(archive_path)
         total = est["members"]
         staging_dir.mkdir(parents=True, exist_ok=True)
+
+        batch_staged: list[tuple[str, dict, Path]] = []
+        batch_bytes = 0
+        BATCH_LIMIT_COUNT = 1000
+        BATCH_LIMIT_BYTES = 50 * 1024 * 1024  # 50MB batch limit for small files
+
+        def _flush_ingest_batch():
+            nonlocal batch_staged, batch_bytes, error_count, dupe_count
+            if not batch_staged:
+                return
+            try:
+                file_infos = [e[1] for e in batch_staged]
+                results = upload_bundle(file_infos, backends, config_dict, redundancy)
+                # D32: upload_bundle does NOT return results in input order —
+                # inline-processed files (chunked/donor/error) append during
+                # its loop while batched small files are flushed last. Match
+                # results by local_path; a positional zip rotated the per-
+                # member file_id/sha bookkeeping for mixed batches.
+                result_by_path = {r.get("local_path"): r for r in results}
+                for s_name, fi, sp in batch_staged:
+                    res = result_by_path.get(str(sp))
+                    if res is None:
+                        res = {"status": "error",
+                               "error": f"no upload result for local_path "
+                                        f"{str(sp)!r} (upload_bundle returned "
+                                        f"no entry for this member)"}
+                    if res.get("status") in ("error",):
+                        error_count += 1
+                        failed_members.append(s_name)
+                    else:
+                        if res.get("dedup"):
+                            dupe_count += 1
+                        done_members.append({
+                            "name": s_name,
+                            "sha256": hasher_mod.sha256_file(str(sp))
+                            if sp.exists() else res.get("sha256", ""),
+                            "version_seq": fi["version_seq"],
+                            "file_id": res.get("file_id"),
+                        })
+                    if progress_cb is not None:
+                        progress_cb(s_name, len(done_members), total)
+                    if len(done_members) % _CHECKPOINT_EVERY == 0:
+                        state_mod.save_checkpoint("cpanel_ingest", {
+                            "archive": archive_path,
+                            "sha256": archive_sha256,
+                            "account": account,
+                            "members": done_members[-1:],
+                            "done": len(done_members),
+                            "total": total,
+                        })
+            finally:
+                for _, _, sp in batch_staged:
+                    try:
+                        sp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                batch_staged.clear()
+                batch_bytes = 0
 
         with tarfile.open(archive_path, "r:gz") as tar:
             for member in tar:
@@ -337,53 +436,30 @@ def ingest_archive(
                     oversize_skipped += 1
                     continue
 
-                staging_path = None
-                try:
-                    staging_path = _extract_member_to_staging(
-                        tar, member, staging_dir, sanitized)
-                    file_info = {
-                        "local_path": str(staging_path),
-                        "source_root": f"cpanel/{account}",
-                        "relative_path": sanitized,
-                        "version_group": f"{account}|{sanitized}",
-                        "version_seq": index_mod.next_version_seq(
-                            f"cpanel/{account}", sanitized),
-                    }
-                    results = upload_bundle(
-                        [file_info], backends, config_dict, redundancy)
-                    res = results[0] if results else {"status": "error"}
-                    if res.get("status") in ("error",):
-                        error_count += 1
-                    elif res.get("dedup"):
-                        dupe_count += 1
-                    done_members.append({
-                        "name": sanitized,
-                        "sha256": hasher_mod.sha256_file(str(staging_path))
-                        if staging_path.exists() else res.get("sha256", ""),
-                        "version_seq": file_info["version_seq"],
-                        "file_id": res.get("file_id"),
-                    })
-                finally:
-                    # Never leak plaintext: staging file goes away even on error.
-                    if staging_path is not None:
-                        try:
-                            staging_path.unlink(missing_ok=True)
-                        except OSError:
-                            log.warning("could not remove staging file %s",
-                                        staging_path, exc_info=True)
+                prior_member = prior_by_name.get(sanitized)
+                if prior_member is not None:
+                    _flush_ingest_batch()
+                    done_members.append(prior_member)
+                    if progress_cb is not None:
+                        progress_cb(sanitized, len(done_members), total)
+                    continue
 
-                if progress_cb is not None:
-                    progress_cb(sanitized, len(done_members), total)
+                staging_path = _extract_member_to_staging(
+                    tar, member, staging_dir, sanitized)
+                file_info = {
+                    "local_path": str(staging_path),
+                    "source_root": f"cpanel/{account}",
+                    "relative_path": sanitized,
+                    "version_group": f"{account}|{sanitized}",
+                    "version_seq": index_mod.next_version_seq(
+                        f"cpanel/{account}", sanitized),
+                }
+                batch_staged.append((sanitized, file_info, staging_path))
+                batch_bytes += member.size
+                if len(batch_staged) >= BATCH_LIMIT_COUNT or batch_bytes >= BATCH_LIMIT_BYTES:
+                    _flush_ingest_batch()
 
-                if len(done_members) % _CHECKPOINT_EVERY == 0:
-                    state_mod.save_checkpoint("cpanel_ingest", {
-                        "archive": archive_path,
-                        "sha256": archive_sha256,
-                        "account": account,
-                        "members": done_members[-1:],
-                        "done": len(done_members),
-                        "total": total,
-                    })
+        _flush_ingest_batch()
 
         if len(done_members) != est["members"]:
             log.warning(
@@ -392,15 +468,25 @@ def ingest_archive(
                 archive_path, len(done_members), est["members"], excluded,
                 oversize_skipped)
 
-        if total > 0 and error_count == total:
-            # Every member failed to upload (backend outage). Committing the
-            # op and moving the archive to .done would strand its data behind
-            # the idempotency skip forever (qa P1). Raise into the failure
-            # path: op marked failed, archive left in the drop root for a
-            # retry — dedup makes the retry cheap for any member that landed.
+        if error_count:
+            # D21: any member failure must NOT commit the op and move the
+            # archive to .done — the idempotency skip would strand the failed
+            # members behind it forever (qa P1, extended to the partial case).
+            # Record the per-member outcome on the op row, mark the op failed
+            # and leave the archive in the drop root; a retry of the same
+            # archive resumes from the recorded succeeded members and only
+            # re-attempts the failures. The op is marked committed (and the
+            # archive moves to .done) only once zero members remain failed.
+            _save_resume_state(op["id"], done_members, failed_members)
+            if done_members:
+                raise RuntimeError(
+                    f"partial ingest of {archive_path}: {len(done_members)} "
+                    f"member(s) succeeded, {error_count} failed "
+                    f"({', '.join(failed_members)}) — archive left in place "
+                    "for retry")
             raise RuntimeError(
-                f"all {total} member(s) of {archive_path} failed to upload "
-                "(backend outage) — archive left in place for retry")
+                f"all {error_count} member(s) of {archive_path} failed to "
+                "upload (backend outage) — archive left in place for retry")
 
         payload = {
             "account": account,

@@ -165,7 +165,8 @@ def test_api_ingest_restore_generation(client, env, backends):
     _make_cpmove(env)
     ci.ingest_tree(str(env / "drop"), backends, _cfg(env))
     r = client.post("/api/ingest/restore-generation", json={
-        "account": "acct", "generation": 1, "out": str(env / "restore_out")})
+        "account": "acct", "generation": 1, "out": str(env / "restore_out"),
+        "confirm": True})
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["status"] == "ok"
@@ -177,8 +178,11 @@ def test_api_ingest_restore_generation(client, env, backends):
     assert bad.status_code == 400
 
     # Unknown account/generation -> 404 with the error payload (QA M5).
+    # D27: confirm must be present — the gate runs before the account lookup
+    # (existence is not leaked to unconfirmed callers).
     ghost = client.post("/api/ingest/restore-generation",
-                        json={"account": "ghost", "generation": 7})
+                        json={"account": "ghost", "generation": 7,
+                              "confirm": True})
     assert ghost.status_code == 404
     assert ghost.json()["status"] == "error"
 
@@ -347,8 +351,9 @@ def test_api_requires_bearer_token_when_configured(env):
     app = create_app(cfg)
     client = TestClient(app)
 
-    # Static pages are public; the admin API is not.
-    assert client.get("/").status_code == 200
+    # D28/SEC-10 fix: pages are gated too; ?token= grants page access.
+    assert client.get("/").status_code == 401
+    assert client.get("/?token=secret-token-123").status_code == 200
     assert client.get("/api/status").status_code == 401
 
     # Wrong token -> 401.

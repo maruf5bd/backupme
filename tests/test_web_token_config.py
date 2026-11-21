@@ -64,13 +64,16 @@ def test_config_token_rejects_missing_and_wrong_bearer(env):
     assert ok.status_code == 200
 
 
-def test_config_token_keeps_pages_public(env):
-    """Only /api/* sits behind the gate; dashboard pages stay public by design
-    (loopback binding is the documented mitigation)."""
+def test_config_token_gates_pages_too(env):
+    """D28/SEC-10 fix: with web.token armed, dashboard pages are gated too.
+    Unauthenticated page GETs return 401; ?token=<t> grants access (the API
+    keeps its Bearer gate — loopback binding remains the token-less mitigation)."""
     _write_web_section(env, f"  token: {TOKEN}\n")
     client = _client(env)
-    assert client.get("/").status_code == 200
-    assert client.get("/health").status_code == 200
+    assert client.get("/").status_code == 401
+    assert client.get("/health").status_code == 401
+    assert client.get(f"/?token={TOKEN}").status_code == 200
+    assert client.get(f"/health?token={TOKEN}").status_code == 200
 
 
 def test_cli_token_override_wins_over_config_token(env):

@@ -358,7 +358,7 @@ const Ingest = {
     try {
       const r = await fetch('/api/ingest/restore-generation', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({account, generation, out})
+        body: JSON.stringify({account, generation, out, confirm: true})
       });
       const d = await r.json();
       if (d.status === 'ok') App.Toast.show(`Restored ${d.members} member(s) to ${d.out}`, 'success');

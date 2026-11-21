@@ -34,6 +34,26 @@ log = get_logger("web.routes.files")
 _HEX_DIGITS = set("0123456789abcdefABCDEF")
 
 
+def _dest_guard_error(dest: str) -> str | None:
+    """Client-supplied destination guard for restores/downloads (defect D27).
+
+    Reuses the exact `_unsafe_dest` policy /api/archives/restore enforces —
+    traversal (`..`), empty paths, drive-relative forms (`C:foo`) and bare
+    filesystem roots are refused — and adds UNC destinations
+    (`\\host\\share`). Absolute server paths stay legal: the dashboard
+    restores onto the server machine by design (same contract as
+    /api/archives/restore). Returns the error message, or None when safe.
+    """
+    from .archives import _unsafe_dest
+    if not dest or not dest.strip():
+        return "destination path required"
+    if _unsafe_dest(dest):
+        return "unsafe destination rejected (traversal, drive-relative or bare root path)"
+    if dest.startswith("\\\\") or dest.startswith("//"):
+        return "UNC destinations are not allowed"
+    return None
+
+
 def _looks_like_sha256(q: str) -> bool:
     """True when a query is a pure hex string of >= 8 chars — such a query is
     treated as a sha256 (or its prefix) by /api/files, mirroring the /files
@@ -365,6 +385,10 @@ def register(app, ctx):
         path_filter = data.get("path", "").strip()
         if not source_root or not dest_path:
             return JSONResponse({"error": "source_root and dest_path required"}, status_code=400)
+        # D27: the destination itself must not traverse or hit bare/UNC shapes.
+        dest_error = _dest_guard_error(dest_path)
+        if dest_error:
+            return JSONResponse({"error": dest_error}, status_code=400)
 
         with _restore_lock:
             if _restore_state["running"]:
@@ -390,6 +414,10 @@ def register(app, ctx):
             return JSONResponse({"error": "file_ids must be integers"}, status_code=400)
         if not dest_path:
             return JSONResponse({"error": "dest_path required"}, status_code=400)
+        # D27: the destination itself must not traverse or hit bare/UNC shapes.
+        dest_error = _dest_guard_error(dest_path)
+        if dest_error:
+            return JSONResponse({"error": dest_error}, status_code=400)
 
         with _restore_lock:
             if _restore_state["running"]:
@@ -783,6 +811,17 @@ def register(app, ctx):
             return JSONResponse(
                 {"status": "error", "message": f"File id={file_id} not found (or soft-deleted)"},
                 status_code=404)
+        # D27: this writes (and overwrites) at an operator-chosen path, so it
+        # needs the literal-true confirm gate AND the destination guard
+        # (traversal/UNC/bare-root shapes rejected).
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"status": "error", "message": "confirm must be exactly true"},
+                status_code=400)
+        dest_error = _dest_guard_error(dest)
+        if dest_error:
+            return JSONResponse(
+                {"status": "error", "message": dest_error}, status_code=400)
         try:
             dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)

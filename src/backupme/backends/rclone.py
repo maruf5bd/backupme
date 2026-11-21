@@ -145,6 +145,36 @@ class RcloneBackend(StorageBackend):
                 sha.update(chunk)
         return sha.hexdigest()
 
+    def upload_batch(self, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        if not items:
+            return []
+        if len(items) == 1:
+            local_path, remote_rel = items[0]
+            self.upload(local_path, remote_rel)
+            return items
+
+        import shutil
+        tmp_staging = Path(tempfile.mkdtemp(prefix="rclone-batch-"))
+        try:
+            for local_path, remote_rel in items:
+                dest_file = tmp_staging / remote_rel.lstrip("/\\")
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(local_path, dest_file)
+
+            dest_root = self.remote
+            result = self._run(
+                ["copy", str(tmp_staging), dest_root],
+                op="upload_batch",
+                target=dest_root,
+                timeout=self.timeout_s,
+            )
+            if result.returncode != 0:
+                raise IOError(f"rclone batch upload failed rc={result.returncode}: "
+                              f"{self._stderr_tail(result.stderr)}")
+            return items
+        finally:
+            shutil.rmtree(str(tmp_staging), ignore_errors=True)
+
     def download(self, remote_rel_path: str, local_path: str):
         dest = self._dest(remote_rel_path)
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +272,15 @@ class RcloneBackend(StorageBackend):
             return None
 
     def hash(self, remote_rel_path: str) -> str:
+        # Check if hashcheck is explicitly disabled in backend extra_args (e.g. for high-latency SFTP)
+        if "--sftp-disable-hashcheck" in self.extra_args or any("disable-hash" in a for a in self.extra_args):
+            # Fast verification: verify file existence and size via stat/lsjson
+            # without triggering multi-megabyte remote downloads
+            fp = self.fingerprint(remote_rel_path)
+            if fp.get("size", 0) > 0:
+                raise NotImplementedError("remote hashsum disabled for fast SFTP; deferring to single-pass verify")
+            raise FileNotFoundError(f"File {remote_rel_path} not found on remote")
+
         dest = self._dest(remote_rel_path)
         # NOTE: on SFTP remotes `rclone hashsum SHA256` DOWNLOADS the file
         # (most SFTP servers have no native SHA256) — that is the correct

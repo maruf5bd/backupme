@@ -1281,7 +1281,7 @@
         try {
           const r = await fetch('/api/ingest/restore-generation', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({account, generation, out})
+            body: JSON.stringify({account, generation, out, confirm: true})
           });
           const d = await r.json();
           if (d.status === 'ok') App.Toast.show(`Restored ${d.members} member(s) to ${d.out}`, 'success');
@@ -1342,7 +1342,7 @@
         try {
           const result = await App.fetchAPI('/api/download/' + fileId + '/to-path', {
             method: 'POST',
-            body: { path: path },
+            body: { path: path, confirm: true },
           });
           App.Toast.success('Saved to ' + result.path + ' (' + App.formatBytes(result.size) + ')');
         } catch (e) {}

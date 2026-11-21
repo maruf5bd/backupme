@@ -5,7 +5,7 @@ import hashlib
 from backupme.log import get_logger
 
 log = get_logger("migration")
-from backupme.core.database import execute, commit, get_connection
+from backupme.core.database import execute, get_connection, write_txn
 from backupme.core import dedup as dedup_mod
 
 
@@ -52,8 +52,8 @@ def migrate_inline_files(backends: list) -> dict:
             "SELECT 1 FROM file_chunks WHERE file_id = ? LIMIT 1", (r["id"],)
         ).fetchone()
         if existing_chunk:
-            execute("UPDATE files SET content_text = NULL WHERE id = ?", (r["id"],))
-            commit()
+            with write_txn():
+                execute("UPDATE files SET content_text = NULL WHERE id = ?", (r["id"],))
             continue
         data = (r["content_text"] or "").encode("utf-8")
         new_sha = hashlib.sha256(data).hexdigest()
@@ -63,14 +63,18 @@ def migrate_inline_files(backends: list) -> dict:
         if not storage_rows:
             failed.append({"file_id": r["id"], "file": r["relative_path"]})
             continue
-        _record_blob_storage(new_sha, len(data), storage_rows)
-        _replace_file_chunks(r["id"], [(0, new_sha, 0, len(data))])
-        execute(
-            "UPDATE files SET sha256 = ?, size = ?, migrated = 1, content_text = NULL, "
-            "updated_at = datetime('now') WHERE id = ?",
-            (new_sha, len(data), r["id"]),
-        )
-        commit()
+        # One transaction per row (the storage upload above stays outside to
+        # avoid holding the write lock during backend I/O): blob row, storage
+        # rows, chunk mapping, and the files UPDATE commit together or roll
+        # back together.
+        with write_txn():
+            _record_blob_storage(new_sha, len(data), storage_rows)
+            _replace_file_chunks(r["id"], [(0, new_sha, 0, len(data))])
+            execute(
+                "UPDATE files SET sha256 = ?, size = ?, migrated = 1, content_text = NULL, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (new_sha, len(data), r["id"]),
+            )
         migrated += 1
         if new_sha != r["sha256"]:
             lossy.append({"file_id": r["id"], "file": r["relative_path"],

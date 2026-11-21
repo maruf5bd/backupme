@@ -364,11 +364,13 @@ def test_auth_gates_mutating_methods_too(token_client):
     assert r3.status_code == 404, r3.text[:120]
 
 
-def test_auth_pages_remain_public_by_design(token_client):
-    # Documented behavior: only /api/* is gated; pages rely on loopback binding.
-    assert token_client.get("/").status_code == 200
-    assert token_client.get("/health").status_code == 200
-    assert token_client.get("/files").status_code == 200
+def test_auth_pages_gated_when_token_armed(token_client):
+    # D28/SEC-10 fix: pages are gated too; ?token= grants access.
+    assert token_client.get("/").status_code == 401
+    assert token_client.get("/health").status_code == 401
+    assert token_client.get("/files").status_code == 401
+    assert token_client.get(f"/?token={TOKEN}").status_code == 200
+    assert token_client.get(f"/files?token={TOKEN}").status_code == 200
 
 
 def test_destructive_endpoints_401_unauthenticated(token_client):
@@ -902,8 +904,10 @@ def test_download_serves_original_filename(client, seeded):
 
 def test_download_to_path(client, seeded):
     target = Path(seeded["env"]) / "qa1_dl_target" / "out.txt"
+    # D27/SEC-2: to-path writes (and overwrites) at an operator-chosen path,
+    # so it requires the literal-true confirm gate.
     r = client.post(f"/api/download/{seeded['file_id']}/to-path",
-                    json={"path": str(target)})
+                    json={"path": str(target), "confirm": True})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "ok" and body["size"] == len(b"delta content 123")

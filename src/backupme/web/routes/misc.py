@@ -175,12 +175,37 @@ def register(app, ctx):
             return JSONResponse({"status": "error", "message": str(e)})
 
     @app.post("/api/encrypt/init")
-    async def api_encrypt_init():
+    async def api_encrypt_init(data: dict = Body(default={})):
+        # D26 (report_security SEC-7): save_key truncates, so a second call —
+        # or a drive-by POST — used to silently destroy the existing key and
+        # permanently lose everything encrypted with it. Now: 409 when the
+        # key file exists unless confirm: true (literal true), and rotation
+        # preserves the old key as backupme.key.bak-<UTC ts> instead of
+        # destroying it. No key on disk -> behaves as before (no confirm).
         try:
+            from datetime import datetime, timezone
+            key_path = Path("backupme.key")
+            key_exists = key_path.exists()
+            if key_exists and data.get("confirm") is not True:
+                return JSONResponse(
+                    {"status": "error",
+                     "message": "backupme.key already exists: data encrypted with it "
+                                "must be re-encrypted after a rotation. Pass "
+                                "confirm: true to rotate (the old key is preserved "
+                                "as backupme.key.bak-<timestamp>)."},
+                    status_code=409)
+            backup_path = None
+            if key_exists:
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                backup_path = key_path.with_name(f"{key_path.name}.bak-{stamp}")
+                backup_path.write_bytes(key_path.read_bytes())
             key = crypto_mod.generate_key()
-            key_path = "backupme.key"
-            crypto_mod.save_key(key, key_path)
-            return JSONResponse({"status": "ok", "message": f"Encryption key saved to {key_path}"})
+            key_path_str = "backupme.key"
+            crypto_mod.save_key(key, key_path_str)
+            message = f"Encryption key saved to {key_path_str}"
+            if backup_path is not None:
+                message += f" (old key preserved as {backup_path.name})"
+            return JSONResponse({"status": "ok", "message": message})
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
 

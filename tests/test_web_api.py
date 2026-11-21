@@ -880,6 +880,8 @@ def test_auth_gate_401_matrix_summary(env):
         r = armed.get(path, headers=headers)
         assert r.status_code == 200, f"valid token rejected on {path}"
 
-    # Guard scope: only /api/* is gated (qa auth matrix, 'pages public').
-    assert armed.get("/").status_code == 200
-    assert armed.get("/health").status_code == 200
+    # Guard scope: D28/SEC-10 fix — pages are gated too; ?token= grants access.
+    assert armed.get("/").status_code == 401
+    assert armed.get("/health").status_code == 401
+    assert armed.get(f"/?token={TOKEN}").status_code == 200
+    assert armed.get(f"/health?token={TOKEN}").status_code == 200

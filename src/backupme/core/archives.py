@@ -790,26 +790,60 @@ def _upload_one(entry: MemberPlan, local_path: str, fp: str,
 
 def _upload_members(path: str, fmt: str, fp: str, plan: ArchivePlan,
                     ctx: IngestContext, staging_root: Path) -> None:
-    """Stage + upload every regular member; nested members stay virtual.
-
-    Pre-staged members (nested whole-file fallback) are uploaded from their
-    staging files; everything else is re-extracted from the container one
-    member at a time and the staging file deleted right after its upload.
-    """
+    """Stage + upload regular members in batches; nested members stay virtual."""
     pending = {e.path: e for e in plan.entries
                if e.nested_archive is None and e.file_id is None}
+
+    batch: list[tuple[MemberPlan, Path]] = []
+    batch_bytes = 0
+
+    def _flush_arch_batch():
+        nonlocal batch, batch_bytes
+        if not batch:
+            return
+        try:
+            items = [
+                {
+                    "local_path": str(p),
+                    "source_root": f"archive/{fp}",
+                    "relative_path": e.path,
+                    "version_seq": 1,
+                }
+                for e, p in batch
+            ]
+            results = upload_bundle(items, ctx.backends, ctx.config, ctx.redundancy)
+            # D32: upload_bundle does NOT return results in input order —
+            # inline-processed files (chunked/donor/error) append during its
+            # loop while batched small files are flushed last. Match results
+            # by local_path; a positional zip rotated archive_members.file_id
+            # and the DR sidecar chunk recipes for mixed batches.
+            result_by_path = {r.get("local_path"): r for r in results}
+            for e, p in batch:
+                res = result_by_path.get(str(p))
+                if res is None:
+                    res = {"status": "error",
+                           "error": f"no upload result for local_path "
+                                    f"{str(p)!r} (upload_bundle returned no "
+                                    f"entry for this member)"}
+                if res.get("status") == "error":
+                    raise RuntimeError(
+                        f"member {e.path!r} failed to upload: "
+                        f"{res.get('error', 'upload failed')}")
+                file_id = res.get("file_id")
+                if file_id is None:
+                    raise RuntimeError(f"member {e.path!r} upload returned no file_id")
+                e.file_id = file_id
+        finally:
+            for _, p in batch:
+                p.unlink(missing_ok=True)
+            batch.clear()
+            batch_bytes = 0
 
     for entry in plan.entries:
         if entry.staged_path is None or entry.path not in pending:
             continue
         _upload_one(entry, str(entry.staged_path), fp, ctx)
         pending.pop(entry.path, None)
-
-    def _stage_from(src) -> Path:
-        staged = staging_root / "member.bin"
-        with open(staged, "wb") as fout:
-            shutil.copyfileobj(src, fout, _COPY_BLOCK)
-        return staged
 
     if pending and fmt == "zip":
         with zipfile.ZipFile(path) as zf:
@@ -822,12 +856,14 @@ def _upload_members(path: str, fmt: str, fp: str, plan: ArchivePlan,
                 entry = pending.pop(sanitized, None) if sanitized else None
                 if entry is None or entry.file_id is not None:
                     continue
-                with zf.open(info) as src:
-                    staged = _stage_from(src)
-                try:
-                    _upload_one(entry, str(staged), fp, ctx)
-                finally:
-                    staged.unlink(missing_ok=True)
+                staged = staging_root / f"m_{len(batch)}.bin"
+                with zf.open(info) as src, open(staged, "wb") as fout:
+                    shutil.copyfileobj(src, fout, _COPY_BLOCK)
+                batch.append((entry, staged))
+                batch_bytes += entry.size
+                if len(batch) >= 1000 or batch_bytes >= 50 * 1024 * 1024:
+                    _flush_arch_batch()
+            _flush_arch_batch()
     elif pending:
         with tarfile.open(path, _TAR_OPEN_MODE[fmt]) as tar:
             for member in tar:
@@ -842,11 +878,14 @@ def _upload_members(path: str, fmt: str, fp: str, plan: ArchivePlan,
                 src = tar.extractfile(member)
                 if src is None:
                     raise RuntimeError(f"member {sanitized!r} has no data")
-                staged = _stage_from(src)
-                try:
-                    _upload_one(entry, str(staged), fp, ctx)
-                finally:
-                    staged.unlink(missing_ok=True)
+                staged = staging_root / f"m_{len(batch)}.bin"
+                with open(staged, "wb") as fout:
+                    shutil.copyfileobj(src, fout, _COPY_BLOCK)
+                batch.append((entry, staged))
+                batch_bytes += entry.size
+                if len(batch) >= 1000 or batch_bytes >= 50 * 1024 * 1024:
+                    _flush_arch_batch()
+            _flush_arch_batch()
 
     if pending:
         missing = ", ".join(sorted(pending))[:200]

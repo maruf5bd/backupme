@@ -23,7 +23,8 @@ from backupme.core import dedup as dedup_mod
 from backupme.core import index as index_mod
 from backupme.core import state as state_mod
 from backupme.core import op_log as op_log_mod
-from backupme.core.manifest import Manifest, ManifestChunk, ChunkStorageEntry, write_manifest
+from backupme.core.manifest import Manifest, ManifestChunk, ChunkStorageEntry, write_manifest, _manifest_storage_path
+from dataclasses import asdict
 from backupme.backends import get_backend
 
 
@@ -38,7 +39,7 @@ _chunk_min_size = 10 * 1024 * 1024
 _chunk_size = 64 * 1024 * 1024
 _vault_max = 10 * 1024 * 1024
 _no_compress_max = 256
-_bundle_target_size = 64 * 1024 * 1024
+_bundle_target_size = 50 * 1024 * 1024  # 50MB bundle target size for small files
 _content_text_max_bytes = 65536
 _circuit_breaker = retry_mod.CircuitBreaker()
 
@@ -242,6 +243,39 @@ def _write_manifest_and_pointers(backends: list, manifest: Manifest, redundancy:
         except Exception as e:
             log.warning("manifest/pointer write failed on backend %s for %s: %s",
                         bk2.name, manifest.relative_path, e)
+
+
+def _write_manifest_and_pointers_batch(backends: list, manifests: list[Manifest], redundancy: int) -> None:
+    if not manifests:
+        return
+    if len(manifests) == 1:
+        _write_manifest_and_pointers(backends, manifests[0], redundancy)
+        return
+
+    import shutil
+    tmp_meta = Path(tempfile.mkdtemp(prefix="backupme-meta-"))
+    try:
+        items = []
+        for manifest in manifests:
+            m_rel = _manifest_storage_path(manifest)
+            m_local = tmp_meta / m_rel
+            m_local.parent.mkdir(parents=True, exist_ok=True)
+            m_local.write_text(json.dumps(asdict(manifest), indent=2), encoding="utf-8")
+            items.append((str(m_local), m_rel))
+
+            p_rel = f"tree/{manifest.source_root.replace(':', '_')}/{manifest.relative_path}.backupme"
+            p_local = tmp_meta / p_rel
+            p_local.parent.mkdir(parents=True, exist_ok=True)
+            p_local.write_text(json.dumps(_make_pointer(manifest), indent=2), encoding="utf-8")
+            items.append((str(p_local), p_rel))
+
+        for bk2 in backends[:redundancy]:
+            try:
+                bk2.upload_batch(items)
+            except Exception as e:
+                log.warning("batch manifest/pointer upload failed on backend %s: %s", bk2.name, e)
+    finally:
+        shutil.rmtree(str(tmp_meta), ignore_errors=True)
 
 
 def _compress_data(data: bytes, config: dict, ext: str = "") -> tuple[bytes, str | None, int | None]:
@@ -516,8 +550,7 @@ def upload_bundle(
             batch_size = 0
             return
 
-        for _, manifest, _ in entries:
-            _write_manifest_and_pointers(backends, manifest, redundancy)
+        _write_manifest_and_pointers_batch(backends, [m for _, m, _ in entries], redundancy)
 
         status = "ok" if len(ok_backends) >= redundancy else "partial"
         for item_info, _, _ in entries:

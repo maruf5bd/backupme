@@ -8,7 +8,7 @@ from pathlib import Path
 from backupme.log import get_logger
 
 log = get_logger("scheduler")
-from backupme.core.database import initialize, get_generation, bump_generation, commit, execute
+from backupme.core.database import initialize, get_generation, bump_generation, execute, write_txn
 from backupme.core import uploader as uploader_mod
 from backupme.core import snapshot as snapmod
 from backupme.core import replicator
@@ -105,39 +105,43 @@ def apply_retention(config: dict):
         "SELECT DISTINCT version_group FROM files WHERE deleted_at IS NULL"
     ).fetchall()
 
-    for (vg,) in groups:
-        rows = execute(
-            "SELECT id, version_seq, created_at FROM files WHERE version_group = ? AND deleted_at IS NULL ORDER BY version_seq DESC",
-            (vg,),
-        ).fetchall()
+    # Whole pass in one explicit transaction: soft-deletes, chunk removals,
+    # and blob unrefs commit once atomically; a mid-pass failure rolls
+    # everything back and propagates to the tick guard instead of leaving
+    # partial state (or an open write txn) on the pooled connection.
+    with write_txn():
+        for (vg,) in groups:
+            rows = execute(
+                "SELECT id, version_seq, created_at FROM files WHERE version_group = ? AND deleted_at IS NULL ORDER BY version_seq DESC",
+                (vg,),
+            ).fetchall()
 
-        if len(rows) <= versions:
-            continue
-
-        keep = set()
-        for r in rows[:versions]:
-            keep.add(r["id"])
-
-        now = datetime.datetime.now()
-        for r in rows:
-            if r["id"] in keep:
-                continue
-            created = datetime.datetime.fromisoformat(r["created_at"]) if "T" in r["created_at"] else datetime.datetime.strptime(r["created_at"], "%Y-%m-%d %H:%M:%S")
-            days_ago = (now - created).days
-
-            if days_ago <= daily:
-                continue
-            if days_ago <= weekly * 7 and created.weekday() == 0:
-                continue
-            if days_ago <= monthly * 30 and created.day <= 7:
+            if len(rows) <= versions:
                 continue
 
-            execute("UPDATE files SET deleted_at = datetime('now') WHERE id = ?", (r["id"],))
-            chunks = execute("SELECT blob_id FROM file_chunks WHERE file_id = ?", (r["id"],)).fetchall()
-            execute("DELETE FROM file_chunks WHERE file_id = ?", (r["id"],))
-            for (blob_id,) in chunks:
-                dedup_mod.unref_blob(blob_id)
-    commit()
+            keep = set()
+            for r in rows[:versions]:
+                keep.add(r["id"])
+
+            now = datetime.datetime.now()
+            for r in rows:
+                if r["id"] in keep:
+                    continue
+                created = datetime.datetime.fromisoformat(r["created_at"]) if "T" in r["created_at"] else datetime.datetime.strptime(r["created_at"], "%Y-%m-%d %H:%M:%S")
+                days_ago = (now - created).days
+
+                if days_ago <= daily:
+                    continue
+                if days_ago <= weekly * 7 and created.weekday() == 0:
+                    continue
+                if days_ago <= monthly * 30 and created.day <= 7:
+                    continue
+
+                execute("UPDATE files SET deleted_at = datetime('now') WHERE id = ?", (r["id"],))
+                chunks = execute("SELECT blob_id FROM file_chunks WHERE file_id = ?", (r["id"],)).fetchall()
+                execute("DELETE FROM file_chunks WHERE file_id = ?", (r["id"],))
+                for (blob_id,) in chunks:
+                    dedup_mod.unref_blob(blob_id, commit_now=False)
 
 
 _DAY_SECONDS = 86400
@@ -240,10 +244,21 @@ class BackupScheduler:
                 if now - self._last_guard >= _DAY_SECONDS:
                     self._last_guard = now
                     self._run_offsite_guard()
-            except Exception:
+            except Exception as e:
                 # One failed pass must never kill the daemon thread silently.
                 log.exception("scheduler pass crashed — continuing")
+                self._notify_tick_failure("scheduler", e)
             self._stop.wait(sc["interval"])
+
+    def _notify_tick_failure(self, tick: str, exc: Exception) -> None:
+        """Report a failed tick through notify.notify_failure (D33: tick
+        failures used to be log-only). Wrapped so a notification problem
+        can never break the guard that called it."""
+        try:
+            from backupme.core import notify
+            notify.notify_failure(f"{tick} tick failed", str(exc), self.config)
+        except Exception:
+            log.exception("notify_failure for %s tick failed", tick)
 
     def _ingest_enabled(self) -> bool:
         ci = self.config.get("cpanel_ingest", {}) or {}
@@ -254,74 +269,89 @@ class BackupScheduler:
         return bool(g.get("offsite_snapshots", True))
 
     def _run_backups(self):
+        try:
+            self._backups_pass()
+        except Exception as e:
+            log.exception("backups tick failed")
+            self._notify_tick_failure("backups", e)
+
+    def _backups_pass(self):
         for entry in self.config.get("backups", []):
             source = entry.get("source", "")
             # "backend" is the real field name; "target" kept as a deprecated alias.
             target = entry.get("backend") or entry.get("target") or ""
             redundancy = entry.get("redundancy", 1)
 
-            if not source or not os.path.exists(source):
-                continue
-
-            from backupme.backends import get_backend
-
-            backends = get_all_backends(self.config)
-            if target:
-                backends = [b for b in backends if b.name == target]
-            if not backends:
-                continue
-
-            src_path = Path(source)
-            if src_path.is_file():
-                skip, _ = should_skip(str(src_path))
-                if skip:
+            try:
+                if not source or not os.path.exists(source):
                     continue
-                candidates = [src_path]
-                skipped = 0
-            else:
-                candidates, skipped = collect_changes(
-                    str(src_path), entry.get("exclude", []))
 
-            if skipped:
-                log.info("%s: %d unchanged (skipped)", source, skipped)
+                from backupme.backends import get_backend
 
-            batch: list[dict] = []
-            batch_bytes = 0
+                backends = get_all_backends(self.config)
+                if target:
+                    backends = [b for b in backends if b.name == target]
+                if not backends:
+                    continue
 
-            def flush() -> None:
-                nonlocal batch, batch_bytes
-                if not batch:
-                    return
-                try:
-                    results = uploader_mod.upload_bundle(batch, backends, self.config, redundancy)
-                    for r in results:
-                        if entry.get("move") and r.get("file_id") and r.get("local_path"):
-                            try:
-                                os.remove(r["local_path"])
-                            except OSError:
-                                pass
-                except Exception:
-                    log.exception("batch upload failed")
-                batch.clear()
+                src_path = Path(source)
+                if src_path.is_file():
+                    skip, _ = should_skip(str(src_path))
+                    if skip:
+                        continue
+                    candidates = [src_path]
+                    skipped = 0
+                else:
+                    candidates, skipped = collect_changes(
+                        str(src_path), entry.get("exclude", []))
+
+                if skipped:
+                    log.info("%s: %d unchanged (skipped)", source, skipped)
+
+                batch: list[dict] = []
                 batch_bytes = 0
 
-            for fp in candidates:
-                st = fp.stat()
-                batch.append({
-                    "local_path": str(fp),
-                    "source_root": str(src_path),
-                    "relative_path": os.path.relpath(str(fp), str(src_path)),
-                })
-                batch_bytes += st.st_size
-                if len(batch) >= 200 or batch_bytes >= 64 * 1024 * 1024:
-                    flush()
-            flush()
+                def flush() -> None:
+                    nonlocal batch, batch_bytes
+                    if not batch:
+                        return
+                    try:
+                        results = uploader_mod.upload_bundle(batch, backends, self.config, redundancy)
+                        for r in results:
+                            if entry.get("move") and r.get("file_id") and r.get("local_path"):
+                                try:
+                                    os.remove(r["local_path"])
+                                except OSError:
+                                    pass
+                    except Exception:
+                        log.exception("batch upload failed")
+                    batch.clear()
+                    batch_bytes = 0
+
+                for fp in candidates:
+                    st = fp.stat()
+                    batch.append({
+                        "local_path": str(fp),
+                        "source_root": str(src_path),
+                        "relative_path": os.path.relpath(str(fp), str(src_path)),
+                    })
+                    batch_bytes += st.st_size
+                    if len(batch) >= 200 or batch_bytes >= 64 * 1024 * 1024:
+                        flush()
+                flush()
+            except Exception:
+                # D33: one vanished/unreadable source must not abort the pass.
+                # A raise here used to kill the whole backups tick — and with
+                # it every later tick in the same loop pass. Log and keep the
+                # other sources going.
+                log.exception("backup pass: source %r failed — skipped", source)
 
     def _run_retention(self):
         try:
             apply_retention(self.config)
-        except Exception:
+        except Exception as e:
             log.exception("retention pass failed")
+            self._notify_tick_failure("retention", e)
 
     def _run_ingest(self):
         """Ingest tick: scan the drop root for new cpmove archives."""
@@ -340,8 +370,9 @@ class BackupScheduler:
             result = ci_mod.ingest_tree(drop_root, backends, self.config)
             log.info("ingest tick: status=%s archives=%s",
                      result.get("status"), result.get("archives"))
-        except Exception:
+        except Exception as e:
             log.exception("ingest tick failed")
+            self._notify_tick_failure("ingest", e)
         finally:
             self._ingest_lock.release()
 
@@ -357,8 +388,9 @@ class BackupScheduler:
             result = lc.hard_purge_versions(config=self.config)
             log.info("purge tick: purged=%s above_watermark=%s",
                      result.get("purged"), result.get("above_watermark"))
-        except Exception:
+        except Exception as e:
             log.exception("purge tick failed")
+            self._notify_tick_failure("purge", e)
         finally:
             self._purge_lock.release()
 
@@ -374,8 +406,9 @@ class BackupScheduler:
             result = lc.cold_export_to_parquet(config=self.config)
             log.info("cold-export tick: status=%s rows=%s",
                      result.get("status"), result.get("rows"))
-        except Exception:
+        except Exception as e:
             log.exception("cold-export tick failed")
+            self._notify_tick_failure("cold-export", e)
         finally:
             self._export_lock.release()
 
@@ -395,8 +428,9 @@ class BackupScheduler:
             result = offsite_guard.ship_snapshot(self.config)
             log.info("offsite-guard tick: status=%s backends=%s",
                      result.get("status"), sorted(result.get("backends", {})))
-        except Exception:
+        except Exception as e:
             log.exception("offsite-guard tick failed")
+            self._notify_tick_failure("offsite-guard", e)
         finally:
             self._guard_lock.release()
 
@@ -414,8 +448,9 @@ class BackupScheduler:
                      "APPLY" if apply_deletes else "dry-run",
                      {k: v for k, v in result.items()
                       if isinstance(v, (int, str))})
-        except Exception:
+        except Exception as e:
             log.exception("gc tick failed")
+            self._notify_tick_failure("gc", e)
         finally:
             self._gc_lock.release()
 
@@ -428,12 +463,14 @@ class BackupScheduler:
             result = verify_mod.run_integrity_check(count=5)
             log.info("verify tick: status=%s failed=%s",
                      result.get("status"), result.get("failed_files"))
-        except Exception:
+        except Exception as e:
             log.exception("verify tick failed")
+            self._notify_tick_failure("verify", e)
         try:
             self._log_health()
-        except Exception:
+        except Exception as e:
             log.exception("health tick failed")
+            self._notify_tick_failure("health", e)
         finally:
             self._verify_lock.release()
 

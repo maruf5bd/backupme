@@ -5,6 +5,7 @@ import os
 import shutil
 import struct
 import tempfile
+import threading
 from pathlib import Path
 
 from backupme.core import hasher as hasher_mod
@@ -54,6 +55,16 @@ def _decrypt_if_needed(work_file: Path, dec: Path, st: dict, config) -> Path:
     return dec
 
 
+_BUNDLE_MEM_CACHE: dict[tuple[str, str], bytes] = {}
+_MAX_BUNDLE_CACHE_BYTES = 128 * 1024 * 1024  # 128 MB max memory
+_bundle_cache_lock = threading.Lock()
+
+
+def clear_bundle_cache() -> None:
+    with _bundle_cache_lock:
+        _BUNDLE_MEM_CACHE.clear()
+
+
 def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int | None,
                          st: dict, config) -> bytes:
     """Download the full bundle, decrypt/decompress it, and extract the target bytes."""
@@ -76,6 +87,17 @@ def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int |
             f"Bundle storage row for {remote_path} has no valid @offset:length range "
             "(legacy metadata) — re-backup this file"
         )
+
+    cache_key = (getattr(bk, "name", str(bk)), remote_path)
+    with _bundle_cache_lock:
+        if cache_key in _BUNDLE_MEM_CACHE:
+            data = _BUNDLE_MEM_CACHE[cache_key]
+            if offset + length > len(data):
+                raise RuntimeError(
+                    f"Bundle {remote_path} truncated: need {offset + length} bytes, have {len(data)}"
+                )
+            return data[offset : offset + length]
+
     tmp_dir = Path(tempfile.mkdtemp())
     tmp = tmp_dir / "bundle_full"
     dec = tmp_dir / "bundle_dec"
@@ -89,6 +111,12 @@ def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int |
             raise RuntimeError(
                 f"Bundle {remote_path} truncated: need {offset + length} bytes, have {len(data)}"
             )
+        with _bundle_cache_lock:
+            current_sz = sum(len(v) for v in _BUNDLE_MEM_CACHE.values())
+            if current_sz + len(data) > _MAX_BUNDLE_CACHE_BYTES:
+                _BUNDLE_MEM_CACHE.clear()
+            if len(data) <= _MAX_BUNDLE_CACHE_BYTES:
+                _BUNDLE_MEM_CACHE[cache_key] = data
         return data[offset : offset + length]
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)

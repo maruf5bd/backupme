@@ -5,6 +5,7 @@ All handlers rewrite config.yaml via PyYAML and then reload the live Config
 through the shared _reload_config helper.
 """
 import io
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, Query, Request
@@ -16,6 +17,10 @@ from backupme.log import get_logger
 from .common import _reload_config
 
 log = get_logger("web.routes.config_api")
+
+# How many timestamped backups an import keeps before pruning older ones
+# (defect D26).
+_CONFIG_BACKUP_KEEP = 5
 
 # Substrings that mark a config value as a credential. Export masks these;
 # matching is case-insensitive on the key name only (values never matched).
@@ -36,6 +41,26 @@ def _redact_secrets(node):
     if isinstance(node, list):
         return [_redact_secrets(item) for item in node]
     return node
+
+
+def _backup_before_overwrite(target: Path) -> Path | None:
+    """Timestamped backup of a file before an import overwrites it (D26).
+
+    Copies ``target`` to ``<name>.bak-<UTC ts>`` next to it and prunes older
+    backups of the same file beyond _CONFIG_BACKUP_KEEP. Returns the backup
+    path, or None when there is nothing to back up yet.
+    """
+    if not target.exists():
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = target.with_name(f"{target.name}.bak-{stamp}")
+    backup.write_bytes(target.read_bytes())
+    pattern = f"{target.name}.bak-*"
+    backups = sorted(target.parent.glob(pattern),
+                     key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in backups[_CONFIG_BACKUP_KEEP:]:
+        old.unlink(missing_ok=True)
+    return backup
 
 
 def register(app, ctx):
@@ -170,15 +195,52 @@ def register(app, ctx):
 
     @app.post("/api/config/import")
     async def api_config_import(request: Request):
+        # D26 (report_security SEC-6): the import used to write whatever body
+        # arrived — a drive-by POST of `{}` wiped config.yaml. Now it needs an
+        # explicit literal-true confirm (either a top-level `confirm: true`
+        # key in a raw YAML body, or a JSON envelope
+        # {"confirm": true, "config": {...}}), keeps a timestamped backup of
+        # the previous config.yaml (last 5), and refuses a config that would
+        # leave ZERO backends unless allow_empty: true is passed too.
         try:
             import yaml
             body = await request.body()
             raw = yaml.safe_load(body.decode("utf-8"))
             if not isinstance(raw, dict):
-                return JSONResponse({"status": "error", "message": "Invalid YAML"})
+                return JSONResponse({"status": "error", "message": "Invalid YAML"},
+                                    status_code=400)
+            envelope = "config" in raw and isinstance(raw.get("config"), dict)
+            confirm = raw.get("confirm") is True
+            allow_empty = raw.get("allow_empty") is True
+            if envelope:
+                config_data = raw["config"]
+            else:
+                # Raw mapping shape: control keys are stripped so they never
+                # land in config.yaml (no real config section uses them).
+                config_data = {k: v for k, v in raw.items()
+                               if k not in ("confirm", "allow_empty")}
+            if not confirm:
+                return JSONResponse(
+                    {"status": "error",
+                     "message": "confirm: true is required to import a config "
+                                "(top-level confirm key in the YAML body, or a "
+                                '{"confirm": true, "config": {...}} envelope)'},
+                    status_code=400)
+            if not isinstance(config_data, dict):
+                return JSONResponse(
+                    {"status": "error", "message": "Invalid YAML: config must be a mapping"},
+                    status_code=400)
+            zero_backends = not config_data.get("backends")
+            if zero_backends and not allow_empty:
+                return JSONResponse(
+                    {"status": "error",
+                     "message": "imported config would leave ZERO backends "
+                                "configured; pass allow_empty: true to force it"},
+                    status_code=400)
             yaml_path = Path("config.yaml")
+            _backup_before_overwrite(yaml_path)
             with open(yaml_path, "w", encoding="utf-8") as f:
-                yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, indent=2)
+                yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True, indent=2)
             return JSONResponse({"status": "ok", "message": "Config imported successfully"})
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})

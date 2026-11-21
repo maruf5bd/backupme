@@ -274,9 +274,23 @@ def register(app, ctx):
             return JSONResponse({"error": "generation must be an integer"}, status_code=400)
         if not account or generation <= 0:
             return JSONResponse({"error": "account and generation required"}, status_code=400)
+        # D27: this writes files (and an optional retar tarball) at
+        # operator-chosen paths, so it needs the literal-true confirm gate AND
+        # the same destination guard /api/restore + /api/archives/restore use.
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "confirm must be exactly true"}, status_code=400)
+        from .files import _dest_guard_error
         out = data.get("out") or f"restore_out/{account}"
-        member_filter = data.get("member_filter") or None
+        out_error = _dest_guard_error(out)
+        if out_error:
+            return JSONResponse({"error": f"out: {out_error}"}, status_code=400)
         retar = data.get("retar") or None
+        if retar:
+            retar_error = _dest_guard_error(retar)
+            if retar_error:
+                return JSONResponse({"error": f"retar: {retar_error}"}, status_code=400)
+        member_filter = data.get("member_filter") or None
         try:
             from backupme.core import cpanel_ingest as ci_mod
             result = ci_mod.restore_cpanel(

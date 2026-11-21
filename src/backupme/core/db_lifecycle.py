@@ -178,20 +178,40 @@ def _cold_export_locked(pdir, pa, pq, compression, compression_level) -> dict:
     partition_name = f"files_{month}.parquet"
     partition_path = pdir / partition_name
     if partition_path.exists():
-        existing = pq.read_table(partition_path, schema=schema)
+        try:
+            existing = pq.read_table(partition_path, schema=schema)
+        except Exception as e:
+            # D22: a truncated/corrupt partition must not be silently
+            # overwritten or deleted — it may hold history rows already
+            # purged from the hot store. Fail loudly; the operator decides.
+            raise RuntimeError(
+                f"existing parquet partition {partition_path} is unreadable "
+                f"(corrupt or truncated?) — export aborted; the operator "
+                f"must inspect, repair or explicitly remove this file: {e}"
+            ) from e
         table = pa.concat_tables([existing, new_table])
     else:
         table = new_table
 
-    pq.write_table(
-        table, partition_path,
-        compression=compression,
-        compression_level=compression_level,
-        version="2.6",
-        use_dictionary=_DICTIONARY_COLUMNS,
-        write_statistics=True,
-        row_group_size=max(1, _ROW_GROUP_TARGET // 256),  # conservative rows/group
-    )
+    # D22: write the partition atomically — a crash mid-write used to leave
+    # a truncated parquet that broke every subsequent export. Same pattern
+    # as _save_manifest: temp file in the same directory, then Path.replace
+    # (os.replace — atomic within the same directory).
+    tmp_path = pdir / (partition_name + ".tmp")
+    try:
+        pq.write_table(
+            table, tmp_path,
+            compression=compression,
+            compression_level=compression_level,
+            version="2.6",
+            use_dictionary=_DICTIONARY_COLUMNS,
+            write_statistics=True,
+            row_group_size=max(1, _ROW_GROUP_TARGET // 256),  # conservative rows/group
+        )
+        tmp_path.replace(partition_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
     new_watermark = records[-1]["id"]
     manifest = {"watermark": max(watermark, new_watermark), "partitions": {}}
