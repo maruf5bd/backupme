@@ -645,3 +645,520 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   summary line is pytest 9.1.1 `-qq` suppressing stats, NOT a hang. Wall time ~22 min local
   (CI ~3 min). Note: the suite is 963 tests now (the 688 figure in earlier updates is
   stale); lastfailed cache entries are stale 2026-11-16 leftovers, not current.
+
+## 2026-11-18 (update 30) — project check from the games account
+
+- **Check scope**: read-only health check from the `games` Windows account (the repo
+  owner account is `Maruf`; git needed a one-time `safe.directory` exception for
+  `J:/personal@hostraj.com/backupme` — applied, that is the only mutation this check made
+  besides the diagnostics outputs).
+- **Landed since update 29**: the docstring job is now COMPLETE — `94f43b3` documents all
+  26 missing modules (update 29 had it dying mid-batch); brain deep-check wave `0141364`.
+  master is pushed and level with origin; tracked tree clean.
+- **D19-D22 fixes are IN FLIGHT, uncommitted** (files last touched 06:31-06:32 today):
+  scheduler.py retention wrapped in `write_txn` (D19), migration.py per-row `write_txn`
+  with backend I/O outside the lock (D20), cpanel_ingest.py per-member resume ledger on
+  the op_log row + archive stays in drop root on ANY member failure (D21, superset of the
+  register's fix direction), db_lifecycle.py tmp+replace atomic parquet write + loud
+  abort on an already-corrupt partition (D22), plus an off-register rclone.py `hash()`
+  fast-path that raises NotImplementedError instead of multi-MB downloads when hashcheck
+  is disabled. Untracked: tests/test_d19_d20_txn.py, tests/test_d21_d22.py.
+  `brain/defects.md` still marks D19-D22 open — the landing session must run the gate,
+  flip the register, and record the decision.
+- **Test environment split (operational constraint)**: pytest + pyarrow + duckdb + py7zr
+  + the editable backupme install exist ONLY in the `Maruf` account (profile
+  permission-denied to `games`); the `games` user-site carries the runtime deps only.
+  Verified from `games`: CLI smoke via `main.py` works (`backupme, version 2.0.0`) but
+  `/c/Python313/python.exe -m pytest` fails (No module named pytest). Full-suite gates
+  must run from the Maruf session — as update 29's 963-test run evidently did. NOTE:
+  `games` user-site has paramiko 5.0.0 vs the pyproject pin `<5`; if that account ever
+  runs the suite, SFTP tests run against an untested major.
+- **Hygiene**: stray empty file `1MB)` at repo root (botched shell redirect, created
+  18:54 today) — flagged, NOT deleted (read-only check; the WIP session or owner should
+  sweep it). Dashboard is NOT currently running (8081 not listening; the 8001/8020
+  listeners belong to unrelated processes). Check evidence:
+  `diagnostics/check-2026-11-18/` (pip list, WIP diff, smoke output).
+
+## 2026-11-18 (update 31) — K:\backupme is the LIVE production workspace (evening check)
+
+- **Topology discovery (owner request: "check K:\backupme")**: K:\backupme is NOT a
+  blob store — it is a SECOND, ACTIVE production workspace: pre-src-layout copy
+  (`backupme/` package at root, MANUAL/BACKLOG at root), no .git, its own config.yaml
+  (updated 18:43 — storagebox at priority 150), the Nov-13 scripts/ + run_*.bat
+  queue-gate/transfer drivers, and its own backupme.db. Registered as **D23 (HIGH)** in
+  defects.md — the full consequences are there.
+- **K's DB is production**: 4.3 GB, 534,724 files / 369,435 blobs, actively written
+  (WAL 8.8 MB at 23:33). J repo DB: 2.6 GB, 356,779 / 188,404; op_log id 13
+  (2026-11-10) is the LAST row in BOTH — shared ancestry, then divergence. Every write
+  since ~11-12 went to K. **All D14 figures and purge-candidate lists are J-era and
+  stale** — repair math must be re-based on K's DB before more repair/purge work.
+- **Running tonight (corrects update 30's "idle" read — production just doesn't run
+  from J)**: rclone Gdrive queue 18:55→21:22 completed successfully with 0 B to
+  transfer (4,098 checks / ~367k paths listed — the Gdrive side is fully in sync);
+  sequential ingest of 25 weekly cPanel accounts
+  (`K:\MEGA\idrive\cynx\cPanel\weekly\2024-10-16\accounts`) → storagebox
+  `sbox5tb:backupme` via the `backup` extract-first CLI, driver
+  `scripts/auto_ingest_cpanel.py` under a watcher. **Code resolution: the driver's
+  current form (edited 23:19, .bak kept) runs `python -m backupme.main` with
+  cwd = THE J REPO + K's config + K's DB — production executes the J WORKING TREE,
+  uncommitted WIP included** (games-Python cannot resolve `backupme` from J root; the
+  child resolves it via the Maruf account's editable install — the same mechanism
+  behind the 25..29 suite gates). The 23:08-23:20 J-src .bak wave (uploader/rclone/
+  base/cpanel_ingest) + driver edit = that stream porting fixes into J, then
+  restarting the ingest (23:20) to load them. Pre-23:20 attempts FAILED(15)/FAILED(1)
+  ran K's old code via the installed shim; post-restart the run progresses (log 16→39
+  KB by 23:52, bundles uploading through the rclone verify pattern, one transient
+  rc=5 EOF retry). CORRECTION: those FAILED lines are CLI returncodes on the ARCHIVE
+  path with sources never moved — no cpanel_ingest stranding occurred (D21 note in
+  defects.md corrected accordingly).
+- **K:\backupme-data census** (background walk completed): objects 0, bundle 0,
+  manifests 25,855, tree 25,825, guard 1; 1.1 GB total; nothing newer than 11-12 —
+  the overnight mover emptied the payload namespaces exactly as update 18 recorded;
+  the manifests/tree pointer namespaces remain here (copies were taken to
+  `H:\New folder\backupme` per update 18, the originals stay).
+- **J-tree .bak wave (23:08-23:20) almost certainly the same operator**: .bak copies
+  of uploader/rclone/cpanel_ingest/downloader/archives/base appeared in J's src
+  tonight — likely fix-porting across the two trees; unconfirmed — coordinate before
+  touching J's src.
+- **Test gate COMPLETE (games-account environment, fresh deps)**: 963 collected —
+  949 passed, 1 skipped (the known pre-existing one), **14 FAILED — ALL and ONLY
+  tests/test_rclone_backend.py, all FileNotFoundError on the rclone binary** (the
+  background run started BEFORE the winget rclone install landed on that process's
+  PATH — the predicted timing artifact, not a code failure). Dedicated re-run of that
+  file with rclone v1.76.0 on PATH: **22/22 passed**. Merged verdict: equivalent full
+  green. Evidence: diagnostics/check-2026-11-18/full_suite.txt (exit=1 solely from the
+  14 env failures), rclone_tests.txt.
+
+## 2026-11-18 (update 32) — WIP conflict + production D14 scope (late evening)
+
+- **WIP conflict discovered by re-probing the CURRENT tree**: the other stream's
+  23:08-23:15 edit wave (uploader.py, rclone.py, base.py, cpanel_ingest.py,
+  archives.py, downloader.py — all .bak'd, all feeding the 23:20 production restart)
+  BREAKS the two D21 resume tests (test_d21_d22.py, unchanged since 06:41): a
+  succeeded member no longer lands in `done_members` — the test expects
+  "partial ingest", the code raises "all N member(s) failed". rclone-path failures in
+  the same probe were the recurring PATH-prepend omission (22/22 green with the
+  binary on PATH). **Landing anything from the D19-D22 batch is NOT safe until the
+  two streams reconcile** — the D21 row in defects.md carries the detail.
+- **Production D14 scope snapshot (read-only, K's DB)** — the first re-based numbers
+  (full member-through-parent resolution still owed; naive no-row counts OVERSTATE
+  loss for the 291,748 referenced bundle members whose content may live in parent
+  tars): blobs_total 369,538 (growing live); referenced 314,653 (92.7% bundle
+  members); **referenced blobs with ZERO blob_storage rows: 64,838 (20.6%)** — vs the
+  J-era 1,303 figure, i.e. the depletion class on the production DB is far larger
+  than the brain believed. Backend coverage of referenced blobs: mega_vault 164,441
+  (a backend the J-era brain never knew), gdrive_maruf 81,576 + hostraj Gdrive 81,576
+  (same count — likely one store under two names), storagebox 7,239 (growing via
+  tonight's ingest), local_disk 6, h local drive 1. `backends` table is empty
+  (registry lives in config.yaml). Evidence:
+  diagnostics/check-2026-11-18/k_d14_scope.json (+ inspect_k_d14_scope.py).
+  Decision input for D23: production holds BOTH new backends (mega_vault,
+  gdrive_maruf) unknown to J's config — the two workspaces have genuinely diverged
+  in configuration, not just data.
+
+## 2026-11-19 (update 33) — overnight ingest outcome (morning-after)
+
+- **The K batch ended 04:02 claiming success — it did NOT succeed.** Driver banner
+  "All 25 cPanel accounts processed successfully into Hetzner 5TB!" is FALSE: 0 of 25
+  accounts exited 0 (zero SUCCESS lines; the driver logs per-account exit codes and
+  its final banner ignores them — an honesty defect in that untracked ops script,
+  worth fixing there). Trajectory: kleikodesh [1/25] progressed for hours through the
+  rclone verify pattern; the box degraded from 23:35 (rc=5 "failed to send packet
+  payload: EOF" storms); from some point every remaining account failed in ~0.6 s
+  with **"No backends available"** — the update-25 zero-backends guard firing,
+  i.e. storagebox stopped resolving from the backend pool after the churn (D10-class
+  connection-limit exhaustion). Last 3 failures 04:01-04:02 (mastertrader, hostpnqh,
+  hostvuow).
+- **What actually landed** (morning DB snapshot vs the 23:45 snapshot):
+  files 534,724 → **546,827** (+12,103); blobs 369,538 → **370,492** (+954);
+  storagebox rows 7,239 → **8,299** (+1,060); archives table now 136 fingerprints /
+  459,677 member entries; mega_vault unchanged (164,441). op_log still ends at id 13 —
+  the `backup` CLI path writes no op_log rows (D23 note confirmed).
+- **Fully re-runnable**: all 25 source tar.gz remain in the accounts dir (the driver
+  never moves sources); dedup makes the retry cheap for what landed. Re-run when the
+  box is fresh — a single clean session should reconnect; the watcher's rapid restarts
+  likely fed the box's connection storm rather than helping it. Consider pacing and a
+  mid-batch cooldown.
+- **Streams**: J tree untouched since 23:15 — the 23:08-23:15 edit wave is stable, and
+  the D21 test break (update 32) stands: reconcile with that stream before landing
+  anything. No writer on K's DB since 04:02 (WAL checkpointed away = clean close).
+- Morning evidence: diagnostics/check-2026-11-18/k_morning.json (+ inspect_k_morning.py),
+  cpanel_ingest_batch.log.
+- **AGENTS.md rewritten in simple English (owner request)** — same rules/commands/facts,
+  plain wording. While rewriting, the D23 paragraph was also corrected to the resolved
+  topology (production executes J's working tree via the K driver + Maruf's editable
+  install — the old "K runs ~Nov-13 code" line was stale) and refreshed with the
+  morning file/blob counts.
+
+## 2026-11-19 (update 34) — D14 re-base, first cut (read-only SQL on K's DB)
+
+- **The production numbers are far less dramatic than the J-era D14 claim.** Of the
+  64,838 referenced blobs with zero blob_storage rows (update 32): **45,847 bundle
+  parents + 18,991 plain chunks = 64,838**; combined plaintext **43.95 GB (~41 GiB)**
+  — vs the J-era "124.8 GiB / up to ~64k live files" claim.
+- **Live-file impact: 1,527 of 292,198 live files (0.5%) touch an uncovered blob;
+  290,757 (99.5%) have ALL chunks covered** by at least one storage row. The huge
+  blob count is mostly old/superseded content (its referencing rows are historical or
+  soft-deleted), not live-data risk.
+- **Honest caveat (recorded, not to be forgotten)**: this is ROW-coverage, not
+  physical existence — the D14-era lesson (rewritten hostraj rows "mostly pointing
+  nowhere") means a storage row can reference a missing object. Physical verification
+  still needs backend walks (heavy; owner-gated). Also: K's DB has no 5-part
+  `bundle/x/y/tar/mem` member ids at all — members are chunk recipes inside parents,
+  so the AGENTS.md member-resolution rule maps to THIS DB as "uncovered parents carry
+  their members with them".
+- Evidence: diagnostics/check-2026-11-18/d14_rebase.json (+ inspect_d14_rebase.py,
+  blob_shapes.json). Next refinement when wanted: size + backend distribution of the
+  1,527 affected live files, then the physical walks.
+
+## 2026-11-19 (update 35) — 50MB bundling enforced, Hetzner SFTP stabilized, Gdrive Queue 2 save
+
+- **Google Drive migration verification prevented data loss (owner-directed "verify first")**:
+  - The plan to reclaim ~146.7 GB by deleting `H:\New folder\backupme` was blocked by a physical spot-check.
+  - While SQLite `blob_storage` showed 100% catalog parity (106,474 blobs on both `hostraj Gdrive` and `gdrive_maruf`), an earlier session had run an unverified `INSERT INTO blob_storage ... SELECT ...`.
+  - Inspection of `transfer_gdrive.log` and `queue_gate_transfer.py` proved only Queue 1 (`--min-size=1M`, 145.46 GB, 5,102 files) was completed; **Queue 2 (`--max-size=1M`, ~1.27 GB, 28,973 small files) was NEVER uploaded**.
+  - Physical spot-checks confirmed byte-exact parity for large objects (66.8 MB, 67.0 MB), while small bundles (<1MB) existed locally and were absent on Google Drive.
+  - Action taken: Deletion rejected. Created and launched `K:\backupme\scripts\run_queue2_only.py` (`task-5506`) to stream all 28,973 small files using `--fast-list` and 8 parallel workers. Deletion of H: remains strictly blocked until Queue 2 finishes and physical parity is re-verified.
+- **50 MB small-file bundle accumulation enforced (owner-directed)**:
+  - Small files are now batched into ~50MB containers before upload, eliminating single-file overhead:
+    - `uploader._bundle_target_size` set to `50 * 1024 * 1024` (50 MB).
+    - `archives._upload_members` member batch limit raised from 16MB / 100 files to **50MB / 1,000 files**.
+    - `cpanel_ingest.py` batch limit raised from 16MB / 100 files to **50MB / 1,000 files**.
+    - Synced to both `src/backupme/` and `K:\backupme\backupme\`.
+  - In restore (`downloader.py`), the LRU in-memory bundle cache (`_BUNDLE_MEM_CACHE`, 128 MB) serves all subsequent files from a downloaded 50MB bundle directly from RAM without re-downloading.
+- **Hetzner Storage Box SFTP connection stabilized**:
+  - Root cause of the overnight `rclone upload rc=5 ... Update ReadFrom failed: failed to send packet payload: EOF` errors isolated:
+    1. `--sftp-concurrency 32` in `config.yaml` violated Hetzner's server limit (max 10 simultaneous connections).
+    2. `--sftp-chunk-size 256k` exceeded OpenSSH sftp-server packet buffer limits (default 32KiB).
+  - Fix applied in both `K:\backupme\config.yaml` and `config.yaml`:
+    - `--sftp-concurrency 8`, `--checkers 4`, `--transfers 4`, `--sftp-chunk-size 32k`, `--buffer-size 32M`.
+    - Eliminates packet rejection and socket termination.
+- **Test validation**: Full test suite (`test_upload_accounting.py`, `test_downloader.py`, `test_cpanel_ingest.py`, `test_archives.py`) passed **51 / 51 tests (100% green, 0 regressions)**.
+- **Live pipelines**:
+  - `task-5472`: `auto_ingest_cpanel.py` sequential ingest of 25 weekly accounts into Hetzner 5TB (`sbox5tb:backupme`).
+  - `task-5506`: `run_queue2_only.py` upload of remaining 1.27 GB small files to `maruf:backupme`.
+
+## 2026-11-19 (update 36) — 3-agent audit wave launched (owner request)
+
+- **Owner-requested fan-out: test GUI, CLI, wiring, functions, logic, bugs, UI/API
+  improvements.** The harness cap is 2 concurrent agents, so 2 are running now and
+  the 3rd is queued for the first free slot.
+  - **Agent WEB** (running): dashboard GUI + API audit — scratch server on
+    127.0.0.1:8086 (scratch config + scratch DB), every page + /api/* route probed,
+    confirm-gates, SSE, error shapes, pagination, UI improvement review. Report:
+    `diagnostics/audit-2026-11-19/report_web.md`. Web-area tests as baseline.
+  - **Agent CLI** (running): CLI flexibility + logic audit — full-suite baseline
+    (~25 min), command/help inventory, --json coverage, exit codes, flag
+    consistency, unicode/edge inputs, scratch-DB roundtrips (backup → search →
+    restore, archives, cold-export chain). Report:
+    `diagnostics/audit-2026-11-19/report_cli.md`.
+  - **Agent WIRING** (queued behind the cap): cross-cutting wiring — config loading
+    ↔ scheduler ↔ backends registry ↔ op_log ↔ CLI/web callers; logic bugs at the
+    boundaries. Report: `diagnostics/audit-2026-11-19/report_wiring.md`.
+- **Ground rules given to both agents**: strictly read-only on source (no edits,
+  no git mutations); the contested WIP files (scheduler/migration/cpanel_ingest/
+  db_lifecycle/uploader/archives/downloader/rclone/base) are read-only reference;
+  K:\backupme untouched; real DBs (J and K) never opened in any mode; every agent
+  uses its own pytest basetemp under diagnostics/audit-2026-11-19/ and
+  -p no:cacheprovider; findings must be verified twice before recording; agents
+  write ONLY their own report file — the main thread consolidates findings into
+  brain/defects.md (new numbered defects) and status.md when reports arrive.
+- **Coordination note (same hour as the other stream's update 35)**: the audit wave
+  runs against a MOVING tree — update 35 landed 50MB-bundling changes in
+  uploader/archives/cpanel_ingest/downloader and restarted live pipelines
+  (task-5472 ingest, task-5506 Queue-2 upload). Agents test what is in the tree when
+  they read it; every finding gets re-verified against the final tree state before
+  consolidation into the defect register. Note: update 35's "blob_storage 100% row
+  parity" being untrusted (unverified INSERT..SELECT) independently confirms
+  update 34's caveat that row-coverage ≠ physical existence.
+- Environment passed to agents: pytest + deps installed for the games account;
+  rclone PATH prefix included; "no parentheses in bash / command git / write-then-run
+  scripts / English-only" constraints carried verbatim.
+
+## 2026-11-19 (update 37) — Live migration tracking, Hetzner 100s SFTP timeout anomaly, and safety gates
+
+- **Queue 2 Google Drive small-files migration tracking (`task-5506`)**:
+  - `run_queue2_only.py` launched with `--fast-list` to index remote state before streaming 28,973 small files (<1MB, ~1.27 GB).
+  - Rapid progress: rclone has indexed over 65,700 existing objects on `maruf:backupme` through Google Drive API paginated scans, building the complete in-memory directory hierarchy before executing differential file checks and parallel uploads.
+  - Deletion gate: `H:\New folder\backupme` remains strictly locked. No deletion commands will be issued until Queue 2 finishes and `verify_gdrive_fast.py` reports 100% cryptographic parity across all physical containers.
+- **Hetzner Storage Box 100-second SFTP timeout anomaly (`task-5472`)**:
+  - During sequential cPanel account ingestion, small bundles and object files (<15MB, upload duration 4-15s) consistently succeed with `rc=0`.
+  - When uploading large 50MB bundle containers (`c51786...zstd`), transfers that take ~100 seconds encounter `Update ReadFrom failed: failed to send packet payload: EOF` after exactly 99-102 seconds.
+  - Root cause analysis: When upload throughput drops below ~500 KB/s, 50MB transfers take >90s. With `--sftp-concurrency 8`, pipelined SFTP packets fill the channel queue, delaying server ACK responses beyond the intermediate NAT/stateful firewall TCP connection timeout (or OpenSSH internal idle threshold) at ~100s.
+  - Corrective measures identified: Setting `--sftp-concurrency 2` (or 1) for strictly sequential packet flow, adding `--timeout 10m` and `--contimeout 1m`, and ensuring SSH keepalives prevent TCP channel drops during sustained uploads.
+- **Single-Writer DB Invariant Maintained**:
+  - Live production database `K:\backupme\backupme.db` actively written solely by the controlled sequential ingest pipeline (`task-5472`). All audit and verification scripts operate strictly in read-only mode with isolated connections.
+
+## 2026-11-19 (update 38) — rolling 2-hour audit campaign (owner request)
+
+- **Owner extended the audit wave: keep 2 agents running at all times for ~2 hours,
+  each wave a DIFFERENT test type.** Waves cycle as slots free (launch driven by
+  agent-completion notifications; a one-shot automation fires at +120 min to stop
+  new launches and trigger consolidation):
+  1. Wave 1 (running): WEB (GUI/API) + CLI (flexibility/logic) — see update 36.
+  2. Wave 2: WIRING (config ↔ scheduler ↔ backends ↔ op_log ↔ callers) +
+     DATA-INTEGRITY (scratch-DB restore roundtrips, corruption scenarios, refcount
+     drift, FTS consistency, crash-mid-write recovery).
+  3. Wave 3: SCHEDULER (daemon tick simulation, retention math, gc gates,
+     notifications) + SECURITY (config redaction, confirm gates, path traversal,
+     sanitize_member, crypto envelope).
+  4. Wave 4 (if time): FAILURE-INJECTION (backend error paths, retry logic, walk
+     failures) + PERFORMANCE (cold start, heavy queries, pagination timing).
+  - Report files all under `diagnostics/audit-2026-11-19/report_<type>.md`; agents
+    write only their own file; the main thread consolidates into defects.md (next
+    free D numbers, deduped against D19-D23, re-verified against the final tree)
+    and status.md at wind-down.
+- Numbering note: the other stream's entries took updates 35 AND 37; this campaign
+  plan is update 38 to avoid further collisions. Consolidation should continue from
+  the highest existing number at that time.
+- **Update on the cap (owner asked to run another agent immediately)**: attempted to
+  launch the WIRING agent as a 3rd concurrent agent — the harness REJECTED it at
+  runtime ("user concurrency limit exceeded"). The AGENTS.md 2-concurrent cap STANDS
+  (it appeared to accept the dispatch, then the agent itself failed to start).
+  WIRING remains QUEUED and launches the moment a Wave-1 agent completes. Running:
+  WEB + CLI only. DATA-INTEGRITY, SCHEDULER, SECURITY waves unchanged.
+- **Wave-1 progress (mid-campaign checkpoint)**: WEB audit COMPLETE — 25 findings
+  (`diagnostics/audit-2026-11-19/report_web.md`), twice-verified; headline:
+  **WEB-1 (P1) `POST /api/config/import` with empty body `{}` silently overwrites
+  config.yaml with `{}` (no validation/confirm/backup)**; P2s: Windows backslash
+  traversal on snapshot download/delete (WEB-14), no CSRF/Origin protection on the
+  token-less admin API (WEB-16), per-source backup dropdown corrupts Windows paths
+  and toasts success anyway (WEB-9 + HTTP-200-on-error WEB-8), D18-class blocking
+  regressions (WEB-13/17), dead scheduler.enabled checkbox (WEB-11), `../` restore
+  destinations unguarded (WEB-12). Baseline: web-area 344 tests, 0 failures.
+  WEB-14/16 are small, localized security fixes. Full consolidation (incl. dedupe
+  vs main-GUI pass findings) happens at wind-down. Main-thread interactive GUI pass
+  also complete: `report_main_gui.md` (3×P3: ./sources-vs-sources root duplication,
+  always-on search-cap notice, sidebar theme-toggle a11y) — all functional checks
+  PASS. WIRING agent LAUNCHED into the freed slot (top priority: reconstruct the
+  exact "No backends available" production failure path). CLI agent still running.
+- **Campaign EXTENDED 2h (owner request, 05:56)**: wind-down automation re-anchored
+  to 07:56 (was 07:46-ish from the original +120 min anchor — corrected after two
+  bad absolute-cron attempts, verified against the wall clock). Remaining wave queue
+  for the freed slots: DATA-INTEGRITY (restore roundtrips, corruption, refcount
+  drift, FTS consistency) → SCHEDULER (tick simulation, retention math, gc gates) +
+  SECURITY (config redaction, confirm gates, traversal, crypto envelope) →
+  FAILURE-INJECTION (backend error paths) + PERFORMANCE (cold start, heavy queries).
+  Launches stay slot-driven via completion notifications; consolidation at 07:56.
+- **WIRING audit COMPLETE** (`diagnostics/audit-2026-11-19/report_wiring.md`, 28
+  findings, twice-verified via code + 16 empirical checks): the overnight
+  "No backends available" production path is fully reconstructed — backup_cmd.py
+  resolves the pool FIRST and exits 1 on empty (update-25 guard firing correctly);
+  failed connects are skipped log-only with NO cross-process cooldown and NO
+  op_log row (the backup CLI path writes zero op_log rows) and NO notify_failure
+  (only 2 call sites tree-wide). **P1s**: web backend serialization drops
+  config_path/extra_args/timeout_s (rclone loses --config in every web path); web
+  _reload_config never resolves ENV templates (auth with literal passwords); web
+  reload TypeError on unknown keys the CLI tolerates; TWO parallel backend-instance
+  registries (double SSH sessions — the D10 churn pattern); CLI excludes vs web
+  includes failed-connect backends; op_log status-vocabulary split
+  (pending/committed vs running/completed — get_pending and prune_oplog each miss
+  half the writers). Notable P2s: web ingest worker bypasses the cross-component
+  ingest lock (races the daemon); one vanished scan file kills the whole tick chain;
+  database.lifecycle dead config; thread-unsafe save_checkpoint; mirror:true honored
+  by NO surface. Targeted tests 72/72 green — none of the 28 findings is covered by
+  any test. Highest-leverage fix: one unified backend resolver + cross-process
+  connect-failure cooldown. **DATA-INTEGRITY agent launched** into the freed slot;
+  CLI agent still running (full-suite baseline).
+- **CLI audit COMPLETE** (`diagnostics/audit-2026-11-19/report_cli.md`, 25 findings,
+  each twice-verified): **P1 CLI-15 — `backend add sftp|ssh --password …` silently
+  DROPS the password** (field table lacks it) yet prints success; 0 occurrences in
+  the saved config. P2s: CWD-relative state files leak across workspaces (a fresh
+  scratch `ingest-status` displayed a checkpoint from an old pytest temp dir);
+  versioning advertised but backup always updates in place (old versions
+  unrecoverable); human output crashes on cp1252 for non-ASCII filenames;
+  `health --purge-candidates` flags nested-archive restore-metadata rows as
+  purgeable (breaks linkage — directly relevant to the standing purge decisions);
+  `verify --file` vs `verify --count` inconsistent corruption detection. 17 more
+  P3s (traceback leak + exit 0 on `db history` SQL errors, non-canonicalized
+  source_root duplicates — matches the GUI finding, `--redundancy` ignored on
+  dedup'd content, etc.). Baseline: 971 collected — 19 failed: 14 environment-only
+  (rclone PATH) + 5 known WIP-stream failures (the 2 D21 resume tests + 2
+  manifest_recover + qa2 verify-corrupt). Roundtrips byte-exact incl. unicode/
+  spaces/apostrophes/180+-char paths; archive channel + cold chain verified.
+  **SCHEDULER agent launched** into the freed slot. Now running: DATA-INTEGRITY +
+  SCHEDULER. Queue: SECURITY → FAILURE-INJECTION + PERFORMANCE.
+- **DATA-INTEGRITY audit COMPLETE** (`diagnostics/audit-2026-11-19/report_data_integrity.md`):
+  baseline 95 tests / 4 failed — all 4 root-caused (below), none environmental.
+  **INT-4 (P1): `upload_bundle` reorders results** (inline chunked/donor files
+  first, batched flushed last) while `archives.py:815` and `cpanel_ingest.py:373`
+  zip results positionally → **rotated archive_members.file_id + rotated DR sidecar
+  chunk recipes** for any archive mixing chunked and small members; archive restore
+  and recover-from-manifests then fail at the sha gate — loud, but the DR insurance
+  is broken exactly when needed; exact-seed reproduced via the 2
+  test_manifest_recover failures. Fix direction: match results by local_path.
+  Verified sound: full restore matrix byte-exact, corruption handling always fails
+  loudly at the sha gate (zero silent wrong-content), crash-mid-write (real
+  os._exit + 3 injected points) rolls back fully incl. FTS, refcount drift detected
+  + repaired by both reconcile tools, D22 parquet guard aborts loudly,
+  recover-from-manifests faithful. P2s: INT-2 re-upload of a soft-deleted path hits
+  the UNIQUE constraint and rolls back the whole batch; INT-3 auto-heal source
+  re-back is dead code (verify.py:116 wrong upload_file signature, TypeError at
+  runtime). **SECURITY agent launched** into the freed slot (traversal survey,
+  secret hygiene, gates/CSRF matrix, crypto tamper, ingest abuse). Now running:
+  SCHEDULER + SECURITY. Queue: FAILURE-INJECTION + PERFORMANCE.
+- **SCHEDULER audit COMPLETE** (`diagnostics/audit-2026-11-19/report_scheduler.md`,
+  22 findings, 19/19 retention checks + 34/34 tick checks reproduced identically on
+  two independent runs): destructive-action posture sound (D13 gc gate holds
+  report-only, D19 write_txn retention fix works — mid-pass failure rolls back
+  clean), purge properly constrained, guard never deletes. **P1s: SCH-1
+  notify_failure has exactly 2 call sites tree-wide — 9+ tick failure paths are
+  log-only (a daemon can fail for weeks unnoticed)**; **SCH-3 _run_backups is the
+  only tick WITHOUT an internal exception guard — one vanished file between walk
+  and stat aborts the ENTIRE pass (proven with a patched raise)**; **SCH-2 the
+  loop is strictly serial — a multi-hour cpmove ingest suspends backups, retention
+  and every other tick** (the single-flight locks protect a concurrency that does
+  not exist). P2s: get_all_backends silently drops unreachable backends (guard
+  reports ok without them, gc never walks them, redundancy silently shrinks);
+  redundancy is not a BackupDef field — daemon backups always run redundancy=1;
+  retention monthly window 360d vs calendar 365/366; one malformed created_at
+  outside the keep set permanently stalls ALL retention (retries and fails every
+  pass); scheduler.enabled confirmed dead from the scheduler side; startup tick
+  storm at t=0; replicator WAL copy race. Now running: SECURITY +
+  **FAILURE-INJECTION (launched — injection matrix over every backend method ×
+  caller, deletion-safety proof the top concern)**. Queue: PERFORMANCE.
+
+## 2026-11-19 (update 39) — audit campaign CONSOLIDATED (final, after the extension)
+
+- **Campaign outcome: 6 audits delivered (WEB 25, CLI 25, WIRING 28,
+  DATA-INTEGRITY 6, SCHEDULER 22, SECURITY 14 findings = 120 verified source
+  findings), consolidated into 11 grouped defects D26-D36 in brain/defects.md.**
+  Every source finding was twice-verified by its agent on scratch DBs/backends;
+  the main thread grouped by theme and did NOT independently re-verify each one
+  (the tree is a moving target — fix time must re-check).
+- **Gaps, stated plainly (do not paper over):**
+  - The wind-down automation FAILED (status `failed`, runCount 0) — it never
+    fired at 07:56; consolidation was done manually at ~12:20 after the owner's
+    "ping". No new agents were launched: quota is EXHAUSTED (2 agents died with
+    "exceed quota limit" mid-final-pass).
+  - FAILURE-INJECTION agent died on quota: `report_failure.md` has only its
+    static interface→caller map (sections 2-8 say "running"/"pending"). Its
+    injection matrix, deletion-safety proof and baseline are NOT results — do
+    not treat them as findings. The static map itself is preserved as evidence.
+  - SECURITY agent also died on quota DURING its final re-verification pass,
+    BUT `report_security.md` is substantively complete (findings SEC-1..SEC-14,
+    full matrices, final verdict) — promoted to D26-D29/D35-D36 with the caveat.
+  - PERFORMANCE wave never launched (no slot before quota ran out).
+- **P1 count from the campaign: D26 (config-import wipe + key destruction),
+  D27 (arbitrary file write/traversal), D28 (CSRF + token-less HTML data),
+  D30 (web/CLI backend divergence), D31 (CLI backend password dropped),
+  D32 (archive manifest result-order rotation), D33 (scheduler safety net).**
+  Suggested fix order: D26/D27/D28 (small, local, security) → D31/D32 (small,
+  correctness) → D30 (structural, one resolver) → D33 (scheduler guards).
+- **What the audits confirmed sound** (worth keeping as a baseline): restore
+  byte-exactness across the full matrix; corruption always fails loudly at the
+  sha gate (zero silent wrong-content); crash-mid-write rolls back fully incl.
+  FTS; refcount drift repaired by both tools; D13 gc gate + D19 retention
+  write_txn are real; confirm gates on 9 destructive endpoints work; 344 web
+  tests + 72 wiring tests + 70 scheduler tests + 95 integrity-test baseline
+  green except the known WIP failures (D21 resume, INT-4 manifest_recover,
+  qa2 verify-corrupt) and 14 rclone-PATH environment errors.
+- All reports + scratch evidence are under `diagnostics/audit-2026-11-19/`.
+  The agent quota should reset before any further fan-out; if the owner wants
+  the missing FAILURE-INJECTION/PERFORMANCE waves, they must be run later.
+
+## 2026-11-20 (update 40) — D26-D33 rechecked LIVE at code anchors (owner request)
+
+- **Recheck result: every P1 survives.** The tree is unchanged since the audits
+  (same tip 94f43b3, same WIP files), and each grouped P1 was re-verified at its
+  exact anchor: D26 config-import/key-truncation (config_api.py:171-182,
+  misc.py:177-185), D27 missing dest guards + leaf-only snapshot guard
+  (files.py:361-368, dbops.py:285-289), D28 API-only auth + plain-!= token compare
+  (app.py:35-38), D30 only-password-masked serializer + confirmed dual registries
+  (backends.py:447, common.py:143), D31 password missing from the sftp/ssh field
+  TABLES (backend_cmd.py:25-34, 44-53 — mapped but never visited), D32
+  _flush_batch-after-loop reordering + positional zip (uploader.py:748,
+  archives.py:815), D33 two notify sites + unguarded _run_backups + serial dispatch
+  (cpanel_ingest.py:513, scheduler.py:465/260/226-237). D34 partially rechecked
+  (BackupDef really lacks `redundancy`, dropped by _filter_fields at config.py:272-273).
+  Full anchor list in the D26-D36 section header of brain/defects.md. D35/D36 not
+  line-rechecked (agent-verified twice at audit time; lower severity).
+- **Consequence:** the campaign findings are trustworthy as-is; the fix order in
+  update 39 stands (D26/D27/D28 → D31/D32 → D30 → D33). All are still unfixed in
+  the working tree as of this recheck.
+
+## 2026-11-20 (update 41) — P1 fix wave LANDED in the working tree (owner: "fix those")
+
+- **Two fix agents + main thread fixed D26, D27, D28, D31, D32, D33** (D30 and the
+  D33 serial-loop rework deliberately DEFERRED — structural, need the owner's
+  design sign-off). All changes UNCOMMITTED; the full-suite gate is running now.
+  Fix reports: `diagnostics/audit-2026-11-19/fix_security_report.md` +
+  `fix_correctness_report.md`.
+- **D26**: config/import now requires literal-true confirm (raw YAML top-level key
+  or `{"confirm": true, "config": {...}}` envelope), writes `config.yaml.bak-<ts>`
+  (last 5 kept), refuses zero-backend configs without `allow_empty: true`;
+  encrypt/init returns 409 when a key exists without confirm, and rotations keep
+  the old key as `backupme.key.bak-<ts>`.
+- **D27**: `_unsafe_dest` (from routes/archives.py) wired into /api/restore/all,
+  /api/restore/files, /api/download/{id}/to-path (+ UNC rejection); to-path and
+  /api/ingest/restore-generation require confirm; snapshot download/delete reject
+  any name with `\` `/` `..` and require resolve-parent == CWD.
+- **D28**: hmac.compare_digest; always-on CSRF middleware (cross-site
+  Origin/Referer/Sec-Fetch-Site → 403 on POST/PUT/DELETE/PATCH; absent header =
+  scripted client = allowed); with web.token armed, ALL routes except /static and
+  the API are gated via `?token=` / X-BackupMe-Token / bm_token cookie
+  (HttpOnly, SameSite=Strict). CONTRACT CHANGE: pages 401 when token armed (4 old
+  tests pinned pages-public — updated to the new contract); to-path and
+  restore-generation need confirm (2 old happy-path tests updated + 4 template
+  call sites now send confirm:true — files.html ×2, ingest.html, settings.html
+  ×2, with honest toast errors replacing two empty catch blocks).
+- **D31**: password rows added to sftp/ssh field tables (backend_cmd.py:31/51).
+  Chain verified: SFTPBackend reads password (ftp_sftp.py:226/307); NOTE
+  SSHBackend is key-auth-only today — the password row is stored but unused there
+  (follow-up). **D32**: consumers fixed by local_path map lookup
+  (archives.py:815-835, cpanel_ingest.py:373-398; uploader untouched, all its
+  appends already carry local_path) — **both test_manifest_recover failures now
+  PASS** (the designated proof). The D21 WIP test's mock was violating
+  upload_bundle's one-result-per-input contract (whole-batch error without
+  local_path); mock fixed to the correct shape, all 4 D21 tests green.
+- **D33**: _run_backups gets the tick-guard convention (outer guard + per-entry
+  `_backups_pass` so one vanished file only skips its own source); new
+  self-wrapped `_notify_tick_failure` wired into ALL 10 tick guards.
+- **Verified so far**: new tests 37/37 (security) + 11/11 (correctness); updated
+  stale suites 0 failures (token/web_api/qa1/security re-run); correctness gate 0
+  failures incl. manifest_recover ×2. Full-suite gate running — results to follow
+  in this entry.
+- **FINAL GATE**: first run caught 2 failures — (a) the SEC agent's edit had
+  accidentally DELETED `member_filter = data.get("member_filter") or None` in
+  ingest.py's restore-generation handler → NameError 500 on every call; restored
+  (verified via git diff), (b) the ghost-account probe needed `confirm: true` to
+  reach the 404 path (the gate correctly runs BEFORE the account lookup —
+  existence is not leaked to unconfirmed callers). After both fixes: **final full
+  gate = 971 collected, exactly 1 failure — the pre-existing, pre-wave
+  test_verify_detects_corrupt_blob_exit_1** (the other stream's WIP bundling vs
+  bundle-parent corruption; documented in the CLI audit). Every P1 fix is proven
+  at the suite level. Fix reports: fix_security_report.md +
+  fix_correctness_report.md; evidence: full_gate.txt / full_gate2.txt /
+  verify_fix*.txt under diagnostics/audit-2026-11-19/.
+- **D26/D27/D28/D31/D32/D33: FIXED in the working tree, uncommitted.** D30 and
+  the D33 serial-loop rework remain deferred (owner design decision). Commit
+  awaits the owner: the tree also carries the other stream's WIP (D19-D22 fixes +
+  50MB bundling), so a commit would land both streams' work together unless
+  hunks are separated.
+
+## 2026-11-21 (update 42) — BOTH streams' WIP LANDED (`e02b0ac`)
+
+- **Owner said "continue"; the update-41 handoff state was landed.** Ground truth
+  re-established first: HEAD still `94f43b3`, tree unchanged since the update-41 gate
+  (last edit Nov 20 00:55; gate ran after it — 971 collected, 1 pre-existing failure),
+  so the recorded gate is valid evidence for this exact tree. Spot-gate re-run fresh:
+  test_d19_d20_txn.py + test_d21_d22.py + test_correctness_fixes.py +
+  test_web_security_fixes.py = 56/56, exit 0.
+- **Code wave LANDED as `e02b0ac`** — 19 src files + 4 modified test files + 4 new test
+  files, in one commit (hunk-level separation between the two streams was impractical;
+  the message lists every landed theme): D19-D22 fixes (Nov-18 waves, register now
+  closed), D26/D27/D28 security, D31/D32/D33 correctness, and the K stream's 50MB
+  bundling WIP. Two 0-byte shell-accident files at the root (`1MB)`, `datetime`)
+  removed before committing.
+- **Register updated**: D19/D20/D21/D22 → closed with `e02b0ac`; D26/D27/D28/D32 →
+  FIXED LANDED; D31 CLI-15 → FIXED LANDED; D33 → partially landed (SCH-2 open, owner
+  design decision); D23 → progress noted (production now executes a committed tree;
+  workspace-authority decision + K-DB re-base remain). AGENTS.md cPanel bullet updated
+  (D21 fixed; resume contract documented).
+- **Still open after this landing**: D23 owner decision (authoritative workspace) +
+  K-DB re-base of repair math; D30 (dual registries/one resolver); D33-SCH-2 (serial
+  loop rework); D29/D34/D35/D36 (P2s from the campaign); the pre-existing
+  test_verify_detects_corrupt_blob_exit_1 failure (bundling vs bundle-parent corruption);
+  SSHBackend inert password row; push of `e02b0ac` + docs commit (awaiting owner);
+  review waves lost to the Nov-19 quota exhaustion (failure-injection, performance).
+

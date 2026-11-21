@@ -1,54 +1,178 @@
 # Memory
 
-## Language (mandatory)
-- ALWAYS write in English. This applies to everything an agent produces: chat responses, commit messages, code comments, docstrings, docs (README/MANUAL/config examples), plan/brief/report files, progress ledgers, and subagent dispatch prompts. Never output any other language, in any file or message.
+## Language (must follow)
+- Always write in English. Use simple, clear English: short sentences and common words.
+  This applies to everything an agent makes: chat replies, commit messages, code
+  comments, docstrings, docs (README/MANUAL/config examples), plans, reports, progress
+  notes, and prompts sent to subagents. Never write in any other language, in any file
+  or message.
 
 ## Brain (living knowledge base)
-See @brain/README.md — operational status (brain/status.md), wiring status (brain/wiring.md),
-defect register (brain/defects.md), decision log (brain/decisions.md), lessons (brain/lessons.md).
-Update these on every significant finding, fix, or decision; date entries; append, don't rewrite.
+The `brain/` folder is our memory. See @brain/README.md. It holds:
+- `brain/status.md` — what is happening now (operational status)
+- `brain/wiring.md` — what is wired up and how
+- `brain/defects.md` — the list of known defects
+- `brain/decisions.md` — decisions we made, and why
+- `brain/lessons.md` — lessons we learned
+
+How to use it: after every important finding, fix, or decision, add a note with the
+date. Always add new notes at the end. Never rewrite old notes.
 
 ## Project Overview
-See @README.md for the project overview. Commands are Python/CLI, not npm: tests via `/c/Python313/python.exe -m pytest tests/ -q`, CLI entry `backupme` (see docs/MANUAL.md §10 Command Reference).
+See @README.md for the project overview. Commands are Python/CLI, not npm. Run tests
+with `/c/Python313/python.exe -m pytest tests/ -q`. The CLI entry is `backupme` (see
+docs/MANUAL.md §10 Command Reference).
 
-BackupMe is a Python 3.13 (Windows) deduplicating backup tool: click CLI, FastAPI web dashboard, pluggable storage backends (local, ftp, sftp, smb, ssh, rclone, 9drive), SQLite hot store + monthly Zstd Parquet cold history (DuckDB queries).
+BackupMe is a backup tool for Windows, written in Python 3.13. It removes duplicate
+data. It has: a click CLI, a FastAPI web dashboard, storage backends you can plug in
+(local, ftp, sftp, smb, ssh, rclone, 9drive), a hot store in SQLite, and a cold history
+in monthly Zstd Parquet files (you query them with DuckDB).
 
 ## Code Style Guidelines
-- Use descriptive variable names
-- Follow existing patterns in the codebase
-- Extract complex conditions into meaningful boolean variables
-- Lazy imports of core modules inside command bodies (CLI keeps startup fast); module-level `log = get_logger("<module>")`
-- Tests use the `env`/`backends` fixtures from `tests/conftest.py` (isolated config + DB + local backend per test)
+- Give variables clear names.
+- Follow the patterns already used in the code.
+- If a condition is complex, first put it into a boolean variable with a clear name.
+- Import core modules inside the command body, not at the top of the file (this keeps
+  CLI startup fast). At module level, set `log = get_logger("<module>")`.
+- Tests use the `env`/`backends` fixtures from `tests/conftest.py` (each test gets its
+  own config, DB, and local backend).
 
 ## Architecture Notes
-- **Single-writer SQLite** (`backupme/core/database.py`): WAL mode, thread-local connections; every writer module (uploader, ingest, retention, lifecycle) commits explicitly.
-- **Dedup pipeline** (`core/uploader.py`): `upload_bundle` batches small files into tar bundles; content dedup via donor lookup by sha256; ref-counted `blobs` table (`dedup.add_ref`/`unref_blob`; `unref_blob` cascades bundle member -> parent).
-- **cPanel ingest** (`core/cpanel_ingest.py`): streams cpmove tar.gz members one at a time through `upload_bundle`; `tar.extractfile` only (NEVER `tar.extract`); `sanitize_member` rejects traversal/absolute names and normalizes backslashes to `/` (traversal re-checked post-normalization); staging file deleted in `finally`; per-archive op_log idempotency key `cpanel_ingest:<sha256>`; archives move to `drop_root/.done/<account>/` on success — but when only SOME members fail the op still commits and the archive still moves (stranding the failed members: D21, open).
-- **Bundle member blobs** are byte ranges inside their parent bundle (`storage_path` = `bundle@offset:len`). Any blob-copy logic (rebalance/drain) must skip 5-part `bundle/a/b/tar/mem` ids — copying the parent bundle carries members.
-- **DB lifecycle** (`core/db_lifecycle.py`): `cold_export_to_parquet` exports `files` rows past an id watermark to `parquet/files_YYYY-MM.parquet` (zstd-3, pyarrow); `hard_purge_versions` hard-deletes rows that are soft-deleted + past grace + below the watermark; `query_history_duckdb(sql, params)` registers a `files` view over `read_parquet`.
-- **Daemon** (`scheduler.py`): `_periodic_loop` runs backups -> retention -> ingest (every `scheduler.ingest_interval`) -> purge (daily) -> cold export (every `db_lifecycle.cold_export_after_days`) -> gc -> verify; each tick has a non-blocking single-flight lock and its own exception guard; ingest/purge/export are gated on `cpanel_ingest.enabled`.
-- **Rebalance** (`core/rebalance.py`): reuses `mirror.replicate_to_n`; checkpointed to `rebalance_checkpoint.json`; `drain_backend` never deletes (runbook: lower priority -> remove -> `gc --apply`).
-- **Web** (`web/routes/` package, split per backlog B05): `register_routes(app, config)` in `routes/__init__.py` calls each domain module's `register(app, ctx)` — pages, files, backends, dbops, ingest, backup, config_api, scheduler, health, archives, misc; shared plumbing (RouteContext, search helpers, one background-task runner, op_log helpers, `reset_background_state()`) lives in `routes/common.py`. Background-task state dicts are module-scoped in common.py but reset at registration time so each fresh app instance starts idle. Route order still matters: specific paths like `/api/backends/usage` must be registered BEFORE `/api/backends/{name}` (see backends.py).
-- **Config** (`config.py`): dataclass per YAML section wired via `_filter_fields` (unknown keys warn, never crash). Sections: chunking, compression, encryption, verification, retention, database, notifications, ingest(cpanel_ingest), DBLifecycleConfig(db_lifecycle), SchedulerConfig(scheduler).
+- **One writer for SQLite** (`backupme/core/database.py`): WAL mode; each thread has
+  its own connection. Every writer module (uploader, ingest, retention, lifecycle)
+  commits its own work.
+- **Dedup pipeline** (`core/uploader.py`): `upload_bundle` packs small files into tar
+  bundles. It finds duplicate content by sha256 (donor lookup). The `blobs` table
+  counts references (`dedup.add_ref` / `unref_blob`). When a bundle member is
+  unreferenced, `unref_blob` also updates the parent bundle.
+- **cPanel ingest** (`core/cpanel_ingest.py`): reads cpmove tar.gz members one at a
+  time and sends them through `upload_bundle`. Use `tar.extractfile` only — NEVER
+  `tar.extract`. `sanitize_member` rejects path traversal and absolute names, and
+  turns backslashes into `/` (it checks traversal again after that). The staging file
+  is deleted in `finally`. Each archive has an op_log idempotency key
+  `cpanel_ingest:<sha256>`. On success the archive moves to
+  `drop_root/.done/<account>/`. If ANY member fails, the op is marked failed and the
+  archive stays in the drop root; the next ingest run resumes it and retries only the
+  failed members (this was defect D21 — fixed and landed 2026-11-21, commit `e02b0ac`).
+- **Bundle member blobs** are byte ranges inside the parent bundle
+  (`storage_path` = `bundle@offset:len`). Any code that copies blobs (rebalance/drain)
+  must skip 5-part `bundle/a/b/tar/mem` ids — copying the parent bundle already
+  carries its members.
+- **DB lifecycle** (`core/db_lifecycle.py`): `cold_export_to_parquet` moves `files`
+  rows past an id watermark into `parquet/files_YYYY-MM.parquet` (zstd-3, pyarrow).
+  `hard_purge_versions` deletes rows that are soft-deleted + past the grace period +
+  below the watermark. `query_history_duckdb(sql, params)` answers SQL over the
+  Parquet files.
+- **Daemon** (`scheduler.py`): `_periodic_loop` runs backups → retention → ingest
+  (every `scheduler.ingest_interval`) → purge (daily) → cold export (every
+  `db_lifecycle.cold_export_after_days`) → gc → verify. Each tick has a non-blocking
+  lock (only one can run at a time) and its own error guard. Ingest/purge/export run
+  only if `cpanel_ingest.enabled` is true.
+- **Rebalance** (`core/rebalance.py`): uses `mirror.replicate_to_n`. Progress is saved
+  to `rebalance_checkpoint.json`. `drain_backend` never deletes. To retire a backend:
+  lower its priority → remove it → run `gc --apply`.
+- **Web** (`web/routes/` package): `register_routes(app, config)` in
+  `routes/__init__.py` calls each domain module's `register(app, ctx)` — pages, files,
+  backends, dbops, ingest, backup, config_api, scheduler, health, archives, misc.
+  Shared helpers (RouteContext, search helpers, one background-task runner, op_log
+  helpers, `reset_background_state()`) live in `routes/common.py`. The task-state
+  dicts live in common.py but are reset at registration time, so each new app starts
+  empty. Route order matters: register specific paths like `/api/backends/usage`
+  BEFORE `/api/backends/{name}` (see backends.py).
+- **Config** (`config.py`): one dataclass per YAML section, wired through
+  `_filter_fields` (unknown keys warn but never crash). Sections: chunking,
+  compression, encryption, verification, retention, database, notifications,
+  ingest(cpanel_ingest), DBLifecycleConfig(db_lifecycle), SchedulerConfig(scheduler).
 
-## Subagents (mandatory discipline)
-- **Fan out work to background subagents; run at most 2 at a time.** The harness rejects the 3rd concurrent agent ("user concurrency limit exceeded") — dispatch 2, and resume/launch the next the moment a slot frees instead of doing the work inline.
-- **Exactly one agent may WRITE the database at a time.** Any other concurrent agent must be strictly read-only (queries, reports, file inventory). A copy-only job (e.g. blob consolidation) does not count as a writer.
-- Always launch subagents with `run_in_background: true` so the main thread keeps working and can collect results as notifications arrive.
-- Every subagent prompt must carry the shell constraints (broken startup script: no parentheses in bash commands, `command git`, write scripts via the Write tool then `cd /j/personal@hostraj.com/backupme && python script.py`), the English-only rule, and an explicit do-not-touch list for in-flight jobs and other agents' output files.
+## Subagents (must follow)
+- Give work to background subagents. Run at most 2 at the same time. The harness
+  rejects a 3rd agent ("user concurrency limit exceeded"). Start 2; when one finishes,
+  start the next instead of doing the work in the main thread.
+- **Only one agent may WRITE the database at a time.** Every other agent running at
+  the same time must only read (queries, reports, file lists). A job that only copies
+  data (for example blob consolidation) does not count as a writer.
+- Always start subagents with `run_in_background: true`, so the main thread keeps
+  working and collects results when they arrive.
+- Every subagent prompt must include: the shell limits (the startup script is broken:
+  no parentheses in bash commands; use `command git`; write scripts with the Write
+  tool, then run `cd /j/personal@hostraj.com/backupme && python script.py`), the
+  English-only rule, and a clear "do not touch" list for running jobs and other
+  agents' output files.
 
-## Known broken (fix first — ignoring is NOT allowed)
-- **Gdrive backend / store depletion — D14 (CRITICAL, open; root repointed 2026-11-12)**: the configured hostraj Gdrive root is `H:\New folder\backupme` (the old `H:\Backupme` is near-empty — repoint recorded in status update 18). After the owner's overnight store consolidation, **35,967 referenced blobs (124.8 GiB plaintext) had no physical copy**; partially mitigated: 2,741 blobs (16.9 GB) rebuilt from the owner's sha-verified restore tree (`b280fce`), 86.5 GiB filled onto the Storage Box. Residue (~28-30k blobs / up to ~64k live files) is unrecoverable from BackupMe artifacts — plan presented to the owner 2026-11-10; box-registration step awaits approval. Authoritative details: `brain/defects.md` D14. Historical lesson kept: an earlier "51,644 lost rows" estimate was WRONG — those are bundle-MEMBER rows (`storage_path = bundle/...@offset:len`) whose content lives inside parent tars; reachability checks must resolve members through the parent bundle tar (the "1 bundle lost, id=25554" finding superseded the estimate). Parent + member restore-metadata rows are NEVER purge candidates. Full analysis: `diagnostics/root-sweep-2026-11-15/gdrive_lost_impact.txt`.
-- **24 corrupt stored files** at old roots `E:\hostraj\backupme` and `H:\New folder\backupme` (zstd frame damage) — refused by hash-checked consolidation; they affected 17 live files. RESOLVED for 10 of them: re-backed via the real pipeline (incl. the 1.07 GB Mikrotik vmdk, 16 chunks through Storage Box SFTP), DB-verified 10/10 healed, 0 orphan chunks (`diagnostics/root-sweep-2026-11-15/corrupt9_plan.json`). Remaining 7 files are SOURCE_GONE (sources deleted) and still reference corrupt blobs — unrecoverable unless the source reappears; purge candidates on the dashboard. Do not copy the corrupt files from old roots without decompress-hash verification.
-- **Zero-storage-row blobs**: 1,303 referenced blobs had no physical copy. REPAIRED: 791 files re-backed via the real pipeline (new versions), 3 chunked objects healed on all 4 backends, 104 deduped; refcount drift 0; restore tests 3/3. Remaining 725 rows are unfixable (716 SOURCE_GONE incl. recycle-bin, 9 SOURCE_CHANGED dev files) — await user purge decision (`diagnostics/root-sweep-2026-11-15/rep0_report.txt`).
-- **4 junk "archives"** (a.zip 484 B, 2FA.7z 192 B, 2020-12-03 tar.gz 1,861 B, bitexchanger_v20.zip 414 B): vault copies intact, content not extractable; all blobs ref_count=1, no other referencing files. Purge plan ready in `diagnostics/root-sweep-2026-11-15/junk_archives_impact.txt` — NOTE 2FA.7z is the last copy in existence (source deleted). Awaiting user decision; do not purge silently.
-- Rule: never skip, silence, or work around a failing component. If something is broken, fix the root cause first; if genuinely unfixable in this session, record it here with root cause and the concrete unblock condition, then get explicit user approval before proceeding without it.
+## Known broken (fix these first — ignoring is NOT allowed)
+- **Workspace split — D23 (HIGH, open since 2026-11-18)**: TWO workspaces exist.
+  `K:\backupme` (old layout, no git) is the production workspace, and its backupme.db
+  (4.3 GB, ~547k files / ~370k blobs) is the LIVE production index. The J repo's
+  backupme.db (2.6 GB) has had no op_log write since 2026-11-10. **All J-era numbers
+  below (D14 counts, purge lists) are out of date until we re-check them against K's
+  DB.** Key detail: K's driver script runs `python -m backupme.main` with cwd = the J
+  repo — so production executes J's CURRENT working tree (including uncommitted
+  changes), with K's config and K's database. Details: `brain/defects.md` D23. The
+  owner still has to decide which workspace is the authoritative one.
+  First re-based numbers (2026-11-19, row-coverage only — not physical existence):
+  64,838 referenced blobs have no storage row (45,847 bundle parents + 18,991
+  chunks, ~41 GiB plain), but only **1,527 of 292,198 live files** depend on them;
+  99.5% of live files are fully row-covered. See brain/status.md update 34.
+- **Gdrive backend / lost data — D14 (CRITICAL, open; root moved 2026-11-12; numbers
+  are J-era, see D23)**: the hostraj Gdrive root in config is
+  `H:\New folder\backupme` (the old `H:\Backupme` is almost empty — the move is
+  recorded in status update 18). After the owner's overnight store cleanup,
+  **35,967 referenced blobs (124.8 GiB of plain data) had no physical copy**.
+  Partly fixed: 2,741 blobs (16.9 GB) were rebuilt from the owner's sha-verified
+  restore tree (`b280fce`); 86.5 GiB was copied onto the Storage Box. The rest
+  (~28-30k blobs / up to ~64k live files) cannot be recovered from BackupMe data —
+  the plan was shown to the owner on 2026-11-10; the box-registration step waits for
+  approval. Full details: `brain/defects.md` D14. Lesson from the past: an earlier
+  "51,644 lost rows" estimate was WRONG — those are bundle-MEMBER rows
+  (`storage_path = bundle/...@offset:len`) whose content lives inside the parent
+  tars; reachability checks must resolve members through the parent bundle tar (the
+  "1 bundle lost, id=25554" finding replaced the estimate). Parent + member
+  restore-metadata rows are NEVER purge candidates. Full analysis:
+  `diagnostics/root-sweep-2026-11-15/gdrive_lost_impact.txt`.
+- **24 corrupt stored files** at old roots `E:\hostraj\backupme` and
+  `H:\New folder\backupme` (zstd frame damage) — the hash-checked consolidation
+  refused them; they touched 17 live files. 10 of them are FIXED: re-backed through
+  the real pipeline (including the 1.07 GB Mikrotik vmdk, 16 chunks through Storage
+  Box SFTP), verified in the DB 10/10 healed, 0 orphan chunks
+  (`diagnostics/root-sweep-2026-11-15/corrupt9_plan.json`). The other 7 files: their
+  sources are deleted (SOURCE_GONE) and they still point at corrupt blobs — they
+  cannot be recovered unless the source comes back; they sit in the dashboard purge
+  list. Never copy the corrupt files from the old roots without a decompress-hash
+  check.
+- **Zero-storage-row blobs**: 1,303 referenced blobs had no physical copy. FIXED:
+  791 files re-backed through the real pipeline (new versions), 3 chunked objects
+  healed on all 4 backends, 104 were duplicates; refcount drift 0; restore tests 3/3.
+  The remaining 725 rows cannot be fixed (716 SOURCE_GONE including recycle-bin,
+  9 SOURCE_CHANGED dev files) — waiting for the user's purge decision
+  (`diagnostics/root-sweep-2026-11-15/rep0_report.txt`). On K's production DB this
+  class is much bigger (64,838 referenced blobs with no storage row, before resolving
+  members through parent tars — see brain/status.md update 32).
+- **4 junk "archives"** (a.zip 484 B, 2FA.7z 192 B, the 2020-12-03 tar.gz 1,861 B,
+  bitexchanger_v20.zip 414 B): the vault copies exist but the content cannot be
+  extracted; every blob has ref_count=1 and no other file references them. The purge
+  plan is ready in `diagnostics/root-sweep-2026-11-15/junk_archives_impact.txt` —
+  NOTE: 2FA.7z is the LAST copy in existence (its source is deleted). Waiting for the
+  user's decision; never purge silently.
+- Rule: never skip, silence, or work around a failing part. Fix the root cause first.
+  If it truly cannot be fixed in this session, write it here with the root cause and
+  what would unblock it, then get the user's clear approval before going ahead
+  without it.
 
 ## Common Workflows
-- Run tests: `/c/Python313/python.exe -m pytest tests/ -q` (pytest.ini adds `-q --basetemp=test_tmp_backend/pytest`)
-- Single file: `/c/Python313/python.exe -m pytest tests/test_cpanel_ingest.py -q`
-- Git: the shell defines broken `_lc` aliases for `git`/`pytest`/`grep` — always use `command git`; prefer `/usr/bin/grep` and writing command output to a file then reading it.
-- Full CLI smoke: `backupme ingest-cpanel <drop_root> --dry-run --json` must exit 0 and parse as JSON.
-- Ingest e2e (tests show the pattern): build tar.gz with `homedir/*` + `mysql/*` members, place under `drop/<acct>/`, run `cpanel_ingest.ingest_tree`, assert rows under `source_root='cpanel/<acct>'`, second identical archive is skipped, changed archive dedups.
-- Cold storage e2e: `backupme db cold-export` -> `backupme db purge` -> `backupme db history "SELECT ... FROM files ..."`.
-- Add a backend and fill it: `backupme backend add` -> `backupme backend onboard NAME --rebalance`; retire: `backupme backend drain NAME`, remove from config, `backupme gc --apply`.
+- Run all tests: `/c/Python313/python.exe -m pytest tests/ -q` (pytest.ini adds
+  `-q --basetemp=test_tmp_backend/pytest`)
+- Run one file: `/c/Python313/python.exe -m pytest tests/test_cpanel_ingest.py -q`
+- Git: the shell has broken `_lc` aliases for `git`/`pytest`/`grep` — always use
+  `command git`. Prefer `/usr/bin/grep`, and write command output to a file, then
+  read the file.
+- Full CLI smoke test: `backupme ingest-cpanel <drop_root> --dry-run --json` must
+  exit 0 and parse as JSON.
+- Ingest end-to-end (the tests show the pattern): build a tar.gz with `homedir/*` +
+  `mysql/*` members, put it under `drop/<acct>/`, run `cpanel_ingest.ingest_tree`,
+  then check rows exist under `source_root='cpanel/<acct>'`; a second identical
+  archive is skipped; a changed archive dedups.
+- Cold storage end-to-end: `backupme db cold-export` → `backupme db purge` →
+  `backupme db history "SELECT ... FROM files ..."`.
+- Add and fill a backend: `backupme backend add` →
+  `backupme backend onboard NAME --rebalance`. To retire one:
+  `backupme backend drain NAME`, remove it from the config, then `backupme gc --apply`.

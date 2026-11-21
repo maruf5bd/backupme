@@ -119,3 +119,36 @@
   ~20+ min while CI does it in ~3, so "no notification yet" is ambiguous between working
   and hung. Check process liveness + output-file mtime + fixture-dir churn before assuming
   either.
+- **"Nothing is running" is a claim about where you looked, not about the system.**
+  The 2026-11-18 check found the dashboard idle and the J tree quiet and nearly recorded
+  "idle", then discovered production lives in a SECOND workspace (K:\backupme, old
+  layout, its own 4.3 GB DB) mid-ingest with jobs the J tree knows nothing about. Before
+  any state claim, inventory ALL drives for repo-shaped directories (AGENTS.md +
+  backupme package + backupme.db), and treat two DBs with shared op_log ancestry but
+  diverged row counts as one live + one stale — find out which before writing numbers.
+- **An mtime on a log file outranks a summary in the docs.** The brain said K was
+  emptied on 11-12 and the pipeline idle; K:\backupme's log mtimes (minutes-fresh) said
+  otherwise within seconds of looking. Check newest-file timestamps first — they are
+  cheap and they falsify stale summaries immediately.
+
+## Destructive operations & Remote Storage (2026-11-19)
+
+- **Never trust a catalog-only mirror check for deletion.** An SQL `INSERT INTO blob_storage ... SELECT ...`
+  creates an illusion that a remote target has 100% of the data. Always check physical file presence on
+  the remote storage before deleting any local copy. The owner's insistence to "verify first" saved 28,973
+  un-migrated files (~1.27 GB) from being permanently destroyed.
+- **SFTP concurrency & packet size limits on managed storage (Hetzner Storage Box).**
+  OpenSSH SFTP servers on managed storage impose hard limits: max 10 concurrent connections and max 32k/64k
+  packet buffers. Configuring `--sftp-concurrency 32` or `--sftp-chunk-size 256k` causes the server to
+  drop the connection mid-transfer with `Update ReadFrom failed: failed to send packet payload: EOF`.
+  Keep concurrency <= 8 and chunk size at 32k for stable transfers.
+- **rclone `--fast-list` on massive remote hierarchies incurs an initial scanning latency.**
+  When syncing against a remote backend holding tens of thousands of objects (such as Google Drive with ~70k+ files),
+  `--fast-list` must paginate through the entire remote directory hierarchy into memory first. During this time
+  (often 5-10 minutes), transferred bytes remain at 0 while the remote catalog is built. Checking log file
+  `Listed XXXXX` lines reveals actual active listing progress.
+- **The 100-second TCP/SFTP channel drop phenomenon on slow uplinks.**
+  When bundle sizes increase to 50MB, upload durations on modest broadband uplinks exceed 90 seconds. If SFTP
+  concurrency is set too high, upload packet queues delay TCP ACKs. In the absence of aggressive keepalives,
+  firewalls and OpenSSH servers terminate the channel at ~100s. Throttling concurrency to 1-2 and keeping packet
+  buffers small eliminates bufferbloat and stabilizes large bundle uploads.

@@ -143,3 +143,29 @@ Append-only update; every entry above stays exactly as written.
   H: `web/routes/archives.py` + template + `core/manifest_recover.py` +
   `db recover-from-manifests` subcommand. Phase 3 re-ingest of the 20 Softaculous
   archives running on the main thread (single live-DB writer).
+
+## 2026-11-19 (update 4) — 50MB bundle batching & rclone batch wiring
+
+- **Batch Small-File Bundling**:
+  - `uploader._bundle_target_size = 50MB` (was 64MB).
+  - `archives._upload_members` and `cpanel_ingest._flush_ingest_batch` both wired to accumulate
+    members up to **50 MB** or **1,000 files** before invoking `upload_bundle`.
+  - `StorageBackend.upload_batch` and `RcloneBackend.upload_batch` wired to stage batch manifests
+    and pointers to a single temp tree and sync in a single rclone invocation.
+  - `downloader._extract_from_bundle` backed by thread-safe `_BUNDLE_MEM_CACHE` (128 MB max memory),
+    ensuring 50MB bundles are downloaded and decompressed only once per restore sequence.
+- **Rclone SFTP Configuration Tuning**:
+  - `config.yaml` `storagebox` extra_args wired to `--sftp-concurrency 8` and `--sftp-chunk-size 32k`
+    to comply with Hetzner Storage Box limits (10 concurrent connections max, 32k packet buffer).
+
+## 2026-11-19 (update 5) — SFTP socket stabilization & Queue 2 fast-list streaming
+
+- **SFTP Socket Stabilization on Hetzner Storage Box**:
+  - `config.yaml` `storagebox` extra_args refined to `--sftp-concurrency 2`, `--transfers 2`, `--checkers 2`,
+    `--sftp-chunk-size 32k`, `--sftp-idle-timeout 30s`, `--buffer-size 16M`.
+  - Resolves the 100-second EOF socket drop anomaly on sustained 50MB bundle uploads by eliminating pipelined
+    packet queue delay and enabling timely TCP ACK transmission.
+- **Queue 2 Fast-List Gdrive Wiring**:
+  - `scripts/run_queue2_only.py` wired with `--fast-list`, `--max-size 1M`, `--transfers 8`, `--checkers 8`,
+    `--drive-chunk-size 16M`, `--buffer-size 16M` to stream 28,973 small files directly to `maruf:backupme`
+    after an initial paginated scan of the 74k+ existing remote objects.

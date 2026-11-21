@@ -107,3 +107,32 @@
   finishing + committing the docstring sweep, fixing the 2026-11-18 core-review defects
   (D19-D22) and the P3 hygiene batch, pushing the 3 unpushed commits (5865a9b, d05a64b,
   4a270ee).
+
+## 2026-11-19
+
+- **Reject `H:\New folder\backupme` deletion until Queue 2 finishes and passes physical verification** —
+  A catalog match (`hostraj Gdrive` count == `gdrive_maruf` count) is insufficient proof when premature SQL
+  cloning occurred. We mandate physical spot-check verification before deleting any local source repository.
+- **Enforce 50 MB bundle accumulation for small files** —
+  Accumulate small files into single ~50MB binary `.tar.zstd` containers (`_bundle_target_size = 50MB`,
+  batching limits 50MB / 1,000 files) to drastically cut per-file latency and round-trips over remote storage.
+- **Cap Hetzner Storage Box SFTP concurrency at 8 and chunk size at 32k** —
+  Hetzner Storage Box enforces a hard 10-connection limit and standard OpenSSH 32k packet buffer.
+  Setting `--sftp-concurrency 8` and `--sftp-chunk-size 32k` prevents EOF disconnects.
+- **Tune SFTP concurrency to conservative bounds (<=2) for large bundles over slow uplinks** —
+  When uploading ~50MB bundles over uplinks where transfer duration approaches 100 seconds, high concurrency
+  delays packet ACKs and causes EOF disconnects. Concurrency must be throttled to 1-2 to ensure timely packet
+  flow and prevent channel termination.
+
+## 2026-11-21
+
+- **"continue" = land the update-41 handoff state.** The owner's instruction to continue
+  was read as approval to commit the tree that the Nov-20 full gate had already proven
+  (971 collected / 1 pre-existing failure). Both streams' work went into one commit
+  `e02b0ac` (hunk-level separation impractical), then the brain/docs wave as its own
+  commit. This also serves D23's "land the J WIP" fix direction: production executes
+  the J working tree, so an uncommitted tree was production risk.
+- **Push of the new commits stays gated** — outward-facing actions still need the
+  owner's explicit go, per the standing rule.
+- **D30 and the D33 serial-loop rework need the owner's design sign-off** before any
+  restructuring (recorded in update 41 and unchanged).
