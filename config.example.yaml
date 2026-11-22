@@ -71,6 +71,7 @@ backups:
   mirror: false               # true = deletions propagate to storage
   backend: null               # pin to one backend name (null = all by priority)
   move: false
+  redundancy: 1               # copies per file for daemon-scheduled backups (CLI --redundancy overrides per run)
 
 chunking:
   enabled: true
@@ -113,7 +114,7 @@ database:
     backends: all             # or a backend name for DB replica copies
   lifecycle:                  # or use the top-level db_lifecycle section
     purge_grace_days: 14
-    cold_export_after_days: 30
+    cold_export_after_days: 30   # days of rows kept before cold export; 0 or negative disables the scheduled export
     parquet_dir: parquet
     parquet_compression: zstd
     parquet_compression_level: 3
@@ -121,6 +122,7 @@ database:
 db_lifecycle: {}              # optional top-level override of database.lifecycle
 
 scheduler:
+  enabled: true               # false = daemon stays alive but runs no periodic ticks at all
   interval: 3600              # backup pass interval (seconds)
   ingest_interval: 300
   gc_interval_days: 7

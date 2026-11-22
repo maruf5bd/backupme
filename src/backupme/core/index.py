@@ -51,6 +51,19 @@ def index_file(
             commit()
         return row[0]
 
+    # D36 INT-2: the key can still be occupied by a SOFT-DELETED row
+    # (retention soft-deletes old versions while the path stays in use).
+    # The files UNIQUE constraint would reject the insert and roll back the
+    # caller's whole transaction — allocate the next free seq instead
+    # (soft-deleted seqs are never reused, per the versioning contract).
+    seq_held_by_soft_deleted = execute(
+        "SELECT 1 FROM files WHERE source_root = ? AND relative_path = ? "
+        "AND version_seq = ? LIMIT 1",
+        (source_root, relative_path, version_seq),
+    ).fetchone() is not None
+    if seq_held_by_soft_deleted:
+        version_seq = next_version_seq(source_root, relative_path)
+
     execute(
         """INSERT INTO files
            (source_root, relative_path, sha256, size, mtime, chunked, redundancy, version_group, version_seq, content_text)

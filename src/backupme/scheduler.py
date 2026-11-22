@@ -1,6 +1,7 @@
 """Background daemon: _periodic_loop drives backup -> retention -> ingest -> purge -> cold-export -> gc -> verify ticks, each with a non-blocking single-flight lock and its own exception guard.
 """
 import os
+import datetime
 import threading
 import time
 from pathlib import Path
@@ -87,24 +88,45 @@ def collect_changes(
     return candidates, skipped
 
 
-def apply_retention(config: dict):
+def _parse_created_at(value) -> datetime.datetime | None:
+    """Parse a files.created_at stamp; None when the stamp is malformed."""
+    try:
+        if "T" in value:
+            return datetime.datetime.fromisoformat(value)
+        return datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _calendar_months_between(earlier: datetime.datetime, later: datetime.datetime) -> int:
+    """Whole calendar months between two timestamps (month/year arithmetic).
+
+    D34: the monthly window used `monthly * 30` days, which treats a month as
+    30 days and drifts against the real calendar (a 12-calendar-month-old
+    anchor can sit at 365-366 days).
+    """
+    months = (later.year - earlier.year) * 12 + (later.month - earlier.month)
+    return max(0, months)
+
+
+def apply_retention(config: dict) -> dict:
     from backupme.core import dedup as dedup_mod
 
     retention = config.get("retention", {})
     if not retention.get("enabled", True):
-        return
+        return {"deleted": 0, "skipped_malformed": 0}
 
     versions = retention.get("versions", 5)
     daily = retention.get("daily", 7)
     weekly = retention.get("weekly", 4)
     monthly = retention.get("monthly", 12)
 
-    import datetime
-
     groups = execute(
         "SELECT DISTINCT version_group FROM files WHERE deleted_at IS NULL"
     ).fetchall()
 
+    deleted = 0
+    skipped_malformed = 0
     # Whole pass in one explicit transaction: soft-deletes, chunk removals,
     # and blob unrefs commit once atomically; a mid-pass failure rolls
     # everything back and propagates to the tick guard instead of leaving
@@ -127,14 +149,24 @@ def apply_retention(config: dict):
             for r in rows:
                 if r["id"] in keep:
                     continue
-                created = datetime.datetime.fromisoformat(r["created_at"]) if "T" in r["created_at"] else datetime.datetime.strptime(r["created_at"], "%Y-%m-%d %H:%M:%S")
+                created = _parse_created_at(r["created_at"])
+                if created is None:
+                    # D34: one malformed stamp used to raise out of the whole
+                    # pass (clean rollback, same failure every run, retention
+                    # stalled forever). Skip the row, count it honestly, and
+                    # keep the rest of the pass working.
+                    skipped_malformed += 1
+                    log.warning("retention: skipping file id=%s — malformed created_at %r",
+                                r["id"], r["created_at"])
+                    continue
                 days_ago = (now - created).days
 
                 if days_ago <= daily:
                     continue
                 if days_ago <= weekly * 7 and created.weekday() == 0:
                     continue
-                if days_ago <= monthly * 30 and created.day <= 7:
+                months_ago = _calendar_months_between(created, now)
+                if months_ago < monthly and created.day <= 7:
                     continue
 
                 execute("UPDATE files SET deleted_at = datetime('now') WHERE id = ?", (r["id"],))
@@ -142,6 +174,14 @@ def apply_retention(config: dict):
                 execute("DELETE FROM file_chunks WHERE file_id = ?", (r["id"],))
                 for (blob_id,) in chunks:
                     dedup_mod.unref_blob(blob_id, commit_now=False)
+                deleted += 1
+
+    if skipped_malformed:
+        log.warning("retention pass: %d version row(s) skipped — malformed created_at "
+                    "(they are never deleted until their stamp is repaired)",
+                    skipped_malformed)
+    log.info("retention pass: deleted=%d skipped_malformed=%d", deleted, skipped_malformed)
+    return {"deleted": deleted, "skipped_malformed": skipped_malformed}
 
 
 _DAY_SECONDS = 86400
@@ -204,11 +244,24 @@ class BackupScheduler:
             "gc_apply": bool(sc.get("gc_apply", False)),
         }
 
+    def _init_cadence_markers(self) -> None:
+        """Set every cadence's last-run marker to now (D34: all markers used
+        to start at 0, so every cadence tick fired at once on daemon start —
+        the startup tick storm)."""
+        now = time.time()
+        self._last_ingest = now
+        self._last_purge = now
+        self._last_export = now
+        self._last_gc = now
+        self._last_verify = now
+        self._last_guard = now
+
     def start(self):
         initialize()
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._init_cadence_markers()
         self._thread = threading.Thread(target=self._periodic_loop, daemon=True)
         self._thread.start()
         self._replicator.start()
@@ -219,35 +272,53 @@ class BackupScheduler:
         if self._thread:
             self._thread.join(timeout=10)
 
+    def _scheduler_enabled(self) -> bool:
+        sc = self.config.get("scheduler", {}) or {}
+        return bool(sc.get("enabled", True))
+
     def _periodic_loop(self):
         sc = self._sched()
+        # D34: scheduler.enabled=false keeps the daemon alive but runs no
+        # ticks; log once so the idle daemon is visible, not silent.
+        scheduler_enabled = self._scheduler_enabled()
+        if not scheduler_enabled:
+            log.info("scheduler.enabled=false — periodic ticks are disabled; "
+                     "backups/retention/ingest/purge/export/gc/verify will not run")
+        # D34: 0/negative cold_export_after_days used to fire the export tick
+        # on EVERY pass (0 >= 0) — treat it as "disabled" and say so once.
+        export_days = sc["cold_export_after_days"]
+        export_enabled = export_days > 0
+        if not export_enabled:
+            log.info("db_lifecycle.cold_export_after_days=%s — scheduled cold "
+                     "export is disabled", export_days)
         while not self._stop.is_set():
-            try:
-                self._run_backups()
-                self._run_retention()
-                now = time.time()
-                if now - self._last_ingest >= sc["ingest_interval"]:
-                    self._last_ingest = now
-                    self._run_ingest()
-                if now - self._last_purge >= _DAY_SECONDS:
-                    self._last_purge = now
-                    self._run_purge()
-                if now - self._last_export >= sc["cold_export_after_days"] * _DAY_SECONDS:
-                    self._last_export = now
-                    self._run_cold_export()
-                if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
-                    self._last_gc = now
-                    self._run_scheduled_gc()
-                if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
-                    self._last_verify = now
-                    self._run_scheduled_verify()
-                if now - self._last_guard >= _DAY_SECONDS:
-                    self._last_guard = now
-                    self._run_offsite_guard()
-            except Exception as e:
-                # One failed pass must never kill the daemon thread silently.
-                log.exception("scheduler pass crashed — continuing")
-                self._notify_tick_failure("scheduler", e)
+            if scheduler_enabled:
+                try:
+                    self._run_backups()
+                    self._run_retention()
+                    now = time.time()
+                    if now - self._last_ingest >= sc["ingest_interval"]:
+                        self._last_ingest = now
+                        self._run_ingest()
+                    if now - self._last_purge >= _DAY_SECONDS:
+                        self._last_purge = now
+                        self._run_purge()
+                    if export_enabled and now - self._last_export >= export_days * _DAY_SECONDS:
+                        self._last_export = now
+                        self._run_cold_export()
+                    if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
+                        self._last_gc = now
+                        self._run_scheduled_gc()
+                    if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
+                        self._last_verify = now
+                        self._run_scheduled_verify()
+                    if now - self._last_guard >= _DAY_SECONDS:
+                        self._last_guard = now
+                        self._run_offsite_guard()
+                except Exception as e:
+                    # One failed pass must never kill the daemon thread silently.
+                    log.exception("scheduler pass crashed — continuing")
+                    self._notify_tick_failure("scheduler", e)
             self._stop.wait(sc["interval"])
 
     def _notify_tick_failure(self, tick: str, exc: Exception) -> None:
@@ -280,7 +351,16 @@ class BackupScheduler:
             source = entry.get("source", "")
             # "backend" is the real field name; "target" kept as a deprecated alias.
             target = entry.get("backend") or entry.get("target") or ""
-            redundancy = entry.get("redundancy", 1)
+            # D34: BackupDef.redundancy used to be dropped by _filter_fields,
+            # so daemon backups always ran with 1 copy. Coerce defensively
+            # (YAML is not validated) and keep at least one copy.
+            raw_redundancy = entry.get("redundancy", 1)
+            try:
+                redundancy = max(1, int(raw_redundancy))
+            except (TypeError, ValueError):
+                log.warning("backups pass: invalid redundancy %r for source %r — using 1",
+                            raw_redundancy, source)
+                redundancy = 1
 
             try:
                 if not source or not os.path.exists(source):
@@ -461,8 +541,10 @@ class BackupScheduler:
         try:
             from backupme.core import verify as verify_mod
             result = verify_mod.run_integrity_check(count=5)
-            log.info("verify tick: status=%s failed=%s",
-                     result.get("status"), result.get("failed_files"))
+            # D34: the result key is "failed" — "failed_files" (the DB column
+            # name) made this line log failed=None on every tick.
+            log.info("verify tick: status=%s checked=%s failed=%s",
+                     result.get("status"), result.get("checked"), result.get("failed"))
         except Exception as e:
             log.exception("verify tick failed")
             self._notify_tick_failure("verify", e)

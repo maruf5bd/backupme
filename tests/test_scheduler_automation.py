@@ -400,3 +400,194 @@ def test_apply_retention_disabled_noop(env):
         "SELECT COUNT(*) FROM files WHERE version_group='vgx' "
         "AND deleted_at IS NULL").fetchone()[0] == 3
     assert execute("SELECT 1 FROM blobs WHERE blob_id='blob-x'").fetchone()
+
+
+def test_apply_retention_monthly_window_is_calendar_accurate(env):
+    """D34: the monthly window anchors on calendar months, not monthly*30
+    days. Early-month anchors from the last `monthly` calendar months stay;
+    older ones go. `monthly * 30` = 360 days deleted a 12-calendar-month-old
+    window's edge anchor (up to ~365 days old) and drifted on leap years."""
+    import calendar as cal_mod
+    from backupme.scheduler import apply_retention
+
+    now = datetime.datetime.now()
+    vg = "vgc"
+
+    def _anchor(months_back: int) -> datetime.datetime:
+        # The early-month snapshot (day <= 7) `months_back` calendar months ago.
+        year, month = now.year, now.month - months_back
+        while month <= 0:
+            month += 12
+            year -= 1
+        day = min(5, cal_mod.monthrange(year, month)[1])
+        return datetime.datetime(year, month, day, 12, 0, 0)
+
+    # seq 14 = months_back 0 (newest seq + newest date, kept by the version
+    # budget); seq s = 14 - months_back for months_back 1..13.
+    for months_back in range(1, 14):
+        _seed_file(vg, 14 - months_back, _anchor(months_back))
+    _seed_file(vg, 14, _anchor(0))
+
+    apply_retention({"retention": {"enabled": True, "versions": 1,
+                                   "daily": 7, "weekly": 4, "monthly": 12}})
+
+    alive = {r[0] for r in execute(
+        "SELECT version_seq FROM files WHERE version_group=? AND deleted_at IS NULL",
+        (vg,)).fetchall()}
+    # 12 calendar monthly anchors survive (months_back 0..11 = seqs 3..14);
+    # months_back 12 and 13 (seqs 2 and 1) fall outside the window.
+    assert alive == set(range(3, 15)), alive
+
+
+def test_apply_retention_survives_malformed_created_at(env):
+    """D34: one malformed created_at used to raise out of the whole pass
+    (clean rollback, identical failure every run — retention stalled forever).
+    Now the row is skipped with a warning + honest counter and the pass still
+    processes every healthy group."""
+    from backupme.scheduler import apply_retention
+
+    now = datetime.datetime.now()
+    old = _past_non_monday_over_day7(now, 40, 360)  # unprotected date
+    for vg in ("vgm", "vgn", "vgh"):
+        _seed_file(vg, 1, old)
+        _seed_file(vg, 2, now)
+    execute("UPDATE files SET created_at='not-a-date' WHERE version_group='vgm' AND version_seq=1")
+    execute("UPDATE files SET created_at='' WHERE version_group='vgn' AND version_seq=1")
+
+    result = apply_retention({"retention": {"enabled": True, "versions": 1,
+                                            "daily": 7, "weekly": 4, "monthly": 12}})
+    assert result == {"deleted": 1, "skipped_malformed": 2}
+    # Malformed rows stay alive (never deleted on a stamp we cannot read).
+    assert execute("SELECT 1 FROM files WHERE version_group='vgm' "
+                   "AND version_seq=1 AND deleted_at IS NULL").fetchone()
+    assert execute("SELECT 1 FROM files WHERE version_group='vgn' "
+                   "AND version_seq=1 AND deleted_at IS NULL").fetchone()
+    # The healthy group was still processed — the pass did not stall.
+    assert not execute("SELECT 1 FROM files WHERE version_group='vgh' "
+                       "AND version_seq=1 AND deleted_at IS NULL").fetchone()
+
+
+# ---------------------------------------------------------------------------
+# D34: scheduler.enabled, cold-export guard, startup stagger, verify log
+# ---------------------------------------------------------------------------
+
+def test_periodic_loop_skips_all_ticks_when_scheduler_disabled(env, backends):
+    from backupme.scheduler import BackupScheduler
+    import backupme.core.gc as gc_mod
+
+    ran = {"gc": False}
+
+    def fake_gc(backends_list, apply=False):
+        ran["gc"] = True
+        return {}
+
+    orig_gc = gc_mod.run_gc
+    s = None
+    try:
+        gc_mod.run_gc = fake_gc
+        cfg = _make_cfg(env)
+        _drop_archive(env)
+        cfg["scheduler"]["enabled"] = False
+        s = BackupScheduler(cfg)
+        # Run exactly one loop iteration: the patched wait() sets stop.
+        s._stop.wait = lambda x: (s._stop.set(), True)[1]
+        BackupScheduler._periodic_loop(s)
+    finally:
+        gc_mod.run_gc = orig_gc
+        if s:
+            s._stop.set()
+
+    assert ran == {"gc": False}, "gc tick must not run when scheduler.enabled is false"
+    assert execute(
+        "SELECT COUNT(*) FROM files WHERE source_root LIKE 'cpanel/%'").fetchone()[0] == 0, \
+        "ingest tick must not run when scheduler.enabled is false"
+
+
+def test_cold_export_zero_or_negative_disables_tick(env, backends):
+    from backupme.scheduler import BackupScheduler
+    import backupme.core.db_lifecycle as lc
+
+    calls = {"export": 0}
+
+    def fake_export(config=None):
+        calls["export"] += 1
+        return {"status": "ok", "rows": 0, "partition": None, "watermark": 0}
+
+    orig_export = lc.cold_export_to_parquet
+    schedulers = []
+    try:
+        lc.cold_export_to_parquet = fake_export
+        for days in (0, -5):
+            cfg = _make_cfg(env)
+            cfg["db_lifecycle"]["cold_export_after_days"] = days
+            s = BackupScheduler(cfg)
+            schedulers.append(s)
+            # Markers at 0 make every cadence due; only the guard decides.
+            s._stop.wait = lambda x: (s._stop.set(), True)[1]
+            BackupScheduler._periodic_loop(s)
+        assert calls == {"export": 0}, "cold_export_after_days <= 0 must disable the tick"
+    finally:
+        lc.cold_export_to_parquet = orig_export
+        for s in schedulers:
+            s._stop.set()
+
+
+def test_start_staggers_cadence_markers(env):
+    """D34: start() initializes every cadence marker at 'now', so the first
+    pass cannot fire ingest/purge/export/gc/verify/guard all at once."""
+    import threading
+    import time
+    from backupme.scheduler import BackupScheduler
+
+    s = BackupScheduler(_make_cfg(env))
+    assert s._last_ingest == 0.0, "constructor still starts markers at 0"
+
+    class _DummyThread:
+        def __init__(self, *args, **kwargs):
+            pass
+        def start(self):
+            pass
+        def is_alive(self):
+            return False
+        def join(self, timeout=None):
+            pass
+
+    orig_thread = threading.Thread
+    orig_rep_start, orig_rep_stop = s._replicator.start, s._replicator.stop
+    s._replicator.start = lambda: None
+    s._replicator.stop = lambda: None
+    threading.Thread = _DummyThread
+    try:
+        before = time.time()
+        s.start()
+    finally:
+        threading.Thread = orig_thread
+        s._replicator.start, s._replicator.stop = orig_rep_start, orig_rep_stop
+
+    for marker in ("_last_ingest", "_last_purge", "_last_export",
+                   "_last_gc", "_last_verify", "_last_guard"):
+        assert getattr(s, marker) >= before, f"{marker} must be initialized at start"
+
+
+def test_verify_tick_logs_real_failed_count(env, backends, caplog):
+    """D34: the verify tick logged result.get('failed_files') — a key the
+    check result never carries — so every tick logged failed=None."""
+    import logging
+    from backupme.scheduler import BackupScheduler
+    import backupme.core.verify as verify_mod
+
+    def fake_check(check_type="random", count=5, backend_name=None, auto_heal=False):
+        return {"check_id": 1, "status": "failed", "checked": 3, "failed": 2}
+
+    orig = verify_mod.run_integrity_check
+    s = BackupScheduler(_make_cfg(env))
+    try:
+        verify_mod.run_integrity_check = fake_check
+        with caplog.at_level(logging.INFO, logger="backupme.scheduler"):
+            s._run_scheduled_verify()
+    finally:
+        verify_mod.run_integrity_check = orig
+
+    verify_lines = [r.getMessage() for r in caplog.records
+                    if "verify tick" in r.getMessage()]
+    assert verify_lines and "failed=2" in verify_lines[0], verify_lines

@@ -21,6 +21,7 @@ from backupme.core import crypto as crypto_mod
 from backupme.core import retry as retry_mod
 from backupme.core import dedup as dedup_mod
 from backupme.core import index as index_mod
+from backupme.core import path_guard
 from backupme.core import state as state_mod
 from backupme.core import op_log as op_log_mod
 from backupme.core.manifest import Manifest, ManifestChunk, ChunkStorageEntry, write_manifest, _manifest_storage_path
@@ -573,6 +574,29 @@ def upload_bundle(
             relative_path = file_info.get("relative_path", local_path)
             version_group = file_info.get("version_group")
             version_seq = file_info.get("version_seq", 1)
+
+            # D36/SEC T7: NTFS alternate-stream names, reserved device names,
+            # and literal ".." segments index fine but can never be restored
+            # safely — reject them up front with a clear per-file error.
+            unsafe_path = path_guard.unsafe_relative_path_reason(relative_path)
+            if unsafe_path:
+                log.error("upload rejected: %s", unsafe_path)
+                results.append({"local_path": local_path, "status": "error",
+                                "error": unsafe_path})
+                continue
+
+            # D36 INT-2: retention may have soft-deleted the row that occupies
+            # this (source_root, relative_path, version_seq) key. Re-inserting
+            # the same seq would trip the files UNIQUE constraint and roll back
+            # the whole batch — allocate the next free seq instead (soft-deleted
+            # seqs are never reused, per the versioning contract).
+            seq_held_by_soft_deleted = execute(
+                "SELECT 1 FROM files WHERE source_root = ? AND relative_path = ? "
+                "AND version_seq = ? AND deleted_at IS NOT NULL LIMIT 1",
+                (source_root, relative_path, version_seq),
+            ).fetchone() is not None
+            if seq_held_by_soft_deleted:
+                version_seq = index_mod.next_version_seq(source_root, relative_path)
 
             # Strict disk presence check: ensure file physically exists and is accessible
             if not os.path.exists(src_path):

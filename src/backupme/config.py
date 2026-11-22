@@ -80,6 +80,9 @@ class DatabaseAutoBackupConfig:
 
 @dataclass
 class SchedulerConfig:
+    # Master switch for the daemon's periodic ticks: false keeps the daemon
+    # process alive (start/stop still work) but runs no ticks at all.
+    enabled: bool = True
     interval: int = 3600
     ingest_interval: int = 300
     gc_interval_days: int = 7
@@ -163,6 +166,10 @@ class BackupDef:
     mirror: bool = False
     backend: Optional[str] = None
     move: bool = False
+    # Copies per file for daemon-scheduled backups (the CLI --redundancy flag
+    # overrides this per run). D34: this used to be dropped by _filter_fields,
+    # so daemon backups always ran with 1 copy.
+    redundancy: int = 1
 
 @dataclass
 class WebConfig:

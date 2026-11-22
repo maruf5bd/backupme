@@ -11,6 +11,7 @@ from pathlib import Path
 from backupme.core import hasher as hasher_mod
 from backupme.core import compress as compress_mod
 from backupme.core import crypto as crypto_mod
+from backupme.core import path_guard
 from backupme.core.database import execute, commit
 from backupme.log import get_logger
 
@@ -160,6 +161,12 @@ def download_file(
     config = load_config()
 
     dest = Path(dest_path)
+    # D36/SEC T7: the final name is what lands on disk — a colon would create
+    # an NTFS alternate stream, and reserved device names / ".." cannot be
+    # written safely. Refuse before anything is created.
+    unsafe_dest = path_guard.unsafe_dest_filename_reason(dest.name)
+    if unsafe_dest:
+        raise ValueError(unsafe_dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     hasher = hashlib.sha256()
     total_written = 0

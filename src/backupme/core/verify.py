@@ -110,10 +110,26 @@ def heal_damaged_file(file_id: int, target_backend: str | None = None) -> dict:
                     errors.append(f"Failed donor transfer for {blob_id[:16]}: {e}")
 
         elif donor_type == "source":
-            # Live source re-back
+            # Live source re-back: re-run the real upload pipeline for the live
+            # file that owns this blob (INT-3: the old call used a long-gone
+            # upload_file signature, so every source heal died as TypeError
+            # before touching a backend).
             try:
+                owner = execute(
+                    "SELECT f.source_root, f.relative_path FROM files f "
+                    "JOIN file_chunks fc ON f.id = fc.file_id "
+                    "WHERE fc.blob_id = ? AND f.deleted_at IS NULL LIMIT 1",
+                    (blob_id,),
+                ).fetchone()
+                if not owner:
+                    raise RuntimeError("no live file row references this blob")
                 from backupme.core import uploader as uploader_mod
-                uploader_mod.upload_file(src, config=config)
+                res = uploader_mod.upload_file(
+                    owner["source_root"], owner["relative_path"], src,
+                    backends_list, config,
+                )
+                if res.get("status") not in ("ok", "partial"):
+                    raise RuntimeError(str(res.get("error") or res.get("status")))
                 healed_count += 1
                 log.info(f"Healed blob {blob_id[:16]} directly from live disk source {src}")
             except Exception as e:
