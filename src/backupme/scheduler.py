@@ -1,7 +1,14 @@
 """Background daemon: _periodic_loop drives backup -> retention -> ingest -> purge -> cold-export -> gc -> verify ticks, each with a non-blocking single-flight lock and its own exception guard.
+
+D33-SCH-2: backups and retention run in the loop thread (they run on every
+pass, and running them serially there keeps each one single-flight for
+free); the six cadence ticks (ingest, purge, cold export, gc, verify,
+offsite guard) are dispatched to a small worker pool, so a multi-hour
+cpmove ingest no longer suspends the other ticks.
 """
-import os
+import concurrent.futures
 import datetime
+import os
 import threading
 import time
 from pathlib import Path
@@ -186,6 +193,16 @@ def apply_retention(config: dict) -> dict:
 
 _DAY_SECONDS = 86400
 
+# D33-SCH-2: how many cadence ticks may run at the same time. Ticks are
+# mostly I/O-bound (archive members, remote backends, verify reads), so a
+# small pool is enough to keep a multi-hour ingest from starving the short
+# ticks; the per-tick non-blocking locks still cap every tick at one
+# instance of itself.
+_TICK_POOL_WIDTH = 4
+# D33-SCH-2: bounded grace for in-flight ticks when the loop exits. Same
+# spirit as stop()'s join(timeout=10): wait a little, then abandon.
+_TICK_SHUTDOWN_GRACE_SECONDS = 5.0
+
 
 class BackupScheduler:
     def __init__(self, config):
@@ -291,35 +308,117 @@ class BackupScheduler:
         if not export_enabled:
             log.info("db_lifecycle.cold_export_after_days=%s — scheduled cold "
                      "export is disabled", export_days)
-        while not self._stop.is_set():
-            if scheduler_enabled:
-                try:
-                    self._run_backups()
-                    self._run_retention()
-                    now = time.time()
-                    if now - self._last_ingest >= sc["ingest_interval"]:
-                        self._last_ingest = now
-                        self._run_ingest()
-                    if now - self._last_purge >= _DAY_SECONDS:
-                        self._last_purge = now
-                        self._run_purge()
-                    if export_enabled and now - self._last_export >= export_days * _DAY_SECONDS:
-                        self._last_export = now
-                        self._run_cold_export()
-                    if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
-                        self._last_gc = now
-                        self._run_scheduled_gc()
-                    if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
-                        self._last_verify = now
-                        self._run_scheduled_verify()
-                    if now - self._last_guard >= _DAY_SECONDS:
-                        self._last_guard = now
-                        self._run_offsite_guard()
-                except Exception as e:
-                    # One failed pass must never kill the daemon thread silently.
-                    log.exception("scheduler pass crashed — continuing")
-                    self._notify_tick_failure("scheduler", e)
-            self._stop.wait(sc["interval"])
+        # D33-SCH-2: cadence ticks dispatch to one small pool that lives for
+        # the whole loop instead of running one after another in this thread
+        # (the pool creates worker threads lazily on first submit, so an
+        # idle or disabled scheduler costs nothing).
+        #
+        # SQLite discipline: every tick thread gets its own thread-local
+        # connection (core/database.py) and ticks may briefly contend on the
+        # single writer — WAL + busy_timeout=60000 absorb that; it is by
+        # design and no cross-tick locking is added here.
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_TICK_POOL_WIDTH, thread_name_prefix="scheduler-tick")
+        pending: list[concurrent.futures.Future] = []
+        try:
+            while not self._stop.is_set():
+                if scheduler_enabled:
+                    try:
+                        now = time.time()
+                        pending = []
+                        # Backups and retention run on EVERY pass in this
+                        # thread; the serial loop itself is their
+                        # single-flight guarantee. Only the cadence ticks go
+                        # to the pool.
+                        self._run_backups()
+                        self._run_retention()
+                        if now - self._last_ingest >= sc["ingest_interval"]:
+                            self._last_ingest = now
+                            self._dispatch_tick(pool, pending, self._run_ingest)
+                        # D33-SCH-2 ordering check: purge does NOT need to
+                        # run after cold export. hard_purge_versions deletes
+                        # only rows with id <= the parquet watermark, and
+                        # that watermark advances only AFTER the partition
+                        # file is durably written (tmp + replace in
+                        # db_lifecycle) — so a purge racing an export reads a
+                        # slightly older watermark and deletes strictly less,
+                        # never an unexported row. Export itself is
+                        # serialized across processes by its own lock file
+                        # (path_lock).
+                        if now - self._last_purge >= _DAY_SECONDS:
+                            self._last_purge = now
+                            self._dispatch_tick(pool, pending, self._run_purge)
+                        if export_enabled and now - self._last_export >= export_days * _DAY_SECONDS:
+                            self._last_export = now
+                            self._dispatch_tick(pool, pending, self._run_cold_export)
+                        if now - self._last_gc >= sc["gc_interval_days"] * _DAY_SECONDS:
+                            self._last_gc = now
+                            self._dispatch_tick(pool, pending, self._run_scheduled_gc)
+                        if now - self._last_verify >= sc["verify_interval_days"] * _DAY_SECONDS:
+                            self._last_verify = now
+                            self._dispatch_tick(pool, pending, self._run_scheduled_verify)
+                        if now - self._last_guard >= _DAY_SECONDS:
+                            self._last_guard = now
+                            self._dispatch_tick(pool, pending, self._run_offsite_guard)
+                    except Exception as e:
+                        # One failed pass must never kill the daemon thread silently.
+                        log.exception("scheduler pass crashed — continuing")
+                        self._notify_tick_failure("scheduler", e)
+                self._stop.wait(sc["interval"])
+        finally:
+            self._shutdown_tick_pool(pool, pending)
+
+    def _dispatch_tick(self, pool, pending, tick_fn) -> None:
+        """D33-SCH-2: hand one due cadence tick to the pool. submit() never
+        blocks, so the loop thread goes on to the next cadence immediately
+        instead of waiting for the tick. The done-callback is the safety net
+        for anything that escapes a tick's own guard: a future exception
+        nobody retrieves would vanish silently."""
+        future = pool.submit(tick_fn)
+        future.add_done_callback(self._log_tick_future_error)
+        pending.append(future)
+
+    def _log_tick_future_error(self, future) -> None:
+        """Done-callback: retrieve + log an exception that escaped the tick
+        guard (the tick wrappers catch Exception; this catches the rest)."""
+        try:
+            exc = future.exception()
+        except concurrent.futures.CancelledError:
+            return  # cancelled at shutdown — nothing to report
+        if exc is not None:
+            log.error("tick crashed outside its guard: %s", exc, exc_info=exc)
+
+    def _shutdown_tick_pool(self, pool, pending) -> None:
+        """D33-SCH-2: stop the tick pool when the loop exits (the same _stop
+        Event that ends the while loop ends the pool here). In-flight ticks
+        get a short bounded grace — the same spirit as stop()'s
+        join(timeout=10): wait a little, then abandon. shutdown(wait=False,
+        cancel_futures=True) never blocks on a running tick: it cancels
+        everything still queued and leaves a started tick to finish (or die
+        with the process) in its worker thread — the same bounded-abandon
+        semantics the serial loop had, where a running tick died with the
+        daemon loop thread. Note: Python's concurrent.futures joins
+        still-running workers once more at interpreter exit; that is stdlib
+        behavior, and a hard process kill always works."""
+        deadline = time.monotonic() + _TICK_SHUTDOWN_GRACE_SECONDS
+        for future in pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                future.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                if not future.done():
+                    log.warning("scheduler stop: a tick is still running after "
+                                "%.1fs grace — abandoning it",
+                                _TICK_SHUTDOWN_GRACE_SECONDS)
+                    break
+                # A finished tick raised TimeoutError itself; already logged.
+            except concurrent.futures.CancelledError:
+                continue
+            except Exception:
+                pass  # tick failure already logged by its guard / done-callback
+        pool.shutdown(wait=False, cancel_futures=True)
 
     def _notify_tick_failure(self, tick: str, exc: Exception) -> None:
         """Report a failed tick through notify.notify_failure (D33: tick
