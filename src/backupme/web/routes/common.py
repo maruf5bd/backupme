@@ -6,7 +6,9 @@ register(app, ctx) and the cross-cutting pieces live here exactly once:
 
 - RouteContext: the `ctx` handed to every register() — live Config + templates.
 - config helpers: _reload_config/_config_dict/_config_as_dict/_get_cfg_dict/_get_backups
-- backend helpers: _get_backends/_get_backend/_probe_space
+- backend helpers: _get_backends/_get_backend/_probe_space (thin wrappers over the
+  ONE core resolver in backupme.backends — defect D30; the old per-app web pool is
+  gone, the web layer shares the CLI's instance cache + cooldown)
 - search helpers: _fts_phrase/_search_files_like/_search_files_safe
 - file mutation: _soft_delete_file (the only soft-delete path)
 - fs helpers: _safe_stat/_lp (long-path aware stat), _coerce_int
@@ -45,13 +47,6 @@ class RouteContext:
         self.app = app
         self.config = config
         self.templates = templates
-
-
-def _be_to_dict(be: cfgmod.BackendDef) -> dict:
-    return {k: getattr(be, k) for k in ("type", "name", "path", "host", "port", "username",
-                                         "password", "key_file", "share", "remote", "bwlimit",
-                                         "quota", "priority", "weight", "base_url", "api_key",
-                                         "email", "refresh_token", "folder")}
 
 
 # ── Secret-key classification (defect D29) ────────────────────
@@ -141,29 +136,35 @@ def _search_files_safe(q: str, limit: int = 100) -> list[dict]:
 # ── Config helpers ────────────────────────────────────────────
 
 def _reload_config(ctx: RouteContext):
-    config = ctx.config
+    """Re-read config.yaml through config.load_config — the ONE template
+    resolution point (defect D30).
+
+    The old inline re-parse skipped `{{ ENV }}` resolution (the web layer
+    authenticated with literal '{{ PASSWORD }}' strings) and crashed with
+    TypeError on unknown `backups:` keys the CLI tolerates. load_config
+    resolves templates and filters unknown keys for every layer, so the
+    web reload now delegates to it and copies the fresh backends/backups
+    into ctx.config in place (same object identity — callers hold it)."""
     yaml_path = Path("config.yaml")
     if not yaml_path.exists():
         return
-    import yaml
-    raw = yaml.safe_load(yaml_path.read_text()) or {}
+    fresh = cfgmod.load_config(str(yaml_path))
+    config = ctx.config
     config.backends.clear()
-    from ...config import _build_backend, BackupDef
-    for btype, blist in raw.get("backends", {}).items():
-        for item in blist:
-            name = item.get("name", f"{btype}_{len(config.backends.get(btype, []))}")
-            config.backends.setdefault(btype, []).append(_build_backend(name, btype, dict(item)))
+    config.backends.update(fresh.backends)
     config.backups.clear()
-    for bdef in raw.get("backups", []):
-        config.backups.append(BackupDef(**bdef))
+    config.backups.extend(fresh.backups)
 
 
 def _config_dict(ctx: RouteContext) -> dict:
+    """Backends as canonical entry dicts via the ONE serializer
+    (backends._config_to_dict, defect D30): the web layer emits the same
+    full field set the CLI sees, so rclone keeps config_path /
+    extra_args / timeout_s on every web path. Secret masking stays at the
+    serving edges (D29)."""
     _reload_config(ctx)
-    result = {}
-    for btype, blist in ctx.config.backends.items():
-        result.setdefault(btype, []).extend(_be_to_dict(b) for b in blist)
-    return result
+    from ...backends import _config_to_dict
+    return _config_to_dict(ctx.config.backends)
 
 
 def _get_backups(ctx: RouteContext):
@@ -189,55 +190,25 @@ def _config_as_dict(ctx: RouteContext):
 
 
 # ── Backend helpers ───────────────────────────────────────────
-
-# Name -> (config-entry fingerprint, backend instance). Instances are reused
-# across requests so the dashboard does not open a fresh remote session on
-# every poll — Storage Boxes rate-limit new SSH sessions and the old
-# invalidate-everything behavior tripped that limit into a full outage
-# (defect D10). An entry is rebuilt only when its config actually changes.
-_backend_pool: dict[str, tuple[dict, object]] = {}
-
-
-def _reset_backend_pool():
-    """Drop pooled backend instances (used at registration for per-app
-    test isolation)."""
-    for _, inst in _backend_pool.values():
-        try:
-            inst.disconnect()
-        except Exception:
-            pass
-    _backend_pool.clear()
+# The old per-app `_backend_pool` is GONE (defect D30): it was a second
+# instance registry next to the core one in backupme.backends — the same
+# backend resolved into two objects (double SSH sessions to one box, the
+# D10 churn pattern) and the two layers disagreed about which backends
+# even existed. Every web route now resolves through the ONE resolver in
+# backupme.backends (shared cache keyed by name+type+location, shared
+# failed-connect cooldown, honest connected flag).
 
 
 def _get_backends(ctx: RouteContext):
-    cfg = _config_dict(ctx)
-    all_backends = []
-    for btype in ("local", "ftp", "sftp", "smb", "ssh", "rclone", "ninedrive"):
-        for entry in cfg.get(btype, []):
-            name = entry.get("name", "")
-            if not name:
-                continue
-            cached = _backend_pool.get(name)
-            if cached and cached[0] == entry:
-                inst = cached[1]
-            else:
-                from ...backends import BACKEND_MAP
-                cls = BACKEND_MAP.get(btype)
-                if not cls:
-                    continue
-                if cached:
-                    try:
-                        cached[1].disconnect()
-                    except Exception:
-                        pass
-                inst = cls(name, entry)
-                try:
-                    inst.connect()
-                except Exception as e:
-                    log.warning("backend %s failed to connect; listing as offline: %s", name, e)
-                _backend_pool[name] = (dict(entry), inst)
-            all_backends.append(inst)
-    return all_backends
+    """Resolve every configured backend through the ONE core resolver
+    (defect D30) — the web layer and the CLI share the same instance cache,
+    so the same config resolves to the same instance objects (one SSH
+    session per backend, not two). Unreachable backends are listed too,
+    with connected=False, so the dashboard shows the gap instead of
+    silently dropping them; the resolver's failed-connect cooldown keeps
+    an outage from re-dialing on every request."""
+    from ...backends import resolve_all_backends
+    return resolve_all_backends(_config_dict(ctx))
 
 
 def _get_backend(ctx: RouteContext, name: str):
@@ -296,21 +267,13 @@ def _list_backend_configs(ctx: RouteContext) -> list[dict]:
 
 
 def _backend_fingerprint(entry) -> str:
-    """Stable cache key for one backend config entry: the entry's fields
-    serialized canonically. Any config change (password, host, path, ...)
+    """Stable cache key for one backend config entry — delegates to the
+    resolver's canonical config fingerprint (defect D30: one serializer,
+    one key definition). Any config change (password, host, path, ...)
     produces a new fingerprint, so a cached probe result can never leak
     across a reconfigured backend."""
-    try:
-        payload = {k: v for k, v in entry.items()}
-    except AttributeError:
-        payload = {k: getattr(entry, k, None) for k in
-                   ("type", "name", "path", "host", "port", "username", "key_file",
-                    "share", "remote", "bwlimit", "quota", "priority", "weight",
-                    "base_url", "api_key", "email", "refresh_token", "folder")}
-    try:
-        return json.dumps(payload, sort_keys=True, default=str)
-    except Exception:
-        return repr(payload)
+    from ...backends import config_fingerprint
+    return config_fingerprint(entry)
 
 
 # ── TTL caches (Phase A page-perf) ────────────────────────────
@@ -740,7 +703,11 @@ def reset_background_state():
     _restore_event.set()
     _restore_event.clear()
     _scan_event.set()
-    _reset_backend_pool()
+    # Drop the shared resolver cache too (defect D30): a fresh app starts
+    # with clean instances — same per-app isolation contract the old
+    # per-app backend pool gave reset_background_state.
+    from ...backends import invalidate_cache
+    invalidate_cache()
     _scan_event.clear()
     _health_scan_event.set()
     _health_scan_event.clear()

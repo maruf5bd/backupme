@@ -239,23 +239,20 @@ def backend_remove(ctx, name):
 @click.pass_context
 def backend_test(ctx, name, as_json):
     """Test connectivity to a backend"""
-    from ..backends import get_backend
+    from ..backends import resolve_backend
     from ..config import load_config
     from ..cli.output import emit
     cfg_path = ctx.obj.get("config_path", "config.yaml")
     cfg = load_config(cfg_path)
 
-    raw = {}
-    for btype, blist in cfg.backends.items():
-        raw[btype] = []
-        for b in blist:
-            d = {k: getattr(b, k) for k in ("type", "name", "path", "host", "port", "username",
-                                             "password", "key_file", "share", "remote", "bwlimit",
-                                             "quota", "priority", "weight") if getattr(b, k, None) is not None}
-            d["type"] = btype
-            raw[btype].append(d)
-
-    bk = get_backend(name, raw)
+    # Honest resolution (defect D30): resolve_backend returns the instance
+    # even when the last connect failed, so an outage is reported as a
+    # failed test instead of pretending the backend does not exist. The
+    # explicit connect() below is a user-requested retry — never gated by
+    # the resolver's failed-connect cooldown. The Config dataclass goes in
+    # directly: backends._config_to_dict is the ONE serializer (the old
+    # inline field list here dropped rclone's config_path/extra_args).
+    bk = resolve_backend(name, cfg)
     if bk is None:
         emit({"connected": False, "error": f"backend '{name}' not found"}, as_json=as_json,
              human=lambda d: click.echo(f"Backend '{name}' not found"))
@@ -266,8 +263,9 @@ def backend_test(ctx, name, as_json):
         total = bk.total_space() if ok else None
         if ok:
             bk.disconnect()
-        data = {"name": name, "connected": bool(ok), "free_space": free, "total_space": total}
-        emit(data, as_json=as_json, human=lambda d: (click.echo(f"Connecting to {name}... OK"), click.echo(f"  Space: {free} / {total}") if total else None))
+        data = {"name": name, "connected": bool(ok), "free_space": free, "total_space": total,
+                "error": None if ok else (bk.last_connect_error or "connection failed")}
+        emit(data, as_json=as_json, human=lambda d: (click.echo(f"Connecting to {name}... OK") if ok else click.echo(f"Connecting to {name}... FAILED: {d['error']}"), click.echo(f"  Space: {free} / {total}") if total else None))
         if not ok:
             raise SystemExit(1)
     except Exception as e:
@@ -278,9 +276,12 @@ def backend_test(ctx, name, as_json):
 
 
 def _test_backend(entry: dict, btype: str):
-    from ..backends import get_backend
+    from ..backends import resolve_backend
     raw = {btype: [entry]}
-    bk = get_backend(entry.get("name", "?"), raw)
+    # resolve_backend (defect D30): a failed connect reaches _test_connection
+    # for its explicit retry + honest FAILED line, instead of being dropped
+    # silently during resolution.
+    bk = resolve_backend(entry.get("name", "?"), raw)
     if bk:
         _test_connection(bk, entry.get("name", "?"))
 
@@ -320,14 +321,24 @@ def _fmt_bytes(n: int) -> str:
 @click.pass_context
 def backend_onboard(ctx, name, rebalance, dry_run, as_json):
     """Test-connect to a newly configured backend NAME and optionally backfill it."""
-    from ..backends import get_all_backends, get_backend
+    from ..backends import get_all_backends, resolve_backend
     from ..core import rebalance as rb
     from ..config import load_config
 
     cfg = load_config(ctx.obj.get("config_path", "config.yaml"))
-    bk = get_backend(name, cfg)
+    # Honest resolution (defect D30): "not found" and "unreachable" are
+    # different failures now — an outage no longer masquerades as a missing
+    # backend. The explicit connect() is a user-requested retry, never
+    # gated by the resolver cooldown.
+    bk = resolve_backend(name, cfg)
     if bk is None:
-        emit({"status": "error", "error": f"backend '{name}' not found or not connectable"},
+        emit({"status": "error", "error": f"backend '{name}' not found"},
+             as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(2)
+    if not bk.connected and not bk.connect():
+        emit({"status": "error",
+              "error": f"backend '{name}' is unreachable "
+                       f"({bk.last_connect_error or 'connect failed'})"},
              as_json=as_json, human=lambda d: click.echo(d["error"]))
         raise SystemExit(2)
 
@@ -409,19 +420,22 @@ def backend_rebalance(ctx, name, limit, dry_run, as_json):
 @click.pass_context
 def backend_drain(ctx, name, dry_run, as_json):
     """Copy everything off backend NAME, then print the GC/removal runbook."""
-    from ..backends import get_all_backends
+    from ..backends import get_all_backends, resolve_backend
     from ..core import rebalance as rb
     from ..config import load_config
 
     cfg = load_config(ctx.obj.get("config_path", "config.yaml"))
-    backends = get_all_backends(cfg)
     # P2: an unknown name used to fall through to an empty dry-run plan
     # (silently planning 0 blobs). Fail like `backend onboard` does, but with
     # exit 1 (documented in docs/MANUAL.md section 10).
-    if not any(b.name == name for b in backends):
+    # Defect D30: the existence check resolves configured backends honestly
+    # (a down backend is found, not "not found"); the copy TARGETS stay
+    # connected-only — a dead target must not receive data.
+    if resolve_backend(name, cfg) is None:
         out = {"status": "error", "error": f"backend '{name}' not found"}
         emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
         raise SystemExit(1)
+    backends = get_all_backends(cfg)
     out = rb.drain_backend(name, backends, cfg, dry_run=dry_run)
 
     def human(d):
@@ -466,10 +480,14 @@ def backend_rescan(ctx, name, register_flag, dry_run, limit, as_json):
     (unknown backend, connect failure, concurrent run) — per-blob failures
     and not_found entries are reported, not fatal.
     """
-    from ..backends import get_all_backends
+    from ..backends import resolve_backend
     from ..core.backend_scan import rescan_backend
 
-    bk = next((b for b in get_all_backends(ctx.obj["config"]) if b.name == name), None)
+    # Defect D30: resolve_backend finds a configured-but-down backend too,
+    # so an outage is reported as a connect failure instead of "no backend
+    # named ...". The explicit connect() below is a user-requested retry,
+    # never gated by the resolver cooldown.
+    bk = resolve_backend(name, ctx.obj["config"])
     if bk is None:
         out = {"status": "error", "error": f"no backend named {name!r}"}
         emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
@@ -558,7 +576,7 @@ def backend_sync_namespace(ctx, target, sources, namespaces, dry_run, as_json):
     local backend roots to backend TARGET so it alone can drive restore."""
     from pathlib import Path as _Path
 
-    from ..backends import get_backend
+    from ..backends import resolve_backend
     from ..config import load_config
     from ..core.namespace_sync import DEFAULT_NAMESPACES, sync_namespace
 
@@ -568,10 +586,19 @@ def backend_sync_namespace(ctx, target, sources, namespaces, dry_run, as_json):
         emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
         raise SystemExit(1)
 
-    tgt = get_backend(target, cfg)
+    # Defect D30: honest resolution — "not found" and "unreachable" are
+    # reported separately; the explicit connect() is a user-requested
+    # retry, never gated by the resolver cooldown.
+    tgt = resolve_backend(target, cfg)
     if tgt is None:
         out = {"status": "error",
-               "error": f"backend '{target}' not found or not connectable"}
+               "error": f"backend '{target}' not found"}
+        emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
+        raise SystemExit(1)
+    if not tgt.connected and not tgt.connect():
+        out = {"status": "error",
+               "error": f"backend '{target}' is unreachable "
+                        f"({tgt.last_connect_error or 'connect failed'})"}
         emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))
         raise SystemExit(1)
 
@@ -657,10 +684,14 @@ def backend_prune_phantom_rows(ctx, name, apply_flag, as_json):
     rows (storage_path with @offset:len) are never candidates. Exit 1 on
     unknown backend, connect failure, or --apply errors/refusals.
     """
-    from ..backends import get_all_backends
+    from ..backends import resolve_backend
     from ..core.phantom_prune import apply_prune, find_phantom_rows
 
-    bk = next((b for b in get_all_backends(ctx.obj["config"]) if b.name == name), None)
+    # Defect D30: resolve_backend finds a configured-but-down backend too,
+    # so an outage is reported as a connect failure instead of "no backend
+    # named ...". The explicit connect() below is a user-requested retry,
+    # never gated by the resolver cooldown.
+    bk = resolve_backend(name, ctx.obj["config"])
     if bk is None:
         out = {"status": "error", "error": f"no backend named {name!r}"}
         emit(out, as_json=as_json, human=lambda d: click.echo(d["error"]))

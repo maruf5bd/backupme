@@ -182,10 +182,8 @@ def test_backends_page_usage_bar_and_connection_badges(env):
         assert ">Online<" not in body and ">Offline<" not in body
     finally:
         # Drop the cached backend instances so later tests re-read their
-        # own config (the pool is keyed by name and would otherwise keep
-        # the broken-path instance alive).
-        from backupme.web.routes import common as routes_common
-        routes_common._backend_pool.clear()
+        # own config (the shared resolver cache is keyed by name+location
+        # and would otherwise keep the broken-path instance alive — D30).
         invalidate_cache()
 
 

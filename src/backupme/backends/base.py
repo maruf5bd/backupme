@@ -101,3 +101,21 @@ class StorageBackend(ABC):
     @property
     def connected(self) -> bool:
         return self._connected
+
+    # ── Resolver contract (defect D30) ────────────────────────────
+    # The backend resolver stamps these on instances it resolved; the base
+    # defaults keep hand-built instances honest (no backoff, no error).
+
+    @property
+    def connect_retry_after(self) -> float:
+        """Monotonic deadline until which automatic reconnection should
+        back off (the resolver's failed-connect cooldown). 0.0 = no
+        backoff. An explicit connect() call (backend test, rescan, speed
+        test) is never gated by it — only the resolver's auto re-dial is."""
+        return float(getattr(self, "_connect_retry_after", 0.0))
+
+    @property
+    def last_connect_error(self) -> str:
+        """Why the last resolver-driven connect failed ("" when connected
+        or never attempted)."""
+        return str(getattr(self, "_connect_error", ""))

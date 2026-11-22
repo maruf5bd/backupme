@@ -58,6 +58,13 @@ def _status_probe_row(be, name: str) -> dict:
         "quota": be.config.get("quota", None),
         "error": None,
     }
+    # Resolver failed-connect cooldown (defect D30): while the backend is
+    # cooling down, report the cached failure instead of re-dialing the
+    # remote on every status poll. Recovery still happens — once the
+    # cooldown expires, the next resolve retries the connect.
+    if not be.connected and time.monotonic() < be.connect_retry_after:
+        status["error"] = be.last_connect_error or "connect failed (cooldown)"
+        return status
     try:
         connected = bool(be.connected) or bool(be.connect())
     except Exception as e:
