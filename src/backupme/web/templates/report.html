@@ -218,12 +218,22 @@
   const passed = {{ (report.checked_files or 0) - (report.failed_files or 0) }};
   const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
-  Charts.createGauge('pass-rate-gauge', passRate, 100, {
-    size: 160,
-    strokeWidth: 10,
-    label: 'pass rate',
-    colorThresholds: { green: 90, yellow: 70 },
-  });
+  // Honest offline fallback (defect D35 / WEB-21): if the chart helper
+  // failed to load, show a visible message instead of a blank gauge card
+  // (same contract as the dashboard's per-chart fallbacks).
+  if (window.Charts) {
+    Charts.createGauge('pass-rate-gauge', passRate, 100, {
+      size: 160,
+      strokeWidth: 10,
+      label: 'pass rate',
+      colorThresholds: { green: 90, yellow: 70 },
+    });
+  } else {
+    const gaugeEl = document.getElementById('pass-rate-gauge');
+    if (gaugeEl) {
+      gaugeEl.innerHTML = '<div class="empty-state" style="padding:2rem;"><p>Chart library failed to load (offline?) — the gauge is unavailable.</p></div>';
+    }
+  }
   {% endif %}
 
   window.openVerifyModal = function() {

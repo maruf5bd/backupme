@@ -87,6 +87,15 @@ def register(app, ctx):
 
     @app.post("/api/scheduler/config")
     async def api_scheduler_config_save(data: dict = Body(...)):
+        # D35: this rewrites the scheduler section of config.yaml — a
+        # config write that needs the literal-true confirm key (B03
+        # convention). The control key is stripped before the section write.
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"status": "error",
+                 "message": "confirm must be exactly true to save the scheduler config"},
+                status_code=400)
+        data = {k: v for k, v in data.items() if k != "confirm"}
         try:
             import yaml
             yaml_path = Path("config.yaml")

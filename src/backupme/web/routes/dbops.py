@@ -261,7 +261,19 @@ def register(app, ctx):
         try:
             from backupme.core.replicator import Replicator
             repl = Replicator(_config_as_dict(ctx))
-            repl.create_and_upload_snapshot()
+
+            def _run_replicate():
+                # create_and_upload_snapshot builds a VACUUM INTO copy,
+                # compresses it and uploads it to the backends — seconds to
+                # minutes of blocking work; keep it off the event loop (qa
+                # defect D18 / defect D35 WEB-13). The executor thread always
+                # drops its own SQLite handle before returning.
+                try:
+                    return repl.create_and_upload_snapshot()
+                finally:
+                    db.close_connection()
+
+            await asyncio.to_thread(_run_replicate)
             return JSONResponse({"status": "ok"})
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
@@ -272,7 +284,18 @@ def register(app, ctx):
             return JSONResponse(
                 {"error": "confirm must be exactly true"}, status_code=400)
         try:
-            result = recover_mod.recover_database(_get_backends(ctx))
+            def _run_restore():
+                # recover_database pulls + verifies DB snapshots from the
+                # backends — minutes-class blocking work; keep it off the
+                # event loop (qa defect D18 / defect D35 WEB-13). The
+                # executor thread always drops its own SQLite handle before
+                # returning.
+                try:
+                    return recover_mod.recover_database(_get_backends(ctx))
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_restore)
             return JSONResponse(result)
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
@@ -283,7 +306,18 @@ def register(app, ctx):
             return JSONResponse(
                 {"error": "confirm must be exactly true"}, status_code=400)
         try:
-            result = recover_mod.rebuild_from_manifests()
+            def _run_rebuild():
+                # rebuild_from_manifests re-walks every archive manifest and
+                # re-inserts the index — minutes-class blocking work; keep it
+                # off the event loop (qa defect D18 / defect D35 WEB-13). The
+                # executor thread always drops its own SQLite handle before
+                # returning.
+                try:
+                    return recover_mod.rebuild_from_manifests()
+                finally:
+                    db.close_connection()
+
+            result = await asyncio.to_thread(_run_rebuild)
             return JSONResponse(result)
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})

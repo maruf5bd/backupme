@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from backupme.core import database as db
 from backupme.log import get_logger
 
-from .common import _reload_config
+from .common import _reload_config, REDACTED_MARKER, _is_secret_key
 
 log = get_logger("web.routes.config_api")
 
@@ -22,25 +22,41 @@ log = get_logger("web.routes.config_api")
 # (defect D26).
 _CONFIG_BACKUP_KEEP = 5
 
-# Substrings that mark a config value as a credential. Export masks these;
-# matching is case-insensitive on the key name only (values never matched).
-_SECRET_KEY_PARTS = ("password", "secret", "token", "api_key", "apikey", "private_key", "passphrase")
-
 
 def _redact_secrets(node):
-    """Return a copy of a config tree with credential values masked."""
+    """Return a copy of a config tree with credential values masked.
+
+    Key-name matching is word-part aware and case-insensitive (defect D29):
+    the old bare-substring list served planted values for keys like
+    `credential`, `passwd`, `webhook` or camelCase `apiKey` verbatim."""
     if isinstance(node, dict):
         out = {}
         for key, value in node.items():
-            key_is_secret = any(part in str(key).lower() for part in _SECRET_KEY_PARTS)
-            if key_is_secret and isinstance(value, str) and value:
-                out[key] = "***REDACTED***"
+            if _is_secret_key(key) and isinstance(value, str) and value:
+                out[key] = REDACTED_MARKER
             else:
                 out[key] = _redact_secrets(value)
         return out
     if isinstance(node, list):
         return [_redact_secrets(item) for item in node]
     return node
+
+
+def _find_redacted_values(node, path: str = "") -> list[str]:
+    """Dotted paths of values that still carry the export redaction marker
+    (defect D29: re-importing a redacted export must never write the
+    marker into config.yaml)."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            child = f"{path}.{key}" if path else str(key)
+            found.extend(_find_redacted_values(value, child))
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            found.extend(_find_redacted_values(item, f"{path}[{i}]"))
+    elif isinstance(node, str) and node == REDACTED_MARKER:
+        found.append(path or "<root>")
+    return found
 
 
 def _backup_before_overwrite(target: Path) -> Path | None:
@@ -84,6 +100,14 @@ def register(app, ctx):
 
     @app.post("/api/config/sources")
     async def api_sources_add(payload: dict = Body(...)):
+        # D35: writing a backup source into config.yaml is a config write —
+        # it needs the literal-true confirm key (B03 convention). The
+        # control key is never copied into the stored entry.
+        if payload.get("confirm") is not True:
+            return JSONResponse(
+                {"status": "error",
+                 "message": "confirm must be exactly true to add a backup source"},
+                status_code=400)
         try:
             source = payload.get("source", "").strip()
             if not source:
@@ -120,7 +144,14 @@ def register(app, ctx):
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
     @app.delete("/api/config/sources")
-    async def api_sources_delete(source: str = Query(...)):
+    async def api_sources_delete(source: str = Query(...),
+                                 data: dict = Body(default={})):
+        # D35: removing a backup source stops its backups — destructive.
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"status": "error",
+                 "message": "confirm must be exactly true to remove a backup source"},
+                status_code=400)
         try:
             import yaml
             yaml_path = Path("config.yaml")
@@ -167,6 +198,15 @@ def register(app, ctx):
 
     @app.post("/api/config")
     async def api_config_save(data: dict = Body(...)):
+        # D35: this overwrites sections of config.yaml — a destructive write
+        # that needs the literal-true confirm key (B03 convention). The
+        # control key is stripped so it never lands in config.yaml.
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"status": "error",
+                 "message": "confirm must be exactly true to save config changes"},
+                status_code=400)
+        config_data = {k: v for k, v in data.items() if k != "confirm"}
         try:
             import yaml
             yaml_path = Path("config.yaml")
@@ -174,7 +214,7 @@ def register(app, ctx):
                 raw = yaml.safe_load(yaml_path.read_text()) or {}
             else:
                 raw = {}
-            for section, values in data.items():
+            for section, values in config_data.items():
                 if isinstance(values, dict):
                     raw.setdefault(section, {})
                     for k, v in values.items():
@@ -229,6 +269,22 @@ def register(app, ctx):
             if not isinstance(config_data, dict):
                 return JSONResponse(
                     {"status": "error", "message": "Invalid YAML: config must be a mapping"},
+                    status_code=400)
+            # D29 (report_security SEC-5): re-importing a redacted export
+            # used to write literal ***REDACTED*** strings into config.yaml,
+            # silently breaking backend auth. Values equal to the marker are
+            # refused per-field instead — the operator passes the raw value
+            # for those keys and re-imports; nothing is written to disk.
+            redacted_keys = _find_redacted_values(config_data)
+            if redacted_keys:
+                return JSONResponse(
+                    {"status": "error",
+                     "message": "import refused: " + ", ".join(redacted_keys)
+                                + " still carry the export redaction marker "
+                                  "(***REDACTED***). Replace them with the "
+                                  "real values and re-import — redacted "
+                                  "placeholders are never written to "
+                                  "config.yaml."},
                     status_code=400)
             zero_backends = not config_data.get("backends")
             if zero_backends and not allow_empty:

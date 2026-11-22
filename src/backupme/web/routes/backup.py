@@ -338,6 +338,17 @@ def register(app, ctx):
         redundancy = int(data.get("redundancy", 1))
         excludes = data.get("exclude", [])
         delete_source = bool(data.get("delete_source", False))
+        # D35 / report_security SEC-14: delete_source removes uploaded files
+        # from the source filesystem — an operator-confirm class action that
+        # used to fire with NO confirm. Without the literal-true confirm the
+        # request is refused entirely; a scan without delete_source never
+        # needed it and behaves exactly as before.
+        if delete_source and data.get("confirm") is not True:
+            return JSONResponse(
+                {"error": "delete_source requires confirm: true in the "
+                          "request body — the scan deletes source files "
+                          "after upload, which cannot be undone"},
+                status_code=400)
 
         _reset_scan()
         # Op actually launched: its SSE stream polls to completion instead

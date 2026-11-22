@@ -301,7 +301,7 @@
     else if (raw !== '' && !isNaN(raw) && raw.trim() !== '') value = Number(raw);
     else value = raw;
     try {
-      const data = {};
+      const data = { confirm: true };
       data[section] = {};
       data[section][key] = value;
       await App.fetchAPI('/api/config', { method: 'POST', body: data });
@@ -484,6 +484,7 @@
     btn.innerHTML = '<span class="spinner"></span>';
     try {
       const data = {
+        confirm: true,
         interval: parseInt(document.getElementById('scheduler-interval').value) || 3600,
         enabled: document.getElementById('scheduler-enabled').checked,
       };
@@ -544,7 +545,7 @@
     try {
       await App.fetchAPI('/api/config/sources', {
         method: 'POST',
-        body: { source, mirror, exclude }
+        body: { source, mirror, exclude, confirm: true }
       });
       App.Toast.success('Backup source added successfully');
       App.Modal.close('add-source-modal');
@@ -559,7 +560,8 @@
       async () => {
         try {
           await App.fetchAPI('/api/config/sources?source=' + encodeURIComponent(source), {
-            method: 'DELETE'
+            method: 'DELETE',
+            body: JSON.stringify({ confirm: true })
           });
           App.Toast.success('Backup source removed successfully');
           setTimeout(() => location.reload(), 500);

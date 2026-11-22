@@ -164,7 +164,7 @@ def test_preview_unknown_id_returns_404_json(client, seeded):
 
 
 def test_download_soft_deleted_id_returns_404(client, seeded):
-    assert client.delete(f"/api/files/{seeded['file_id']}").status_code == 200
+    assert client.request("DELETE", f"/api/files/{seeded['file_id']}", json={"confirm": True}).status_code == 200
     r = client.get(f"/api/download/{seeded['file_id']}")
     assert r.status_code == 404
     r2 = client.get(f"/api/files/{seeded['file_id']}/preview")

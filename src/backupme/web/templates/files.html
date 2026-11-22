@@ -1300,7 +1300,7 @@
       'Are you sure you want to soft-delete "' + path + '"? This marks the file as deleted but preserves the blobs.',
       async () => {
         try {
-          await App.fetchAPI('/api/files/' + fileId, { method: 'DELETE' });
+          await App.fetchAPI('/api/files/' + fileId, { method: 'DELETE', body: JSON.stringify({ confirm: true }) });
           App.Toast.success('File deleted');
           const row = btn.closest('tr');
           row.style.opacity = '0.4';
@@ -1388,7 +1388,7 @@
         let deleted = 0;
         for (const cb of checked) {
           try {
-            await App.fetchAPI('/api/files/' + cb.dataset.id, { method: 'DELETE' });
+            await App.fetchAPI('/api/files/' + cb.dataset.id, { method: 'DELETE', body: JSON.stringify({ confirm: true }) });
             deleted++;
             const row = cb.closest('tr');
             row.style.opacity = '0.4';

@@ -19,6 +19,7 @@ Route registration itself never lives here — see the domain modules.
 import asyncio
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -51,6 +52,60 @@ def _be_to_dict(be: cfgmod.BackendDef) -> dict:
                                          "password", "key_file", "share", "remote", "bwlimit",
                                          "quota", "priority", "weight", "base_url", "api_key",
                                          "email", "refresh_token", "folder")}
+
+
+# ── Secret-key classification (defect D29) ────────────────────
+
+# The value the export writes in place of every credential (import refuses
+# to write it back to config.yaml — see config_api.py).
+REDACTED_MARKER = "***REDACTED***"
+
+# Word parts that mark a key name as credential-bearing (defect D29). The
+# old bare-substring check ("password" in key) missed common shapes:
+# credential/passwd/webhook names, camelCase or dash variants, and
+# two-part names like access_key. A key is a secret when one of its word
+# parts EQUALS one of these (exact part match — so "author" or "tokenizer"
+# never match) or when a two-part window forms a known compound. Parts are
+# split on _ - . space and camelCase humps, with trailing digits stripped
+# ("token2" matches). Covers every secret-shaped field the backend types
+# in config.py actually use (password / api_key / refresh_token) and
+# web.token.
+_SECRET_WORD_PARTS = frozenset({
+    "password", "passwd", "pwd", "secret", "secrets", "token", "tokens",
+    "apikey", "credential", "credentials", "passphrase", "privatekey",
+    "webhook",
+})
+_SECRET_KEY_PART_PAIRS = frozenset({
+    ("api", "key"), ("private", "key"), ("access", "key"),
+    ("secret", "key"), ("auth", "key"), ("signing", "key"),
+})
+_KEY_SEPARATOR_RE = re.compile(r"[_\-. \t]+")
+_CAMEL_HUMP_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _key_word_parts(name) -> list[str]:
+    """Split a key name into lowercase word parts ("refresh_token",
+    "refreshToken" and "refresh-token" all become ["refresh", "token"])."""
+    parts: list[str] = []
+    for chunk in _KEY_SEPARATOR_RE.split(str(name)):
+        if chunk:
+            parts.extend(p.lower() for p in _CAMEL_HUMP_RE.split(chunk) if p)
+    return parts
+
+
+def _is_secret_key(name) -> bool:
+    """True when a key name is credential-shaped (defect D29). Non-secret
+    keys like "key_file" (a path), "api_version" or "author" stay clear."""
+    parts = [p.rstrip("0123456789") or p for p in _key_word_parts(name)]
+    if not parts:
+        return False
+    if any(part in _SECRET_WORD_PARTS for part in parts):
+        return True
+    # A bare "key" entry is credential-shaped; "key_file" is not.
+    if len(parts) == 1:
+        return parts[0] == "key"
+    windows = {tuple(parts[i:i + 2]) for i in range(len(parts) - 1)}
+    return bool(windows & _SECRET_KEY_PART_PAIRS)
 
 
 # ── Search helpers ────────────────────────────────────────────

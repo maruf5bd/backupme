@@ -270,7 +270,18 @@ def register(app, ctx):
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.post("/api/convert/{backend_name}")
-    async def api_convert(backend_name: str, prefix: str = "", delete: bool = False, target: str = ""):
+    async def api_convert(backend_name: str, prefix: str = "", delete: bool = False,
+                          target: str = "", confirm: bool = False):
+        # D35: delete=true deletes the source blobs after the copy — a
+        # destructive operation that used to run with no operator confirm.
+        # It needs the explicit confirm flag (B03 convention); a plain
+        # convert (delete=false) stays confirm-free.
+        if delete and confirm is not True:
+            return JSONResponse(
+                {"status": "error",
+                 "message": "delete=true requires confirm=true: the "
+                            "conversion deletes source blobs after copying"},
+                status_code=400)
         try:
             from backupme.core.converter import convert_backend
 

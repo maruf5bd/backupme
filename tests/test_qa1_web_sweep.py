@@ -360,7 +360,7 @@ def test_auth_gates_mutating_methods_too(token_client):
     r2 = token_client.delete("/api/files/1")
     assert r2.status_code == 401
     # correct bearer passes through to the handler (404 here, not 401)
-    r3 = token_client.delete("/api/files/999999", headers=headers)
+    r3 = token_client.request("DELETE", "/api/files/999999", headers=headers, json={"confirm": True})
     assert r3.status_code == 404, r3.text[:120]
 
 
@@ -962,11 +962,11 @@ def test_file_verify_endpoint(client, seeded):
 
 
 def test_file_delete_then_restore_visibility(client, seeded):
-    r = client.delete(f"/api/files/{seeded['direct_ids'][0]}")
+    r = client.request("DELETE", f"/api/files/{seeded['direct_ids'][0]}", json={"confirm": True})
     assert r.status_code == 200, r.text
     listing = client.get("/api/files").json()
     assert seeded["direct_ids"][0] not in [f["id"] for f in listing]
-    r404 = client.delete("/api/files/999999")
+    r404 = client.request("DELETE", "/api/files/999999", json={"confirm": True})
     assert r404.status_code == 404
 
 
@@ -1328,7 +1328,7 @@ def test_scheduler_config_get_and_save(client, seeded):
     assert r.status_code == 200
     body = r.json()
     assert "interval" in body and "enabled" in body
-    r2 = client.post("/api/scheduler/config", json={"interval": 1234, "enabled": True})
+    r2 = client.post("/api/scheduler/config", json={"confirm": True, "interval": 1234, "enabled": True})
     assert r2.status_code == 200 and r2.json()["status"] == "ok"
     r3 = client.get("/api/scheduler/config")
     assert r3.json()["interval"] == 1234 and r3.json()["enabled"] is True
@@ -1469,13 +1469,13 @@ def test_sources_roundtrip(client, seeded):
     assert seeded["source_root"] in sources
     assert "QA1" in sources
     # add / duplicate / delete (isolated config.yaml)
-    add = client.post("/api/config/sources", json={"source": "J:\\qa1_new_source"})
+    add = client.post("/api/config/sources", json={"source": "J:\\qa1_new_source", "confirm": True})
     assert add.status_code == 200 and add.json()["status"] == "ok", add.text
-    dup = client.post("/api/config/sources", json={"source": "J:\\qa1_new_source"})
+    dup = client.post("/api/config/sources", json={"source": "J:\\qa1_new_source", "confirm": True})
     assert dup.status_code == 400
-    dele = client.delete("/api/config/sources", params={"source": "J:\\qa1_new_source"})
+    dele = client.request("DELETE", "/api/config/sources", params={"source": "J:\\qa1_new_source"}, json={"confirm": True})
     assert dele.status_code == 200 and dele.json()["status"] == "ok"
-    dele404 = client.delete("/api/config/sources", params={"source": "J:\\not_there"})
+    dele404 = client.request("DELETE", "/api/config/sources", params={"source": "J:\\not_there"}, json={"confirm": True})
     assert dele404.status_code == 404
 
 
@@ -1484,7 +1484,7 @@ def test_config_export_and_save(client, seeded):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/yaml")
     assert "test_local" in r.text
-    r2 = client.post("/api/config", json={"retention": {"keep_days": 45}})
+    r2 = client.post("/api/config", json={"confirm": True, "retention": {"keep_days": 45}})
     assert r2.status_code == 200 and r2.json()["status"] == "ok"
     r3 = client.get("/api/config/export")
     assert "keep_days" in r3.text and "45" in r3.text

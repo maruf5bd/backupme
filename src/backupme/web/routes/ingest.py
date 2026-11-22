@@ -34,6 +34,60 @@ def register(app, ctx):
             _ingest_state["members_done"] = done
             _ingest_state["members_total"] = total
 
+    def _ingest_archives(ci_mod, cfg_dict: dict, drop_root: str):
+        """Archive loop — runs while holding the cross-component ingest
+        lock (same scope as the daemon's core ingest_tree)."""
+        backends = _get_backends(ctx)
+        discovered = ci_mod.discover(drop_root)
+        archives = [d for d in discovered if d["type"] == "archive"]
+        with _ingest_lock:
+            _ingest_state["archives_total"] = len(archives)
+        results = []
+        for item in archives:
+            if _ingest_paused.is_set():
+                with _ingest_lock:
+                    _ingest_state["results"].append({
+                        "archive": item["path"], "status": "deferred",
+                        "reason": "paused"})
+                    # Deferred archives count as handled so the queue
+                    # counters reconcile (done == total when a pause
+                    # deferred the tail of the queue).
+                    _ingest_state["archives_done"] += 1
+                continue
+            # D35: the same staging-budget gate the core ingest_tree applies
+            # per archive — the web worker must not stuff the plaintext
+            # staging dir past its budget either.
+            if not ci_mod.check_staging_budget(cfg_dict):
+                with _ingest_lock:
+                    _ingest_state["results"].append({
+                        "archive": item["path"], "status": "deferred",
+                        "reason": "staging budget"})
+                    _ingest_state["archives_done"] += 1
+                continue
+            with _ingest_lock:
+                _ingest_state["current_archive"] = item["path"]
+            try:
+                est = ci_mod.estimate_archive(item["path"])
+                with _ingest_lock:
+                    _ingest_state["members_total"] = est["members"]
+                    _ingest_state["members_done"] = 0
+            except Exception as e:
+                log.warning("archive size estimate failed for %s: %s", item["path"], e)
+            try:
+                r = ci_mod.ingest_archive(
+                    item["path"], item["account"], backends, cfg_dict,
+                    progress_cb=_ingest_progress_cb,
+                    drop_root=drop_root)
+            except Exception as e:
+                r = {"status": "failed", "error": str(e),
+                     "archive": item["path"], "account": item["account"]}
+            with _ingest_lock:
+                _ingest_state["results"].append(r)
+                _ingest_state["archives_done"] += 1
+                if r.get("status") == "failed":
+                    _ingest_state["errors"].append(
+                        f"{item['path']}: {r.get('error', 'failed')}")
+
     def _ingest_worker(drop_root: str):
         try:
             from backupme.core import cpanel_ingest as ci_mod
@@ -42,46 +96,25 @@ def register(app, ctx):
                 _ingest_state["running"] = True
                 _ingest_state["started_at"] = time.time()
                 _ingest_state["drop_root"] = drop_root
-            backends = _get_backends(ctx)
-            discovered = ci_mod.discover(drop_root)
-            archives = [d for d in discovered if d["type"] == "archive"]
-            with _ingest_lock:
-                _ingest_state["archives_total"] = len(archives)
-            results = []
-            for item in archives:
-                if _ingest_paused.is_set():
-                    with _ingest_lock:
-                        _ingest_state["results"].append({
-                            "archive": item["path"], "status": "deferred",
-                            "reason": "paused"})
-                        # Deferred archives count as handled so the queue
-                        # counters reconcile (done == total when a pause
-                        # deferred the tail of the queue).
-                        _ingest_state["archives_done"] += 1
-                    continue
+            # D35 (wiring P2): the web worker used to bypass the
+            # cross-component gate — the same exclusive lock file the daemon
+            # tick takes inside core ingest_tree. Two runners would ingest
+            # the same archive into the same staging dir and race version_seq
+            # allocation. Same params, same staging root resolution,
+            # non-blocking: a busy daemon tick defers this scan instead of
+            # racing it.
+            ingest_cfg = cfg_dict.get("cpanel_ingest", {}) or {}
+            staging_root = Path(ingest_cfg.get("staging_dir", "staging") or "staging")
+            from backupme.core.flock import path_lock
+            try:
+                with path_lock(staging_root / ".ingest.lock",
+                               stale_seconds=3600.0, wait=0.0):
+                    _ingest_archives(ci_mod, cfg_dict, drop_root)
+            except TimeoutError:
                 with _ingest_lock:
-                    _ingest_state["current_archive"] = item["path"]
-                try:
-                    est = ci_mod.estimate_archive(item["path"])
-                    with _ingest_lock:
-                        _ingest_state["members_total"] = est["members"]
-                        _ingest_state["members_done"] = 0
-                except Exception as e:
-                    log.warning("archive size estimate failed for %s: %s", item["path"], e)
-                try:
-                    r = ci_mod.ingest_archive(
-                        item["path"], item["account"], backends, cfg_dict,
-                        progress_cb=_ingest_progress_cb,
-                        drop_root=drop_root)
-                except Exception as e:
-                    r = {"status": "failed", "error": str(e),
-                         "archive": item["path"], "account": item["account"]}
-                with _ingest_lock:
-                    _ingest_state["results"].append(r)
-                    _ingest_state["archives_done"] += 1
-                    if r.get("status") == "failed":
-                        _ingest_state["errors"].append(
-                            f"{item['path']}: {r.get('error', 'failed')}")
+                    _ingest_state["errors"].append(
+                        "another ingest scan is already running (daemon or "
+                        "other worker) — this scan was not started")
         except Exception as e:
             with _ingest_lock:
                 _ingest_state["errors"].append(str(e))

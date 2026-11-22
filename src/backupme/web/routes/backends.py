@@ -25,7 +25,7 @@ from backupme.log import get_logger
 
 from .common import (_get_backend, _get_backends, _config_as_dict, _config_dict,
                      _backend_fingerprint, _backend_status_cache,
-                     _list_backend_configs,
+                     _list_backend_configs, _is_secret_key,
                      _rebalance_state, _rebalance_lock, _reset_rebalance,
                      _process_state, _process_lock, _reset_process,
                      _speedtest_state, _speedtest_lock, mark_op_started,
@@ -444,7 +444,12 @@ def register(app, ctx):
             "total_space": total,
             "priority": be.config.get("priority", 50),
             "quota": be.config.get("quota", None),
-            "config": {k: v for k, v in be.config.items() if k != "password"},
+            # D29 (report_security SEC-4): this detail used to withhold only
+            # `password` while serving api_key / refresh_token in plaintext.
+            # Every secret-shaped field gets the same treatment now: the key
+            # is withheld entirely (the edit dialog prefills empty and the
+            # update route skips empty values, so a save leaves them intact).
+            "config": {k: v for k, v in be.config.items() if not _is_secret_key(k)},
         })
 
     @app.put("/api/backends/{name}")

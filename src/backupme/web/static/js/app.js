@@ -363,6 +363,22 @@ const App = (() => {
   function initIcons() {
     if (window.lucide) {
       lucide.createIcons();
+      return;
+    }
+    // Honest offline fallback (defect D35 / WEB-21): the icon library is a
+    // public-CDN script; when it fails to load the <i data-lucide> slots
+    // stay empty. Every page gets one visible notice instead of silently
+    // losing the icons — buttons keep their text labels, so the interface
+    // stays fully usable.
+    const host = document.querySelector('.page-content') || document.body;
+    if (host && !document.getElementById('icon-fallback-note')) {
+      const note = document.createElement('div');
+      note.id = 'icon-fallback-note';
+      note.className = 'empty-state';
+      note.style.padding = '0.75rem';
+      note.style.fontSize = '0.85rem';
+      note.textContent = 'Icon library failed to load (offline?) — the interface stays fully usable; only the icon graphics are missing.';
+      host.prepend(note);
     }
   }
 

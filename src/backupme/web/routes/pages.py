@@ -322,7 +322,17 @@ def register(app, ctx):
 
     @app.get("/report", response_class=HTMLResponse)
     async def report_page(request: Request):
-        rpt = verify.get_report()
+        def _run_report():
+            # verify.get_report() LEFT JOINs file_chunks over the whole
+            # index — minutes-class on the live store; keep it off the event
+            # loop (qa defect D18 / defect D35 WEB-17). The executor thread
+            # always drops its own SQLite handle before returning.
+            try:
+                return verify.get_report()
+            finally:
+                db.close_connection()
+
+        rpt = await asyncio.to_thread(_run_report)
         report_data = rpt.get("last_integrity_check") if rpt else None
         return ctx.templates.TemplateResponse(request, "report.html", {
             "report": report_data,

@@ -239,7 +239,20 @@
   // on it). No recorded check => honest "unknown" state.
   const lastCheckKnown = {{ 'true' if last_check else 'false' }};
   const lastCheckOk = {{ 'true' if last_check and last_check.status == 'completed' else 'false' }};
-  Charts.createGauge('integrity-gauge', lastCheckKnown && lastCheckOk ? 100 : 0, 100, {
+  // Honest offline fallback (defect D35 / WEB-21): if the chart helper
+  // failed to load, show a visible message instead of a blank gauge card
+  // (same contract as the dashboard's per-chart fallbacks).
+  function drawGauge(containerId, value, max, options) {
+    if (window.Charts) {
+      Charts.createGauge(containerId, value, max, options);
+      return;
+    }
+    const el = document.getElementById(containerId);
+    if (el) {
+      el.innerHTML = '<div class="empty-state" style="padding:2rem;"><p>Chart library failed to load (offline?) — the gauge is unavailable.</p></div>';
+    }
+  }
+  drawGauge('integrity-gauge', lastCheckKnown && lastCheckOk ? 100 : 0, 100, {
     size: 140,
     color: !lastCheckKnown ? 'yellow' : (lastCheckOk ? 'green' : 'red'),
     label: 'integrity',
@@ -285,7 +298,7 @@
     if (status === 'ok') {
       if (badge) { badge.className = 'badge badge-green'; badge.textContent = 'OK'; }
       setText('integrity-text', 'Last integrity check (pragma): database integrity verified');
-      Charts.createGauge('integrity-gauge', 100, 100, { size: 140, color: 'green', label: 'integrity' });
+      drawGauge('integrity-gauge', 100, 100, { size: 140, color: 'green', label: 'integrity' });
       showOpBanner('success', 'Integrity check passed — no errors found.');
       App.Toast.success('Integrity check passed');
     } else if (status === 'corrupt') {
@@ -293,7 +306,7 @@
       if (badge) { badge.className = 'badge badge-red'; badge.textContent = 'Corrupt'; }
       setText('integrity-text', 'Last integrity check (pragma): ' + errs.length
         + ' error(s) found — corrupt');
-      Charts.createGauge('integrity-gauge', 0, 100, { size: 140, color: 'red', label: 'integrity' });
+      drawGauge('integrity-gauge', 0, 100, { size: 140, color: 'red', label: 'integrity' });
       showOpBanner('error', 'Integrity check FAILED — ' + errs.length + ' error(s): '
         + errs.slice(0, 3).join('; ') + (errs.length > 3 ? ' …' : ''));
       App.Toast.error('Integrity issues found');
@@ -406,7 +419,7 @@
         badge.className = 'badge ' + (unknown ? 'badge-gray' : (ok ? 'badge-green' : 'badge-red'));
         badge.textContent = unknown ? 'Unknown' : (ok ? 'OK' : 'Corrupt');
       }
-      Charts.createGauge('integrity-gauge', ok ? 100 : 0, 100, {
+      drawGauge('integrity-gauge', ok ? 100 : 0, 100, {
         size: 140, color: unknown ? 'yellow' : (ok ? 'green' : 'red'), label: 'integrity',
         colorThresholds: { green: 80, yellow: 50 },
       });

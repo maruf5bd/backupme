@@ -738,7 +738,15 @@ def register(app, ctx):
             return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
     @app.delete("/api/files/{file_id}")
-    async def api_file_delete(file_id: int):
+    async def api_file_delete(file_id: int, data: dict = Body(default={})):
+        # D35: soft-delete hides the file and drops one blob ref per chunk —
+        # a destructive write that needs the literal-true confirm key (B03
+        # convention), same as every other destructive endpoint.
+        if data.get("confirm") is not True:
+            return JSONResponse(
+                {"status": "error",
+                 "message": "confirm must be exactly true to delete a file"},
+                status_code=400)
         try:
             outcome = _soft_delete_file(file_id)
             if outcome.get("not_found"):
