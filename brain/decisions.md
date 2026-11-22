@@ -149,3 +149,8 @@
   K:\backupme remains the production DATA home. Do not treat K as a code workspace.
 - **The D23 hazard rule stays**: destructive gates (gc --apply, purges) must never be
   driven against K's database without re-verified numbers.
+- **2026-11-22 (2): "fan out 3" authorized** for the production-readiness run — three
+  concurrent agents: D33-SCH-2 (scheduler parallel ticks), D23 preparation (read-only K
+  inspection + migration plan), and the in-flight D29+D35 web agent; D30 dispatches when
+  the web slot frees (common.py conflict). Agent A's D34+D36 wave commits on targeted-
+  gate evidence with CI as the full gate.
