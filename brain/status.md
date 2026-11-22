@@ -1266,3 +1266,24 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - **Owner decisions still open**: execute the D23 Option-A migration (runbook ready),
   K scripts' raw-DB-writes (bring them in-repo or retire), watcher_service -m policy,
   key-file protection.
+
+## 2026-11-22 (update 47) — D30 landed; v2.1.0 release engineering
+
+- **D30 LANDED (`037b595`)**: ONE backend resolver — location-scoped instance cache
+  (D37 lesson applied), construction single-flight, 60s failure cooldown, honest
+  unreachable reporting (available/unreachable split + loud logs), the web pool
+  deleted (web/CLI/core share instance objects), one serializer with the full field
+  set, `{{ ENV }}` resolution once in load_config. 16 resolver tests; full suite
+  1075 collected exit 0 twice. Register: D30 closed; **D33 fully closed** (both
+  halves landed).
+- **D39 registered (P2, open)**: the SSE termination race reproduced on a PRISTINE
+  HEAD worktree (streams close after the first frame mid-op) — it is pre-existing,
+  not introduced by any wave. Fix deferred to its own pass; EventSource consumers
+  degrade gracefully (auto-reconnect), scripted consumers get a mid-op EOF.
+- **v2.1.0 release cut**: CHANGELOG 2.1.0 section (security/fixed/changed/added),
+  version bumped, `backupme --version` → 2.1.0. Push → CI gate → tag v2.1.0 →
+  dashboard restart on released code.
+- **Register state after this wave**: open = D10 residue, D14 (owner decisions),
+  D23 (runbook ready — owner executes), D36 partial notes (verify divergence, db
+  history leaks), D39 (SSE race), D30 follow-ups (guard/gc adopting the split,
+  cross-process cooldown). Everything else from the campaign is closed.
