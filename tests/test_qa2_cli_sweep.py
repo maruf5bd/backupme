@@ -82,7 +82,11 @@ def stored_blob_paths(env, file_id):
     return paths
 
 
-def seed_one(env, name="docs/report.txt", data=b"qa2-payload-" + os.urandom(8)):
+def seed_one(env, name="docs/report.txt", data=None):
+    # Per-call payload: a default-arg expression binds ONCE at import, which
+    # made every test seed the same bytes and collide on bundle paths.
+    if data is None:
+        data = b"qa2-payload-" + os.urandom(8)
     from backupme.config import load_config
     from backupme.backends import get_all_backends
     res = backup_bytes(env, name, data, get_all_backends(load_config()))

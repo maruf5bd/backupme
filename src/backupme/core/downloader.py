@@ -88,7 +88,11 @@ def _extract_from_bundle(bk, remote_path: str, offset: int | None, length: int |
             "(legacy metadata) — re-backup this file"
         )
 
-    cache_key = (getattr(bk, "name", str(bk)), remote_path)
+    # Scope by backend LOCATION, not just its name: two instances can share a
+    # name across different roots (a re-pointed backend, another workspace's
+    # config) and must never serve each other's cached bundle bytes.
+    backend_scope = str(getattr(bk, "base_path", None) or getattr(bk, "remote", None) or "")
+    cache_key = (getattr(bk, "name", str(bk)), backend_scope, remote_path)
     with _bundle_cache_lock:
         if cache_key in _BUNDLE_MEM_CACHE:
             data = _BUNDLE_MEM_CACHE[cache_key]

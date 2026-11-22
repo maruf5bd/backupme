@@ -22,13 +22,16 @@ def _isolate_db(tmp_path, monkeypatch):
     """Safety net: every test runs against a scratch DB, never the real one."""
     monkeypatch.chdir(tmp_path)
     from backupme.backends import invalidate_cache
+    from backupme.core.downloader import clear_bundle_cache
     invalidate_cache()
+    clear_bundle_cache()
     dbmod.close_connection()
     dbmod.DB_PATH = tmp_path / "isolated.db"
     dbmod.initialize()
     yield
     dbmod.close_connection()
     invalidate_cache()
+    clear_bundle_cache()
 
 
 @pytest.fixture()
