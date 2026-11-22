@@ -48,7 +48,6 @@ _BACKEND_FIELDS = {
         ("port", int, 22),
         ("username", str, "user"),
         ("key_file", str, "~/.ssh/id_rsa"),
-        ("password", str, ""),
         ("path", str, "/mnt/backup"),
         ("quota", str, ""),
         ("priority", int, 10),
@@ -113,6 +112,12 @@ def backend_add(ctx, backend_type, name, host, port, username, password, key_fil
         backend_type = click.prompt("Backend type", type=click.Choice(list(_BACKEND_FIELDS)))
 
     fields = _BACKEND_FIELDS[backend_type]
+    if backend_type == "ssh" and password:
+        # SSHBackend authenticates with the ssh CLI and --key_file only; a
+        # stored password would be inert. Refuse it loudly instead of the old
+        # silent drop (D31).
+        click.echo("Error: ssh backends authenticate with --key_file; --password is not supported.")
+        ctx.exit(1)
     field_map = {
         "name": name, "host": host, "port": port, "username": username,
         "password": password, "key_file": key_file, "path": path, "share": share,

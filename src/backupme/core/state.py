@@ -11,6 +11,8 @@ missing or corrupt file is treated as "start fresh", and writes are atomic.
 """
 
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -18,19 +20,30 @@ from typing import Any, Callable
 
 STATE_FILE = Path("backupme.state.json")
 
+# Guards the global state file's read-modify-write within one process.
+# Cross-process safety comes from unique tmp names below (os.replace is
+# atomic; two writers to the same tmp name are not).
+_state_lock = threading.Lock()
+
+
+def _unique_tmp(p: Path) -> Path:
+    """A tmp name no other process or thread can collide on."""
+    return p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+
 
 def save_checkpoint(op_type: str, data: dict):
-    state = _load_raw()
-    state["last_checkpoint"] = {
-        "type": op_type,
-        "data": data,
-        "timestamp": time.time(),
-    }
-    state.setdefault("checkpoints", [])
-    state["checkpoints"].append(state["last_checkpoint"])
-    if len(state["checkpoints"]) > 100:
-        state["checkpoints"] = state["checkpoints"][-100:]
-    _write_atomic(state)
+    with _state_lock:
+        state = _load_raw()
+        state["last_checkpoint"] = {
+            "type": op_type,
+            "data": data,
+            "timestamp": time.time(),
+        }
+        state.setdefault("checkpoints", [])
+        state["checkpoints"].append(state["last_checkpoint"])
+        if len(state["checkpoints"]) > 100:
+            state["checkpoints"] = state["checkpoints"][-100:]
+        _write_atomic(state)
 
 
 def load_state() -> dict | None:
@@ -63,11 +76,20 @@ def read_json_checkpoint(path: Path | str, default_factory: Callable[[], Any]) -
 
 
 def write_json_checkpoint(path: Path | str, data: Any, *, sort_keys: bool = False) -> None:
-    """Atomically write a JSON checkpoint file (tmp + replace)."""
+    """Atomically write a JSON checkpoint file (tmp + replace).
+
+    The tmp name is unique per process and thread: two writers using the
+    same fixed tmp name crash on Windows with WinError 32 when one still
+    holds the file open (observed live when three pytest sessions shared a
+    working directory)."""
     p = Path(path)
-    tmp = p.with_suffix(p.suffix + ".tmp") if p.suffix else Path(str(p) + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=sort_keys), encoding="utf-8")
-    tmp.replace(p)
+    tmp = _unique_tmp(p)
+    try:
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=sort_keys), encoding="utf-8")
+        tmp.replace(p)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _load_raw() -> dict:
@@ -80,6 +102,10 @@ def _load_raw() -> dict:
 
 
 def _write_atomic(state: dict):
-    tmp = STATE_FILE.with_suffix(".state.tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(STATE_FILE)
+    tmp = _unique_tmp(STATE_FILE)
+    try:
+        tmp.write_text(json.dumps(state, indent=2))
+        tmp.replace(STATE_FILE)
+    finally:
+        if tmp.exists():
+            tmp.unlink()

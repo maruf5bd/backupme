@@ -703,10 +703,10 @@ def test_ingest_staging_cleanup_on_member_upload_failure(env):
     assert r.get("errors", 0) == 2 or r.get("status") == "failed"
 
 
-@pytest.mark.xfail(reason="qa defect 4: ingest_archive marks the op committed "
-                          "and moves the archive to .done even when every "
-                          "member upload failed — the archive is then skipped "
-                          "forever on retry", strict=False)
+# qa defect 4 (ingest_archive committed + moved a .done archive even when
+# every member failed) was fixed 2026-11-07 and re-hardened by D21 — the
+# archive now stays in the drop root and the op is marked failed; this test
+# is a plain regression pin, no longer an xfail.
 def test_ingest_all_members_failed_still_marks_committed(env):
     """qa defect: an archive whose members ALL fail to upload is still
     marked committed in op_log and moved to .done — a retry then skips it
