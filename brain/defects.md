@@ -102,6 +102,12 @@ lower severity).
 | D35 | P2 | **Web blocking regressions + ungated/unsafe operations.** `/api/db/restore`, `/api/db/rebuild`, `/api/db/replicate` and `/report` run minutes-class work inline on the event loop (D18-class regressions); web ingest worker bypasses the cross-component ingest lock and staging budget (races the daemon on the same archive); `/api/backup/scan?delete_source:true` uploads then DELETES source files with no operator confirm; `/api/convert?delete=true`, file delete, config/scheduler writes all ungated. Charts/icons depend on public CDNs and were dead on this machine. | WEB-13/17/11/21, SEC-14, WIR P2; reports web/security/wiring | open |
 | D36 | P2 | **Integrity/verification edge cases.** INT-2: re-upload of a path whose latest row is soft-deleted hits `UNIQUE(source_root, relative_path, version_seq)` and rolls back the whole batch. INT-3: auto-heal source re-back is dead code (`verify.py:116` calls `upload_file` with a wrong signature → TypeError). `verify --file` is restore-based (passes with a damaged replica) while `verify --count` catches replica corruption. `db history` leaks a traceback and exits 0 on SQL errors. Uploads accept `evil.txt:stream` (NTFS ADS), `CON` (reserved device), and literal `..` names — the restore guard skips `..` but ADS/reserved names pass through to the destination. | INT-2/3, CLI findings, SEC T7; reports data_integrity/cli/security | open |
 
+## Open — 2026-11-22 verify-corruption cache defect (D37, P1)
+
+| ID | Sev | Defect | Evidence | Status |
+|---|---|---|---|---|
+| D37 | P1 | **The bundle memory cache is keyed by `(backend name, relative path)` with no backend-root scope and nothing ever clears it — stale RAM bytes are served past the sha gate.** `_BUNDLE_MEM_CACHE` in downloader.py stored a bundle under `(backend_name, "bundle/xx/yy/<sha>")`; every successful `_extract_from_bundle` caches the full bundle bytes, `clear_bundle_cache()` has ZERO callers (conftest clears only the backend-instance cache), and the key ignores WHERE the backend points. Consequences: (a) a backend re-pointed at a different root (status update 18 did exactly this; D23's two-workspace split makes it structural) keeps serving bytes from the OLD root for the lifetime of the process — restore/verify can report OK against RAM while the on-disk copy is corrupt or absent; (b) in the test suite every test names its backend `test_local` and (pre-fix) every test seeded the SAME payload — the first bundle download cached the path, and `test_verify_detects_corrupt_blob_exit_1` then hit stale RAM bytes instead of the deliberately corrupted file, passing verify against damage (the exact Nov-20 full-gate failure). Fix: cache key scoped by backend location (`base_path`/`remote`) + `clear_bundle_cache()` wired into the autouse test-isolation fixture + `seed_one` payload made per-call (the default-arg `os.urandom` bound once at import — a latent test bug that also masked dedup behavior). | diagnosis 2026-11-22: instrumented runs (diag1-3, pair run) — cache dump showed the corrupted test's own parent path present with `hit=True`; downloader.py:91-119; tests/test_qa2_cli_sweep.py::seed_one; update-41 gate's 1 failure | **FIXED 2026-11-22** — key scoped by `base_path`/`remote`, autouse fixture clears the cache before+after each test, per-call seed payload; targeted gates green; **full-suite gate exit 0** (rerun; the first run's single failure was the SSE timing flake below, unrelated to this fix) |
+
 ## Closed
 
 | ID | Sev | Defect | Fix | Commit |
@@ -117,6 +123,13 @@ Tests: `tests/test_web_token_config.py` (6), `tests/test_web_defects.py` (14), e
 
 ## Class-bug watchlist
 
+- **SSE op streams can close mid-op under heavy load (observed 2026-11-22, not yet
+  reproduced)**: in one 971-test run, `test_restore_stream_still_terminates_completed_after_op`
+  drained a stream whose last frame was `running:True, total:1` while the op worker was
+  still in flight — the stream ended before the completed frame. Passed alone, in-file,
+  in interaction pairs, and on the full-suite rerun. The mark-before-spawn ordering in
+  the handler is correct, so the suspect is the drain/idle interaction under CPU
+  contention. If it reproduces: instrument `make_sse_stream`'s break paths.
 - Silent `except Exception: pass` in any `walk`/`list` — fixed for ftp/sftp (`6dcaa73`),
   port to smb/ssh/ninedrive/agent in flight (B01). After B01, grep the whole package for
   new occurrences in review.

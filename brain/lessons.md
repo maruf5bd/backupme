@@ -152,3 +152,20 @@
   concurrency is set too high, upload packet queues delay TCP ACKs. In the absence of aggressive keepalives,
   firewalls and OpenSSH servers terminate the channel at ~100s. Throttling concurrency to 1-2 and keeping packet
   buffers small eliminates bufferbloat and stabilizes large bundle uploads.
+
+## Caches and test isolation (2026-11-22, D37)
+
+- **A memory cache can defeat a sha gate.** The bundle cache served hash-valid bytes
+  from RAM, so verify reported OK while the on-disk copy was deliberately corrupted.
+  The gate only checks the bytes it was GIVEN — a cache that bypasses the read path
+  bypasses the gate. Any cache on a correctness-critical read path must be scoped by
+  the SOURCE identity (backend root, not backend name) and must have an owner that
+  clears it (`clear_bundle_cache` had zero callers for days).
+- **A default-arg expression binds once.** `def seed_one(..., data=b"..." + os.urandom(8))`
+  computed the random payload at import — every test then seeded the same bytes, which
+  collided every test's bundle onto the same path and hid the cache defect behind
+  "passing" dedup-looking behavior. Per-call values must be built inside the function.
+- **Test-order failures are state leaks, not flaky tests.** Passes-alone/fails-in-file
+  means some process-global (cache, module state, fixture leak) carries across tests.
+  Bisect the prefix first; if the prefix alone passes, instrument the suspect global
+  and catch the exact populating call (`hit=True` in the dump was the decisive clue).

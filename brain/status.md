@@ -1162,3 +1162,33 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   SSHBackend inert password row; push of `e02b0ac` + docs commit (awaiting owner);
   review waves lost to the Nov-19 quota exhaustion (failure-injection, performance).
 
+## 2026-11-22 (update 43) — the last failing test fixed at root cause (D37)
+
+- **"next" → the fix-first rule**: the tree had exactly ONE failing test
+  (test_verify_detects_corrupt_blob_exit_1, the update-41 gate's pre-existing failure).
+  Taken down with the systematic-debugging process; no guessing.
+- **Reproduction matrix**: passes alone and after an explicit 40-test prefix; fails in
+  whole-file runs. Not deterministic — an interaction.
+- **Root cause (two compounding bugs, evidence-verified)**:
+  1. `seed_one`'s `data=b"qa2-payload-" + os.urandom(8)` is a default-arg expression —
+     bound ONCE at import, so EVERY test in the file seeded identical bytes → identical
+     member sha → identical bundle tar → identical parent path for all tests.
+  2. `_BUNDLE_MEM_CACHE` in downloader.py keys on `(backend_name, relative_path)` with
+     no backend-root scope, and `clear_bundle_cache()` had ZERO callers. The first
+     bundle download (test_verify_file_ok_exit_0) left the correct bundle bytes in RAM
+     under a key every later test hits; the corrupted on-disk file was never read and
+     verify honestly reported OK against stale RAM bytes.
+- **Why it matters in production (D37, P1)**: a backend re-pointed at a different root
+  (update 18 did this; D23's two-workspace split makes it structural) keeps serving
+  bytes from the OLD root for the process lifetime — restore/verify can pass against
+  RAM while the on-disk copy is corrupt or absent.
+- **Fix (3 parts)**: cache key now scoped by backend location (`base_path`/`remote`);
+  the autouse `_isolate_db` fixture clears the bundle cache before AND after every
+  test; `seed_one` generates its payload per call. Instrumentation fully reverted.
+- **Evidence**: fix gate = whole qa2 sweep + downloader tests, exit 0, the previously
+  failing test green in its exact failing configuration. Full-suite gate: first run had
+  ONE different failure (test_restore_stream_still_terminates_completed_after_op — SSE
+  stream ended mid-op under load; passed alone/file/pair/rerun — recorded on the
+  class-bug watchlist), **rerun exit 0 with zero failures — the D37 tree is the first
+  fully green full gate since the campaign landed**. Register: D37 fixed.
+
