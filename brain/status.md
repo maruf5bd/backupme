@@ -1287,3 +1287,9 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   D23 (runbook ready — owner executes), D36 partial notes (verify divergence, db
   history leaks), D39 (SSE race), D30 follow-ups (guard/gc adopting the split,
   cross-process cooldown). Everything else from the campaign is closed.
+- **RELEASE COMPLETE (2026-11-22 ~14:55)**: CI green on both the D30 run and the
+  release tip (`45004035213`, `45004317644`); tag **v2.1.0** pushed; dashboard
+  restarted via dashboard.bat — LISTENING on 127.0.0.1:8081, root returns 200, running
+  the released tree (editable install = J src @ c9074dc). Production-readiness run
+  COMPLETE; the owner-decision list (D23 execution, K raw-DB scripts, watcher -m,
+  key protection) is the remaining work.
