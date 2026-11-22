@@ -1240,3 +1240,29 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - **Still gated on the owner**: D23's actual migration execution (touches production
   driver), dashboard restart happens at the end on released code.
 
+
+## 2026-11-22 (update 46) — D23 inspection complete; SCH-2 landed
+
+- **SCH-2 LANDED (`b642dc0`)**: the periodic loop dispatches the six cadence ticks to a
+  persistent ThreadPoolExecutor — a multi-hour ingest no longer suspends backups,
+  retention, purge, and gc. Per-tick single-flight, tick guards + notify, all config
+  gates preserved; export->purge ordering proven safe; bounded shutdown. D33 is now
+  FULLY closed pending D30. CI green on the P2 waves (b9fab6e, 072f37f).
+- **D23 inspection delivered (`diagnostics/d23_migration_plan.md`)** — read-only on K.
+  Findings that widen D23: (1) the coupling is the account-wide EDITABLE INSTALL, not
+  just the driver's cwd=J — every python process of this user imports production code
+  from J's live src tree (including the installed backupme.exe); (2) two K scripts
+  write the live 4.44 GB DB with raw INSERT OR IGNORE, bypassing the single-writer
+  pipeline (one ran last night); (3) production is IDLE right now (DB quiescent,
+  watcher disabled) — the ideal migration window. Recommendation: **Option A** — git
+  clone at K:\backupme_code + dedicated venv with a NON-editable pinned install; the
+  driver gets a 2-line edit (interpreter + cwd); config/DB stay on K. Full runbook +
+  rollback + owner-decision list in the plan file. Also flagged: watcher_service's -m
+  flag deletes source archives (disabled, one click away); backupme.key unprotected in
+  both roots; 215 MB unrotated log; a `nul` reserved-name file on K.
+- **In flight**: D30 (one backend resolver — the last structural P1). The 2 full-suite
+  failures it saw mid-run were its own in-flight web churn (a removed `_backend_pool`
+  name a web_polish test still pinned) — resolved before its final report.
+- **Owner decisions still open**: execute the D23 Option-A migration (runbook ready),
+  K scripts' raw-DB-writes (bring them in-repo or retire), watcher_service -m policy,
+  key-file protection.
