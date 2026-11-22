@@ -1211,3 +1211,32 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   fix (the two-accounts ingest test green again). P2 agents (D34+D36, D29+D35) still
   running; their diffs will be gated and landed in update 45.
 
+## 2026-11-22 (update 45) — production-readiness run: P2 waves landed, structural wave in flight
+
+- **Owner mandate (decisions.md)**: production-ready, "do whatever needs to be done",
+  fan out 3. All committed work pushed to origin; CI gates every push.
+- **CI note**: run 44990939602 failed on the stale ssh-password test — the push got
+  ahead of the matching test fix (fixed 0d4bad8, both contracts now pinned). Lesson
+  stands: the contract test lands WITH its code change, never a push later.
+- **D34+D36 LANDED (`b9fab6e`)**: calendar monthly retention; malformed created_at
+  skips with a counter (no more permanent stall); redundancy wired; scheduler.enabled
+  honored; tick storm staggered; cold_export 0 disables; real verify counters; INT-2
+  soft-delete re-upload allocates next version_seq (uploader + index_file safety net);
+  INT-3 auto-heal fixed and test-proven; new core `path_guard` rejects ADS/reserved/`..`
+  on upload and restore destinations. Register: D34, D36 closed (D36 partial — verify
+  divergence + db history leaks remain open notes).
+- **D29+D35 LANDED (`072f37f`)**: word-part-aware export redaction; backend details
+  withhold all secret-shaped keys; redacted re-import refused per-field (400 naming
+  paths); db restore/rebuild/replicate + report page off the event loop; web ingest
+  worker takes the daemon's single-flight staging lock; scan delete_source + convert
+  delete + file delete + config/scheduler/source writes confirm-gated; honest CDN
+  fallback states. Register: D29, D35 closed. 21 new tests; consolidated web gate
+  310 collected / 0 failed.
+- **In flight (fan-out 3)**: D33-SCH-2 (parallel tick scheduler), D30 (one backend
+  resolver — dispatching on freed slots), D23 preparation (read-only K inspection +
+  migration plan → diagnostics/d23_migration_plan.md; the harness concurrency limit
+  bumped it once mid-inspection — resumes on a freed slot; partial evidence: K config
+  has no secret material, the Nov-18 driver edit added the K-config/db pins + cwd=J).
+- **Still gated on the owner**: D23's actual migration execution (touches production
+  driver), dashboard restart happens at the end on released code.
+
