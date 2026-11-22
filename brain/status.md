@@ -1192,3 +1192,22 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   class-bug watchlist), **rerun exit 0 with zero failures — the D37 tree is the first
   fully green full gate since the campaign landed**. Register: D37 fixed.
 
+## 2026-11-22 (update 44) — main-thread fixes while the P2 wave runs; D38 fired live
+
+- **"fix" round (main thread, outside both P2 agents' territories):**
+  1. **D31 follow-up closed**: SSHBackend is CLI-based and cannot use a password
+     non-interactively — `backend add ssh --password` is now refused loudly with exit 1
+     and the ssh field table no longer stores an inert credential.
+  2. **Stale xfail removed**: qa3's `test_ingest_all_members_failed_still_marks_committed`
+     (qa defect 4, fixed 2026-11-07, re-hardened by D21) is now a plain regression pin.
+  3. **D38 (P2) fired live and fixed**: three concurrent pytest sessions collided on the
+     checkpoint writers' FIXED tmp names — `backupme.state.state.tmp` — and a whole
+     archive ingest failed with WinError 32 on `os.replace`. Exactly what the 2026-11-18
+     core review predicted as a P3. Fix: tmp names unique per process+thread with
+     failure cleanup, plus an in-process lock around the global state read-modify-write.
+     Residual documented: concurrent processes can still lose checkpoint ENTRIES
+     (last-writer-wins) — dashboard-grade data.
+- **Evidence**: qa3 + qa2 + cli_p2 + sftp_connect + both txn suites, exit 0 after the
+  fix (the two-accounts ingest test green again). P2 agents (D34+D36, D29+D35) still
+  running; their diffs will be gated and landed in update 45.
+
