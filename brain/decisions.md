@@ -136,3 +136,16 @@
   owner's explicit go, per the standing rule.
 - **D30 and the D33 serial-loop rework need the owner's design sign-off** before any
   restructuring (recorded in update 41 and unchanged).
+
+## 2026-11-22 (production-readiness mandate)
+
+- **Owner mandate: "you are my serious dev making the app production ready — do
+  whatever needs to be done."** Read as approval for: pushing committed work to origin
+  (CI gates it), implementing the two deferred structural reworks (D30 backend resolver,
+  D33-SCH-2 parallel ticks) with the normal gate discipline, release engineering
+  (CHANGELOG + version + tag), and restarting the dashboard on released code.
+- **D23 recommendation recorded (owner still owns the final call on migrating K):**
+  J's git repo is the code source of truth; production executes its committed tree;
+  K:\backupme remains the production DATA home. Do not treat K as a code workspace.
+- **The D23 hazard rule stays**: destructive gates (gc --apply, purges) must never be
+  driven against K's database without re-verified numbers.
