@@ -53,14 +53,13 @@ def _add_chunking(env, min_size: int = 2048, chunk_size: int = 65536) -> None:
 # D31: backend add sftp|ssh --password must be saved
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("btype", ["sftp", "ssh"])
-def test_d31_backend_add_saves_password(env, btype):
+def test_d31_backend_add_saves_sftp_password(env):
     runner = CliRunner()
     result = runner.invoke(
         cli_group,
         ["--config", str(env / "config.yaml"), "--db", str(env / "test.db"),
-         "backend", "add", btype,
-         "--name", f"{btype}_pw_test",
+         "backend", "add", "sftp",
+         "--name", "sftp_pw_test",
          "--host", "127.0.0.1",
          "--port", "22",
          "--username", "user",
@@ -69,12 +68,33 @@ def test_d31_backend_add_saves_password(env, btype):
     )
     assert result.exit_code == 0, result.output
     raw = yaml.safe_load((env / "config.yaml").read_text(encoding="utf-8"))
-    entries = raw["backends"][btype]
+    entries = raw["backends"]["sftp"]
     assert len(entries) == 1, entries
-    assert entries[0]["name"] == f"{btype}_pw_test"
+    assert entries[0]["name"] == "sftp_pw_test"
     # Before D31 the password row was missing from the field table, so the
     # saved entry had no password key at all.
     assert entries[0].get("password") == "S3cret-PW", entries[0]
+
+
+def test_d31_backend_add_ssh_password_refused(env):
+    """SSHBackend is CLI-based and key-auth-only: --password must be refused
+    loudly instead of being stored as an inert credential (D31 follow-up)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_group,
+        ["--config", str(env / "config.yaml"), "--db", str(env / "test.db"),
+         "backend", "add", "ssh",
+         "--name", "ssh_pw_test",
+         "--host", "127.0.0.1",
+         "--port", "22",
+         "--username", "user",
+         "--password", "S3cret-PW",
+         "--no-test"],
+    )
+    assert result.exit_code == 1, result.output
+    assert "--key_file" in result.output and "--password" in result.output
+    raw = yaml.safe_load((env / "config.yaml").read_text(encoding="utf-8"))
+    assert not (raw.get("backends") or {}).get("ssh"), raw.get("backends")
 
 
 def test_d31_saved_sftp_password_reaches_backend_config(env):
