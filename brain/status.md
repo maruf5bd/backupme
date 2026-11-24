@@ -1318,3 +1318,24 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 
 
 
+
+
+## 2026-11-24 (update 49) — Session close; brain synced
+
+- **Context compacted and brain verified**: All session work from 2026-11-24 is committed.
+  Commits: `3d0f8b4` (D36 + D39 fixes) and `22d9a3d` (brain docs: D23, purge, reclaim).
+  Git master is 2 commits ahead of origin/master. Working tree clean.
+- **Dashboard alive**: Daemon on 127.0.0.1:8081 (PID ~170432) still healthy — /api/status 200.
+- **K production DB**: Idle. Soft-deletes from this session (`deleted_at 2026-11-24`) are
+  persisted in both `backupme.db` and `K:\backupme\backupme.db`.
+- **Open owner decisions (unchanged)**:
+  1. Push commits to origin (`git push origin master`) — awaiting owner go-ahead.
+  2. Purge 725 unfixable SOURCE_GONE zero-storage-row files (IDs in rep0_report.txt).
+  3. Purge 4 junk archives (esp. `2FA.7z` — last copy, requires explicit confirm).
+  4. Investigate 5,188 no_chunks/migrated=0 files in local DB.
+  5. K raw-DB scripts (`queue_gate_transfer.py`, `transfer_to_gdrive.py`) — bring in-repo or retire.
+  6. Security housekeeping: rotate GitHub PAT, Storage Box password, protect backupme.key files.
+  7. D10 residue: fill Storage Box via `backupme backend onboard storagebox --rebalance`.
+  8. D14 unresolved: re-verify K numbers; box-registration pipeline pending owner approval.
+  9. Update K:\backupme_code when new code is deployed (procedure in decisions.md 2026-11-24).
+
