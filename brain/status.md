@@ -1293,3 +1293,24 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
   the released tree (editable install = J src @ c9074dc). Production-readiness run
   COMPLETE; the owner-decision list (D23 execution, K raw-DB scripts, watcher -m,
   key protection) is the remaining work.
+
+## 2026-11-24 (update 48) — D23 Migration Executed (Option A)
+
+- **D23 MIGRATION COMPLETE**: Decoupled production execution from J's development working tree.
+  - Cloned repository to `K:\backupme_code` and checked out release tag `v2.1.0`.
+  - Built dedicated virtual environment at `K:\backupme_code\.venv` with non-editable `pip install .`.
+  - Verified package isolation: `backupme` imports from `K:\backupme_code\.venv\Lib\site-packages\backupme\__init__.py`.
+  - Backed up production driver (`K:\backupme\scripts\auto_ingest_cpanel.py.bak_20261124_164500`).
+  - Updated driver to execute using `K:\backupme_code\.venv\Scripts\python.exe` with cwd `K:\backupme_code`.
+  - Verified CLI execution with `-c K:\backupme\config.yaml --db-path K:\backupme\backupme.db`.
+  - Production DATA (`K:\backupme\backupme.db`, `config.yaml`, batch logs) remains completely untouched and preserved.
+- **D36 CLI FIX LANDED**: Fixed `backupme db history` error handling and exit code.
+  - Handled SQL errors cleanly without spewing traceback dumps on user input errors.
+  - Returns exit code 1 on query failures for both `--json` and `--no-json`.
+  - Targeted test suites (`test_db_lifecycle.py`, `test_cli_health.py`) pass 100%.
+- **D39 SSE TERMINATION RACE FIXED**: Hardened `make_sse_stream` against early termination.
+  - Checked `not is_running` under lock in the idle termination break, ensuring streams do not exit mid-flight if thread start / registry updates lag the first emitted frame.
+  - Stream test suites (`tests/test_web_p2.py`, `tests/test_qa1_web_sweep.py`) pass 100%.
+
+
+

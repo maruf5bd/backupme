@@ -803,7 +803,9 @@ def make_sse_stream(state: dict, lock: threading.Lock,
             if done_fn():
                 yield f"data: {snapshot}\n\n"
                 break
-            if emitted_any and not _op_ever_started(state):
+            with lock:
+                is_running = state.get("running", False)
+            if emitted_any and not is_running and not _op_ever_started(state):
                 break
             await asyncio.sleep(0.5)
 

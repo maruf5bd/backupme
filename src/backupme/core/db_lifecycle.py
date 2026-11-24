@@ -377,7 +377,7 @@ def query_history_duckdb(sql: str, params: list | None = None, config=None) -> l
         columns = [d[0] for d in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
     except Exception as e:
-        log.error("history query failed: %s", e, exc_info=True)
+        log.warning("history query failed: %s", e)
         return [{"status": "error", "message": str(e)}]
     finally:
         con.close()

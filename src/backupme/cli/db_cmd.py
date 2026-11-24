@@ -195,7 +195,8 @@ def history(ctx, sql, as_json):
     """Run read-only DuckDB SQL over the parquet partitions (view: files)."""
     from ..core import db_lifecycle as lc
     rows = lc.query_history_duckdb(sql)
-    payload = {"rows": rows, "count": len(rows)}
+    has_error = bool(rows and len(rows) == 1 and rows[0].get("status") == "error")
+    payload = {"rows": rows, "count": 0 if has_error else len(rows)}
 
     _MAX_RENDER_ROWS = 100
     _MAX_CELL_WIDTH = 40
@@ -222,6 +223,9 @@ def history(ctx, sql, as_json):
 
     def human(d):
         rows = d["rows"]
+        if has_error:
+            click.echo(f"Error: {rows[0].get('message', 'query failed')}", err=True)
+            return
         if not rows:
             click.echo("(no rows)")
         else:
@@ -231,6 +235,8 @@ def history(ctx, sql, as_json):
         click.echo(f"{d['count']} row(s)")
 
     emit(payload, as_json=as_json, human=human)
+    if has_error:
+        ctx.exit(1)
 
 
 @db.command("vacuum")

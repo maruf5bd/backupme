@@ -232,6 +232,22 @@ def test_db_history_no_json_empty_result(runner, env):
     assert "0 row(s)" in r.output
 
 
+def test_db_history_syntax_error_exits_1_json(runner, env):
+    r = invoke(runner, env, "db", "history", "SELECT * FROM files WHERE (")
+    assert r.exit_code == 1, r.output
+    data = parse_json(r)
+    assert data["count"] == 0
+    assert len(data["rows"]) == 1
+    assert data["rows"][0]["status"] == "error"
+
+
+def test_db_history_syntax_error_exits_1_no_json(runner, env):
+    r = invoke(runner, env, "db", "history", "SELECT * FROM files WHERE (", "--no-json")
+    assert r.exit_code == 1, r.output
+    assert "Error:" in r.output
+
+
+
 # ---------------------------------------------------------------------------
 # P2-10: --json on backup, download, search, convert, gc
 # ---------------------------------------------------------------------------

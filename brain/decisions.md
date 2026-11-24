@@ -154,3 +154,14 @@
   inspection + migration plan), and the in-flight D29+D35 web agent; D30 dispatches when
   the web slot frees (common.py conflict). Agent A's D34+D36 wave commits on targeted-
   gate evidence with CI as the full gate.
+
+## 2026-11-24
+
+- **D23 Migration executed (Option A)** — decoupled production execution on K from J's
+  live working tree. Pinned code repository cloned to `K:\backupme_code` on tag `v2.1.0`.
+  Dedicated virtual environment created at `K:\backupme_code\.venv` with non-editable
+  install of `backupme==2.1.0`. `K:\backupme\scripts\auto_ingest_cpanel.py` backed up and
+  updated to use `K:\backupme_code\.venv\Scripts\python.exe` and cwd `K:\backupme_code`.
+  Data directories (`K:\backupme\config.yaml`, `K:\backupme\backupme.db`) remain strictly
+  intact as production data home.
+
