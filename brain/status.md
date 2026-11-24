@@ -42,7 +42,7 @@
 
 - Rotate the exposed GitHub PAT — stripped from .git/config 2026-11-16 (update 25), but the
   token itself was never revoked; it lived in plaintext on disk.
-- Purge 7 SOURCE_GONE files that reference corrupt blobs (unrecoverable unless source reappears).
+- Resolved 2026-11-24: Purge 7 SOURCE_GONE files referencing corrupt blobs (IDs 886, 1398, 1571, 1728, 3992 soft-deleted; 4405 & 4533 soft-deleted 2026-11-09).
 - Purge 725 unfixable zero-storage-row files.
 - Purge 4 junk "archives" (a.zip, 2FA.7z, 2020-12-03 tar.gz, bitexchanger_v20.zip) — NOTE:
   2FA.7z vault copy is the LAST copy in existence (source deleted).
@@ -51,7 +51,7 @@
 - D14 follow-ups (update 18): identify the overnight mover / confirm emptying K was
   intended; approve the box-registration pipeline (rclone copy-down 86.5 GiB + local
   decompress-sha verify — plan ready).
-- Reclaim `restored_local_archives/` (~19 GB restore-verification scratch, update 19).
+- Resolved 2026-11-24: Reclaim `restored_local_archives/` (~37.4 GB deleted across J and K).
 - Resolved and removed 2026-11-10: `gc --apply` (executed at 785 orphans / 21.96 GiB —
   update 17 below). List refreshed 2026-11-18 (update 29).
 
@@ -1311,6 +1311,10 @@ known correctness work before the wiring wave (B02-B04) and feature wave (B10-B1
 - **D39 SSE TERMINATION RACE FIXED**: Hardened `make_sse_stream` against early termination.
   - Checked `not is_running` under lock in the idle termination break, ensuring streams do not exit mid-flight if thread start / registry updates lag the first emitted frame.
   - Stream test suites (`tests/test_web_p2.py`, `tests/test_qa1_web_sweep.py`) pass 100%.
+- **CORRUPT SOURCE_GONE PURGE & SCRATCH RECLAIM COMPLETE**:
+  - Soft-deleted all remaining live files referencing corrupt blobs where sources were deleted (IDs 886, 1398, 1571, 1728, 3992) via `_soft_delete_file()` on both `backupme.db` and `K:\backupme\backupme.db`.
+  - Reclaimed ~37.4 GB disk space across J and K by removing `restored_local_archives/` binaries.
+
 
 
 

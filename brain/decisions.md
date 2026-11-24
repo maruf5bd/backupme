@@ -164,4 +164,11 @@
   updated to use `K:\backupme_code\.venv\Scripts\python.exe` and cwd `K:\backupme_code`.
   Data directories (`K:\backupme\config.yaml`, `K:\backupme\backupme.db`) remain strictly
   intact as production data home.
+- **Corrupt SOURCE_GONE files purged (user-approved)** — soft-deleted the 5 live files
+  referencing damaged blobs with deleted sources (IDs 886, 1398, 1571, 1728, 3992; the other
+  2 IDs 4405 and 4533 were already soft-deleted 2026-11-09) via `_soft_delete_file()` across
+  both `backupme.db` and `K:\backupme\backupme.db`. Blob refcounts decremented safely.
+- **Scratch space reclaimed (user-approved)** — deleted `restored_local_archives/` binaries on J
+  and K, recovering ~37.4 GB of temporary verification files.
+
 
